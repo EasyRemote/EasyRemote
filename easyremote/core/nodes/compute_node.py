@@ -72,11 +72,12 @@ Usage Example:
     >>> 
     >>> node.serve()  # Start serving requests
 
-Author: Silan Hu
+Author: Silan Hu (silan.hu@u.nus.edu)
 Version: 2.0.0
 """
 
 import asyncio
+import functools
 import grpc
 import time
 import threading
@@ -100,9 +101,13 @@ from ..data import (
 )
 from ..utils.exceptions import (
     ConnectionError as EasyRemoteConnectionError,
-    EasyRemoteError,
+    ExceptionTranslator,
+    FunctionNotFoundError,
+    RemoteExecutionError,
     TimeoutError,
 )
+from ..utils.concurrency import LoopBoundAsyncLock
+from ..utils.asyncio_noise_filter import install_asyncio_grpc_shutdown_noise_filter
 from ..data.serialize import analyze_function
 from ..protos import service_pb2, service_pb2_grpc
 from ..utils.logger import ModernLogger
@@ -679,6 +684,7 @@ class DistributedComputeNode(ModernLogger):
             ... )
         """
         super().__init__(name="DistributedComputeNode", level=log_level)
+        install_asyncio_grpc_shutdown_noise_filter()
         
         # Generate configuration if not provided
         if node_id is None:
@@ -701,7 +707,7 @@ class DistributedComputeNode(ModernLogger):
         
         # Core node state
         self._connection_state = NodeConnectionState.DISCONNECTED
-        self._state_lock = asyncio.Lock()
+        self._state_lock = LoopBoundAsyncLock(name="compute-node-state-lock")
         
         # Function registry and management
         self._registered_functions: Dict[str, FunctionRegistration] = {}
@@ -721,6 +727,8 @@ class DistributedComputeNode(ModernLogger):
         
         # Background tasks and lifecycle management
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._service_thread: Optional[threading.Thread] = None
+        self._grpc_aio_initialized: bool = False
         self._background_tasks: Set[asyncio.Task] = set()
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._health_monitor_task: Optional[asyncio.Task] = None
@@ -743,7 +751,7 @@ class DistributedComputeNode(ModernLogger):
         self._successful_executions = 0
         
         # Thread safety and synchronization
-        self._global_lock = asyncio.Lock()
+        self._global_lock = LoopBoundAsyncLock(name="compute-node-global-lock")
         
         # Core services
         from ..data import Serializer
@@ -1025,7 +1033,7 @@ class DistributedComputeNode(ModernLogger):
         if blocking:
             try:
                 # Check if we're already in an event loop
-                loop = asyncio.get_running_loop()
+                asyncio.get_running_loop()
                 self.warning("Detected running event loop, switching to background mode")
                 return self.serve(blocking=False)
             except RuntimeError:
@@ -1034,7 +1042,7 @@ class DistributedComputeNode(ModernLogger):
             
             # Start in blocking mode
             self._event_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._event_loop)
+            self._initialize_event_loop(self._event_loop)
             
             try:
                 self._event_loop.run_until_complete(self._async_serve())
@@ -1043,10 +1051,14 @@ class DistributedComputeNode(ModernLogger):
                 self._event_loop.run_until_complete(self._async_cleanup())
             except Exception as e:
                 self.error(f"Service error: {e}", exc_info=True)
-                raise EasyRemoteError(f"Service failed: {e}") from e
+                raise ExceptionTranslator.as_connection_error(
+                    e,
+                    address=self.config.gateway_address,
+                    message="Compute node service failed",
+                ) from e
             finally:
                 if not self._event_loop.is_closed():
-                    self._event_loop.close()
+                    self._finalize_event_loop(self._event_loop)
                 self._event_loop = None
                 
         else:
@@ -1054,8 +1066,8 @@ class DistributedComputeNode(ModernLogger):
             def _background_server_runner():
                 """Background server runner with proper exception handling."""
                 loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
                 self._event_loop = loop
+                self._initialize_event_loop(loop)
                 
                 try:
                     loop.run_until_complete(self._async_serve())
@@ -1063,22 +1075,95 @@ class DistributedComputeNode(ModernLogger):
                     self.error(f"Background service error: {e}", exc_info=True)
                 finally:
                     if not loop.is_closed():
-                        loop.close()
+                        self._finalize_event_loop(loop)
                     self._event_loop = None
             
-            thread = threading.Thread(
+            self._service_thread = threading.Thread(
                 target=_background_server_runner,
                 name=f"ComputeNode-{self.config.node_id}",
                 daemon=True
             )
-            thread.start()
+            self._service_thread.start()
             
             # Wait for service to be ready
             self._wait_for_service_ready(timeout=30.0)
             
-            return thread
+            return self._service_thread
+
+    def _initialize_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """
+        Initialize loop-local resources for grpc.aio runtime.
+        """
+        asyncio.set_event_loop(loop)
+        loop.set_exception_handler(self._handle_loop_exception)
+        try:
+            grpc.aio.init_grpc_aio()
+            self._grpc_aio_initialized = True
+        except Exception as e:
+            self._grpc_aio_initialized = False
+            self.warning(f"Failed to initialize grpc.aio runtime: {e}")
+
+    def _handle_loop_exception(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        context: Dict[str, Any],
+    ) -> None:
+        """
+        Suppress known grpc.aio poller noise during shutdown.
+        """
+        exception = context.get("exception")
+        handle = context.get("handle")
+        handle_repr = repr(handle)
+
+        if (
+            self._shutdown_event.is_set()
+            and isinstance(exception, BlockingIOError)
+            and "PollerCompletionQueue._handle_events" in handle_repr
+        ):
+            self.debug("Suppressing grpc.aio poller BlockingIOError during shutdown")
+            return
+
+        loop.default_exception_handler(context)
+
+    def _finalize_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """
+        Flush and close event loop with best-effort grpc.aio teardown.
+        """
+        if loop.is_running():
+            return
+
+        try:
+            pending_tasks = [task for task in asyncio.all_tasks(loop) if not task.done()]
+            for task in pending_tasks:
+                task.cancel()
+            if pending_tasks:
+                loop.run_until_complete(
+                    asyncio.gather(*pending_tasks, return_exceptions=True)
+                )
+        except Exception as e:
+            self.warning(f"Error while cancelling pending node loop tasks: {e}")
+
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception as e:
+            self.warning(f"Error while shutting down async generators: {e}")
+
+        try:
+            loop.run_until_complete(loop.shutdown_default_executor())
+        except Exception as e:
+            self.warning(f"Error while shutting down default executor: {e}")
+
+        if self._grpc_aio_initialized:
+            try:
+                grpc.aio.shutdown_grpc_aio()
+            except Exception as e:
+                self.warning(f"Error while shutting down grpc.aio runtime: {e}")
+            finally:
+                self._grpc_aio_initialized = False
+
+        loop.close()
     
-    def _wait_for_service_ready(self, timeout: float = 10.0):
+    def _wait_for_service_ready(self, timeout: float = 10.0) -> None:
         """
         Wait for service to be ready with timeout.
         
@@ -1095,9 +1180,13 @@ class DistributedComputeNode(ModernLogger):
                 return
             time.sleep(0.1)
         
-        raise TimeoutError("Service did not become ready within timeout")
+        raise TimeoutError(
+            message="Service did not become ready within timeout",
+            timeout_seconds=timeout,
+            operation="compute_node_startup",
+        )
     
-    async def _async_serve(self):
+    async def _async_serve(self) -> None:
         """
         Asynchronous service loop with comprehensive lifecycle management.
         """
@@ -1219,7 +1308,7 @@ class DistributedComputeNode(ModernLogger):
             ('grpc.http2.min_ping_interval_without_data_ms', 30000),  # Min 30s between idle pings
         ]
     
-    async def _test_connection(self):
+    async def _test_connection(self) -> None:
         """Test connection to gateway with health check."""
         try:
             # Simple connectivity test
@@ -1230,14 +1319,17 @@ class DistributedComputeNode(ModernLogger):
             self.debug("Gateway connection test successful")
         except asyncio.TimeoutError:
             raise EasyRemoteConnectionError(
-                f"Connection timeout to gateway {self.config.gateway_address}"
+                message=f"Connection timeout to gateway {self.config.gateway_address}",
+                address=self.config.gateway_address,
             )
         except Exception as e:
             raise EasyRemoteConnectionError(
-                f"Gateway connection test failed: {e}"
+                message=f"Gateway connection test failed: {e}",
+                address=self.config.gateway_address,
+                cause=e,
             ) from e
     
-    async def _register_with_gateway(self):
+    async def _register_with_gateway(self) -> None:
         """Register node and functions with gateway."""
         await self._set_connection_state(NodeConnectionState.REGISTERING)
         
@@ -1254,10 +1346,17 @@ class DistributedComputeNode(ModernLogger):
             if response.success:
                 self.info(f"Successfully registered with gateway: {response.message}")
             else:
-                raise EasyRemoteError(f"Registration failed: {response.message}")
+                raise EasyRemoteConnectionError(
+                    message=f"Registration rejected by gateway: {response.message}",
+                    address=self.config.gateway_address,
+                )
                 
         except grpc.RpcError as e:
-            raise EasyRemoteConnectionError(f"Registration RPC failed: {e}") from e
+            raise EasyRemoteConnectionError(
+                message=f"Registration RPC failed: {e}",
+                address=self.config.gateway_address,
+                cause=e,
+            ) from e
     
     def _convert_node_info_to_proto(self, node_info: NodeInfo) -> service_pb2.NodeInfo:
         """Convert NodeInfo to protobuf format."""
@@ -1337,6 +1436,7 @@ class DistributedComputeNode(ModernLogger):
         try:
             # Create control stream for bidirectional communication
             control_stream = self._gateway_stub.ControlStream(self._generate_control_messages())
+            self._communication_stream = control_stream
             
             # Handle incoming messages from the server
             async for control_message in control_stream:
@@ -1351,6 +1451,8 @@ class DistributedComputeNode(ModernLogger):
         except Exception as e:
             self.error(f"Unexpected error in request handling: {e}")
             raise
+        finally:
+            self._communication_stream = None
     
     async def _generate_control_messages(self):
         """Generate control messages to send to server."""
@@ -1406,7 +1508,7 @@ class DistributedComputeNode(ModernLogger):
                 self.error(f"Error generating control messages: {e}")
                 break
     
-    async def _handle_control_message(self, control_message):
+    async def _handle_control_message(self, control_message: service_pb2.ControlMessage) -> None:
         """Handle incoming control messages from server."""
         if control_message.HasField('register_resp'):
             # Handle registration response
@@ -1416,7 +1518,10 @@ class DistributedComputeNode(ModernLogger):
                 await self._set_connection_state(NodeConnectionState.CONNECTED)
             else:
                 self.error(f"Registration failed: {register_resp.message}")
-                raise EasyRemoteError(f"Registration failed: {register_resp.message}")
+                raise EasyRemoteConnectionError(
+                    message=f"Registration failed: {register_resp.message}",
+                    address=self.config.gateway_address,
+                )
                 
         elif control_message.HasField('heartbeat_resp'):
             # Handle heartbeat response
@@ -1437,7 +1542,7 @@ class DistributedComputeNode(ModernLogger):
             asyncio.create_task(self._execute_function_request(exec_req))
             self.info(f"✅ [NODE] Async execution task created for {exec_req.function_name}")
         else:
-            self.debug(f"🔍 [NODE] Received unknown control message type")
+            self.debug("🔍 [NODE] Received unknown control message type")
     
     async def _execute_function_request(self, exec_req):
         """Execute a function request and send back the result."""
@@ -1451,7 +1556,11 @@ class DistributedComputeNode(ModernLogger):
             if function_name not in self._registered_functions:
                 error_msg = f"Function '{function_name}' not found"
                 self.error(f"❌ [NODE-EXEC] {error_msg}")
-                raise RuntimeError(error_msg)
+                raise FunctionNotFoundError(
+                    function_name=function_name,
+                    node_id=self.config.node_id,
+                    message=error_msg,
+                )
             
             registration = self._registered_functions[function_name]
             func = registration.function_info.callable
@@ -1459,7 +1568,11 @@ class DistributedComputeNode(ModernLogger):
             if func is None:
                 error_msg = f"Function '{function_name}' has no callable"
                 self.error(f"❌ [NODE-EXEC] {error_msg}")
-                raise RuntimeError(error_msg)
+                raise RemoteExecutionError(
+                    function_name=function_name,
+                    node_id=self.config.node_id,
+                    message=error_msg,
+                )
             
             self.info(f"🔧 [NODE-EXEC] Function found, deserializing arguments for {function_name}")
             
@@ -1489,7 +1602,15 @@ class DistributedComputeNode(ModernLogger):
                     # Run sync function in thread pool to avoid blocking
                     self.debug(f"🔄 [NODE-EXEC] Running sync function {function_name} in thread pool")
                     loop = asyncio.get_running_loop()
-                    result = await loop.run_in_executor(self._thread_executor, func, *args, **kwargs)
+                    bound_call = self._build_executor_callable(
+                        func=func,
+                        args=tuple(args),
+                        kwargs=dict(kwargs),
+                    )
+                    result = await loop.run_in_executor(
+                        self._thread_executor,
+                        bound_call,
+                    )
                 
                 execution_time = time.time() - start_time
                 self.info(f"🎉 [NODE-EXEC] SUCCESS! Function '{function_name}' completed in {execution_time:.3f}s, result: {result}")
@@ -1540,9 +1661,9 @@ class DistributedComputeNode(ModernLogger):
             # For now, we'll store it in a queue that the control stream generator can pick up
             if hasattr(self, '_outgoing_messages'):
                 await self._outgoing_messages.put(control_msg)
-                self.info(f"✅ [NODE-EXEC] Result queued for transmission to server")
+                self.info("✅ [NODE-EXEC] Result queued for transmission to server")
             else:
-                self.error(f"❌ [NODE-EXEC] No _outgoing_messages queue available!")
+                self.error("❌ [NODE-EXEC] No _outgoing_messages queue available!")
             
         except Exception as e:
             self.error(f"💥 [NODE-EXEC] Critical error executing function request {call_id}: {e}")
@@ -1550,6 +1671,20 @@ class DistributedComputeNode(ModernLogger):
             # Clean up active execution tracking
             if call_id in self._active_executions:
                 del self._active_executions[call_id]
+
+    @staticmethod
+    def _build_executor_callable(
+        func: Callable[..., Any],
+        args: Tuple[Any, ...],
+        kwargs: Dict[str, Any],
+    ) -> Callable[[], Any]:
+        """
+        Bind sync function arguments for thread-pool execution.
+
+        `run_in_executor` does not accept keyword arguments directly, so kwargs
+        must be pre-bound using `functools.partial`.
+        """
+        return functools.partial(func, *args, **kwargs)
     
     async def _resource_monitoring_loop(self):
         """Background resource monitoring loop."""
@@ -1594,6 +1729,20 @@ class DistributedComputeNode(ModernLogger):
     async def _async_cleanup(self):
         """Cleanup resources and shutdown background tasks."""
         self.info("Starting async cleanup")
+
+        # Signal shutdown to long-running loops/generators.
+        self._shutdown_event.set()
+
+        # Cancel active control stream if still alive.
+        if self._communication_stream is not None:
+            try:
+                cancel = getattr(self._communication_stream, "cancel", None)
+                if callable(cancel):
+                    cancel()
+            except Exception as e:
+                self.warning(f"Error while cancelling control stream: {e}")
+            finally:
+                self._communication_stream = None
         
         # Cancel background tasks
         for task in self._background_tasks:
@@ -1634,6 +1783,14 @@ class DistributedComputeNode(ModernLogger):
                 time.sleep(1.0)
         except Exception as e:
             self.warning(f"Error during shutdown: {e}")
+
+        if (
+            self._service_thread
+            and self._service_thread.is_alive()
+            and threading.current_thread() is not self._service_thread
+        ):
+            self._service_thread.join(timeout=self.config.shutdown_timeout_seconds)
+        self._service_thread = None
         
         # Cleanup thread executor
         if self._thread_executor:
@@ -1723,7 +1880,7 @@ class DistributedComputeNode(ModernLogger):
         """Cleanup on object destruction."""
         try:
             self.stop()
-        except:
+        except Exception:
             pass
 
 

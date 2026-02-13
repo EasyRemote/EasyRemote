@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easyremote"
-version = "0.1.4"
+dynamic = ["version"]
 description = "A lightweight framework for hassle-free remote computing resource sharing"
 readme = "README.md"
 license = {text = "MIT"}
@@ -34,8 +34,6 @@ classifiers = [
     
     # Programming Language
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -70,18 +68,14 @@ classifiers = [
 ]
 
 dependencies = [
-    "grpcio>=1.51.0,<2.0.0",
-    "grpcio-tools>=1.51.0,<2.0.0",
+    "grpcio>=1.71.0,<2.0.0",
     "protobuf>=4.21.0,<6.0.0",
-    "uvicorn>=0.20.0",
-    "python-multipart>=0.0.19",
     "rich>=13.0.0",
     "pyfiglet>=0.8.0",
-    "GPUtil",
     "psutil>=5.8.0"
 ]
 
-requires-python = ">=3.7"
+requires-python = ">=3.9"
 
 [project.urls]
 Homepage = "https://github.com/Qingbolan/EasyRemote"
@@ -92,9 +86,40 @@ Changelog = "https://github.com/Qingbolan/EasyRemote/releases"
 "Source Code" = "https://github.com/Qingbolan/EasyRemote"
 
 [project.optional-dependencies]
+gpu = [
+    "GPUtil>=1.4.0"
+]
+build = [
+    "grpcio-tools>=1.71.0,<2.0.0"
+]
 dev = [
+    "grpcio-tools>=1.71.0,<2.0.0",
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "black>=22.0.0",
+    "isort>=5.10.0",
+    "flake8>=4.0.0",
+    "mypy>=1.0.0",
+    "pre-commit>=2.17.0"
+]
+test = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0"
+]
+docs = [
+    "mkdocs>=1.4.0",
+    "mkdocs-material>=8.0.0",
+    "mkdocstrings>=0.19.0"
+]
+
+[dependency-groups]
+dev = [
+    "grpcio-tools>=1.71.0,<2.0.0",
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
     "black>=22.0.0",
     "isort>=5.10.0",
     "flake8>=4.0.0",
@@ -113,8 +138,17 @@ docs = [
 ]
 
 [tool.setuptools]
-packages = ["easyremote"]
 include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {attr = "easyremote._version.__version__"}
+
+[tool.uv]
+default-groups = ["dev", "test"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["easyremote*"]
 
 [tool.setuptools.package-data]
 easyremote = [
@@ -126,7 +160,7 @@ easyremote = [
 
 [tool.black]
 line-length = 88
-target-version = ['py37']
+target-version = ['py39']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -150,8 +184,14 @@ multi_line_output = 3
 line_length = 88
 skip_glob = ["easyremote/core/protos/*_pb2.py", "easyremote/core/protos/*_pb2_grpc.py"]
 
+[tool.ruff]
+exclude = [
+    "easyremote/core/protos/*_pb2.py",
+    "easyremote/core/protos/*_pb2_grpc.py",
+]
+
 [tool.mypy]
-python_version = "3.7"
+python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

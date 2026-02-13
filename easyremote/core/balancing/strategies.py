@@ -56,7 +56,7 @@ Usage Example:
     ...     async def select_node(self, available_nodes, request_context, node_stats):
     ...         return self.find_optimal_node(available_nodes, node_stats)
 
-Author: Silan Hu
+Author: Silan Hu (silan.hu@u.nus.edu)
 Version: 2.0.0
 Compatibility: Python 3.7+
 """
@@ -65,9 +65,9 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Dict, List, Any, Optional, Set, Union, Callable
+from typing import Dict, List, Any, Optional, Set, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 
 
 class LoadBalancingStrategy(Enum):

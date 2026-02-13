@@ -66,7 +66,7 @@ Usage Example:
     >>> thread = server.start_background()
     >>> # Server is now running in background
 
-Author: Silan Hu
+Author: Silan Hu (silan.hu@u.nus.edu)
 Version: 2.0.0
 """
 
@@ -86,19 +86,32 @@ from concurrent import futures
 
 # EasyRemote core imports
 from ..utils.logger import ModernLogger
+from ..utils.asyncio_noise_filter import install_asyncio_grpc_shutdown_noise_filter
 from ..balancing import LoadBalancer, RequestContext
-from ..data import NodeInfo, FunctionInfo, NodeStatus, NodeHealthMetrics
+from ..data import NodeInfo, NodeStatus
 from ..utils.exceptions import (
     NodeNotFoundError,
     FunctionNotFoundError,
-    SerializationError,
     RemoteExecutionError,
     EasyRemoteError,
     TimeoutError,
-    NoAvailableNodesError
+    NoAvailableNodesError,
+    LoadBalancingError,
+    ExceptionTranslator,
 )
+from ..utils.concurrency import LoopBoundAsyncLock, create_loop_future
 from ..data import Serializer
 from ..protos import service_pb2, service_pb2_grpc
+from ...protocols import (
+    A2AProtocolAdapter,
+    FunctionDescriptor,
+    FunctionInvocation,
+    MCPProtocolAdapter,
+    ProtocolAdapter,
+    ProtocolGateway,
+    ProtocolName,
+    ProtocolRuntime,
+)
 
 
 class ServerState(Enum):
@@ -283,7 +296,9 @@ class StreamExecutionContext(ModernLogger):
         return self.elapsed_time > self.timeout
 
 
-class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, ModernLogger):
+class DistributedComputingGateway(
+    service_pb2_grpc.RemoteServiceServicer, ModernLogger, ProtocolRuntime
+):
     """
     Advanced distributed computing gateway server with enterprise-grade capabilities.
     
@@ -383,6 +398,7 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
         # Initialize parent classes
         service_pb2_grpc.RemoteServiceServicer.__init__(self)
         ModernLogger.__init__(self, name="DistributedComputingGateway", level=log_level)
+        install_asyncio_grpc_shutdown_noise_filter()
         
         # Validate configuration parameters
         self._validate_configuration(
@@ -404,17 +420,20 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
         
         # Server state management
         self._state = ServerState.INITIALIZING
-        self._state_lock = asyncio.Lock()
+        self._state_lock = LoopBoundAsyncLock(name="gateway-state-lock")
         
         # Core server components
         self._grpc_server: Optional[grpc_aio.Server] = None
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
         self._server_thread: Optional[threading.Thread] = None
+        self._grpc_aio_initialized: bool = False
         
         # Node and function management
         self._nodes: Dict[str, NodeInfo] = {}
         self._node_communication_queues: Dict[str, asyncio.Queue] = {}
-        self._global_lock = asyncio.Lock()  # Protects all shared data structures
+        self._global_lock = LoopBoundAsyncLock(
+            name="gateway-global-lock"
+        )  # Protects all shared data structures
         
         # Request and stream management
         self._pending_function_calls: Dict[str, Union[asyncio.Future, Dict[str, Any]]] = {}
@@ -434,6 +453,9 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
         # Core services
         self._serializer = Serializer()
         self._load_balancer = LoadBalancer(self)
+        self._protocol_gateway = ProtocolGateway(runtime=self)
+        self._protocol_gateway.register_adapter(MCPProtocolAdapter())
+        self._protocol_gateway.register_adapter(A2AProtocolAdapter())
         
         # Set global instance for coordination
         with DistributedComputingGateway._instance_lock:
@@ -501,7 +523,7 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
                 ServerState.RUNNING: {ServerState.STOPPING, ServerState.ERROR},
                 ServerState.STOPPING: {ServerState.STOPPED, ServerState.ERROR},
                 ServerState.STOPPED: {ServerState.STARTING},
-                ServerState.ERROR: {ServerState.STARTING, ServerState.STOPPING}
+                ServerState.ERROR: {ServerState.STARTING, ServerState.STOPPING, ServerState.STOPPED}
             }
             
             if new_state not in valid_transitions.get(old_state, set()):
@@ -544,7 +566,7 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
         
         try:
             # Check if we're already in an event loop
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
             self.warning("Detected running event loop, switching to background mode")
             return self.start_background()
         except RuntimeError:
@@ -554,7 +576,7 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
         try:
             # Create and configure event loop
             self._event_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._event_loop)
+            self._initialize_event_loop(self._event_loop)
             
             # Start server in blocking mode
             self._event_loop.run_until_complete(self._async_serve())
@@ -565,11 +587,15 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
             raise
         except Exception as e:
             self.error(f"Unexpected error during server startup: {e}", exc_info=True)
-            raise EasyRemoteError(f"Server startup failed: {e}") from e
+            raise ExceptionTranslator.as_connection_error(
+                e,
+                address=f"0.0.0.0:{self.port}",
+                message="Gateway server startup failed",
+            ) from e
         finally:
             # Cleanup event loop
             if self._event_loop and not self._event_loop.is_closed():
-                self._event_loop.close()
+                self._finalize_event_loop(self._event_loop)
             self._event_loop = None
     
     def start_background(self) -> threading.Thread:
@@ -600,7 +626,7 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
             try:
                 # Create isolated event loop for this thread
                 self._event_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(self._event_loop)
+                self._initialize_event_loop(self._event_loop)
                 
                 # Run server asynchronously
                 self._event_loop.run_until_complete(self._async_serve())
@@ -612,7 +638,7 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
             finally:
                 # Cleanup
                 if self._event_loop and not self._event_loop.is_closed():
-                    self._event_loop.close()
+                    self._finalize_event_loop(self._event_loop)
                 self._event_loop = None
         
         # Start background thread
@@ -628,6 +654,125 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
         
         self.info(f"Server started in background on port {self.port}")
         return self._server_thread
+
+    async def _request_shutdown(self, grace: float = 5.0) -> None:
+        """
+        Request graceful server shutdown from the owning event loop.
+
+        Args:
+            grace: gRPC server shutdown grace period in seconds
+        """
+        if self._state in {ServerState.STARTING, ServerState.RUNNING}:
+            await self._set_state(ServerState.STOPPING)
+
+        self._shutdown_event.set()
+
+        if self._grpc_server is not None:
+            await self._grpc_server.stop(grace=grace)
+
+    def stop(self, grace: float = 5.0, timeout: float = 10.0) -> None:
+        """
+        Stop the gateway server gracefully.
+
+        This method is safe to call for both blocking and background modes.
+
+        Args:
+            grace: gRPC server shutdown grace period in seconds
+            timeout: Maximum wait time for shutdown completion
+        """
+        if self._state in {ServerState.INITIALIZING, ServerState.STOPPED}:
+            return
+
+        if self._event_loop is None or self._event_loop.is_closed():
+            return
+
+        try:
+            if self._event_loop.is_running():
+                future = asyncio.run_coroutine_threadsafe(
+                    self._request_shutdown(grace=grace),
+                    self._event_loop,
+                )
+                future.result(timeout=timeout)
+            else:
+                self._event_loop.run_until_complete(self._request_shutdown(grace=grace))
+        except Exception as e:
+            self.warning(f"Error while stopping server: {e}")
+
+        if self._server_thread and self._server_thread.is_alive():
+            self._server_thread.join(timeout=timeout)
+
+    def _initialize_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """
+        Initialize loop-local resources for gRPC asyncio runtime.
+        """
+        asyncio.set_event_loop(loop)
+        loop.set_exception_handler(self._handle_loop_exception)
+        try:
+            grpc_aio.init_grpc_aio()
+            self._grpc_aio_initialized = True
+        except Exception as e:
+            self._grpc_aio_initialized = False
+            self.warning(f"Failed to initialize grpc.aio runtime: {e}")
+
+    def _handle_loop_exception(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        context: Dict[str, Any],
+    ) -> None:
+        """
+        Suppress known grpc.aio poller noise during shutdown.
+        """
+        exception = context.get("exception")
+        handle = context.get("handle")
+        handle_repr = repr(handle)
+
+        if (
+            self._shutdown_event.is_set()
+            and isinstance(exception, BlockingIOError)
+            and "PollerCompletionQueue._handle_events" in handle_repr
+        ):
+            self.debug("Suppressing grpc.aio poller BlockingIOError during shutdown")
+            return
+
+        loop.default_exception_handler(context)
+
+    def _finalize_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """
+        Flush and close an event loop with best-effort grpc.aio shutdown.
+        """
+        if loop.is_running():
+            return
+
+        try:
+            pending_tasks = [task for task in asyncio.all_tasks(loop) if not task.done()]
+            for task in pending_tasks:
+                task.cancel()
+            if pending_tasks:
+                loop.run_until_complete(
+                    asyncio.gather(*pending_tasks, return_exceptions=True)
+                )
+        except Exception as e:
+            self.warning(f"Error while cancelling pending server loop tasks: {e}")
+
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception as e:
+            self.warning(f"Error while shutting down async generators: {e}")
+
+        try:
+            loop.run_until_complete(loop.shutdown_default_executor())
+        except Exception as e:
+            self.warning(f"Error while shutting down default executor: {e}")
+
+        if self._grpc_aio_initialized:
+            try:
+                grpc_aio.shutdown_grpc_aio()
+            except Exception as e:
+                self.warning(f"Error while shutting down grpc.aio runtime: {e}")
+            finally:
+                self._grpc_aio_initialized = False
+
+        loop.close()
     
     def _wait_for_server_ready(self, timeout: float = 10.0):
         """
@@ -644,10 +789,18 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
             if self._state == ServerState.RUNNING:
                 return
             elif self._state == ServerState.ERROR:
-                raise RuntimeError("Server failed to start")
+                raise ExceptionTranslator.as_connection_error(
+                    RuntimeError("Server entered ERROR state during startup"),
+                    address=f"0.0.0.0:{self.port}",
+                    message="Gateway server failed to start",
+                )
             time.sleep(0.1)
         
-        raise TimeoutError(f"Server did not start within {timeout} seconds")
+        raise TimeoutError(
+            message=f"Server did not start within {timeout} seconds",
+            timeout_seconds=timeout,
+            operation="server_startup",
+        )
     
     async def _async_serve(self):
         """
@@ -695,7 +848,11 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
         except Exception as e:
             await self._set_state(ServerState.ERROR)
             self.error(f"Server error during startup: {e}", exc_info=True)
-            raise EasyRemoteError(f"Server startup failed: {e}") from e
+            raise ExceptionTranslator.as_connection_error(
+                e,
+                address=f"0.0.0.0:{self.port}",
+                message="Gateway async serve startup failed",
+            ) from e
         finally:
             # Ensure cleanup happens
             await self._async_cleanup()
@@ -1107,14 +1264,15 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
                 try:
                     import json
                     requirements = json.loads(request.requirements) if request.requirements != "{}" else {}
-                except:
+                except Exception:
                     requirements = {}
             
             request_context = RequestContext(
                 function_name=function_name,
                 priority=RequestPriority.NORMAL,
                 requirements=requirements,
-                timeout=request.timeout if request.timeout > 0 else None
+                timeout=request.timeout if request.timeout > 0 else None,
+                custom_tags={"requested_strategy": strategy},
             )
             
             # 🔄 Notify client that request is being processed
@@ -1131,11 +1289,12 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
                         available_nodes.append(node_id)
                 
                 if not available_nodes:
-                    raise NoAvailableNodesError(f"No available nodes for function '{function_name}'")
+                    raise NoAvailableNodesError(
+                        message=f"No available nodes for function '{function_name}'",
+                        function_name=function_name,
+                    )
                 
                 # Use load balancer to select optimal node
-                from ..balancing.strategies import RequestContext
-                request_context = RequestContext(function_name=function_name)
                 selected_node = self._load_balancer.select_node(
                     function_name, 
                     request_context,
@@ -1506,7 +1665,11 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
                                     if isinstance(future_or_context, asyncio.Future):
                                         # Single result
                                         if exec_result.has_error:
-                                            error = RemoteExecutionError(exec_result.error_message)
+                                            error = RemoteExecutionError(
+                                                function_name=exec_result.function_name or "unknown",
+                                                node_id=exec_result.node_id or node_id,
+                                                message=exec_result.error_message,
+                                            )
                                             future_or_context.set_exception(error)
                                             self.error(f"💥 [RECV] Setting exception for call {call_id}")
                                         else:
@@ -1518,7 +1681,13 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
                                                 self.info(f"✅ [RECV] Result deserialized and delivered for call {call_id}")
                                             except Exception as e:
                                                 self.error(f"💥 [RECV] Failed to deserialize result: {e}")
-                                                future_or_context.set_exception(SerializationError(f"Failed to deserialize result: {e}"))
+                                                future_or_context.set_exception(
+                                                    ExceptionTranslator.as_serialization_error(
+                                                        e,
+                                                        operation="deserialize_result",
+                                                        message="Failed to deserialize node result payload",
+                                                    )
+                                                )
                                         
                                         # Clean up
                                         del self._pending_function_calls[call_id]
@@ -1646,6 +1815,78 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
                 # Note: We don't immediately remove the node as it might reconnect
                 # The health monitor will remove it if it doesn't reconnect in time
 
+    async def list_functions(self) -> List[FunctionDescriptor]:
+        """
+        List currently available functions for external protocol adapters.
+        """
+        function_index: Dict[str, FunctionDescriptor] = {}
+
+        async with self._global_lock:
+            for node_id, node_info in self._nodes.items():
+                if not node_info.is_alive():
+                    continue
+
+                for function_name, function_info in node_info.functions.items():
+                    descriptor = function_index.get(function_name)
+                    if descriptor is None:
+                        tags = sorted(list(function_info.tags)) if function_info.tags else []
+                        descriptor = FunctionDescriptor(
+                            name=function_name,
+                            description=str(
+                                function_info.get_context_data("description", "")
+                            ),
+                            node_ids=[node_id],
+                            tags=tags,
+                            metadata={
+                                "function_type": function_info.function_type.value,
+                                "max_concurrent_calls": function_info.max_concurrent_calls,
+                            },
+                        )
+                        function_index[function_name] = descriptor
+                    else:
+                        descriptor.node_ids.append(node_id)
+
+        return [function_index[name] for name in sorted(function_index.keys())]
+
+    async def execute_invocation(self, invocation: FunctionInvocation) -> Any:
+        """
+        Execute a protocol-normalized invocation.
+        """
+        if invocation.load_balancing:
+            return await self.execute_function_with_load_balancing(
+                invocation.function_name,
+                invocation.load_balancing,
+                *invocation.args,
+                **invocation.kwargs
+            )
+
+        return await self.execute_function(
+            invocation.node_id,
+            invocation.function_name,
+            *invocation.args,
+            **invocation.kwargs
+        )
+
+    def register_protocol_adapter(self, adapter: ProtocolAdapter) -> None:
+        """
+        Register a custom protocol adapter at runtime.
+        """
+        self._protocol_gateway.register_adapter(adapter)
+
+    def get_supported_protocols(self) -> List[str]:
+        """
+        Return the list of enabled protocol adapters.
+        """
+        return self._protocol_gateway.supported_protocols()
+
+    async def handle_protocol_request(
+        self, protocol: Union[ProtocolName, str], payload: Any
+    ) -> Any:
+        """
+        Handle a request for a specific external protocol (e.g., MCP/A2A).
+        """
+        return await self._protocol_gateway.handle_request(protocol, payload)
+
     async def execute_function(self, node_id: Optional[str], function_name: str, *args, **kwargs) -> Any:
         """
         Execute a function on a specific node or any available node.
@@ -1668,7 +1909,12 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
         # If no specific node is requested, select any available node
         if node_id is None:
             if not self._nodes:
-                raise NodeNotFoundError("No compute nodes are available")
+                raise NoAvailableNodesError(
+                    message="No compute nodes are available",
+                    function_name=function_name,
+                    total_nodes=0,
+                    healthy_nodes=0,
+                )
             
             # Find a node that has this function
             available_nodes = []
@@ -1678,7 +1924,8 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
             
             if not available_nodes:
                 raise FunctionNotFoundError(
-                    f"Function '{function_name}' not found on any available nodes"
+                    function_name=function_name,
+                    message=f"Function '{function_name}' not found on any available nodes",
                 )
             
             # Select the first available node (could be improved with load balancing)
@@ -1686,29 +1933,54 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
         
         # Check if the requested node exists and is alive
         if node_id not in self._nodes:
-            raise NodeNotFoundError(f"Node '{node_id}' is not available")
+            raise NodeNotFoundError(
+                node_id=node_id,
+                available_nodes=list(self._nodes.keys()),
+                message=f"Node '{node_id}' is not available",
+            )
         
         node_info = self._nodes[node_id]
         if not node_info.is_alive():
-            raise NodeNotFoundError(f"Node '{node_id}' is not responding")
+            raise NodeNotFoundError(
+                node_id=node_id,
+                message=f"Node '{node_id}' is not responding",
+            )
         
         # Check if the function exists on the node
         if function_name not in node_info.functions:
             available_functions = list(node_info.functions.keys())
             raise FunctionNotFoundError(
-                f"Function '{function_name}' not found on node '{node_id}'. "
-                f"Available functions: {available_functions}"
+                function_name=function_name,
+                node_id=node_id,
+                available_functions=available_functions,
+                message=(
+                    f"Function '{function_name}' not found on node '{node_id}'. "
+                    f"Available functions: {available_functions}"
+                ),
             )
         
         try:
             # Execute the function asynchronously
             return await self._async_execute_function(node_id, function_name, args, kwargs)
                 
+        except EasyRemoteError:
+            raise
         except Exception as e:
             self.error(f"Failed to execute function '{function_name}' on node '{node_id}': {e}")
-            raise RemoteExecutionError(f"Function execution failed: {e}") from e
-    
-    async def _async_execute_function(self, node_id: str, function_name: str, args: tuple, kwargs: dict) -> Any:
+            raise ExceptionTranslator.as_remote_execution_error(
+                e,
+                function_name=function_name,
+                node_id=node_id,
+                message=f"Function execution failed on node '{node_id}'",
+            ) from e
+
+    async def _async_execute_function(
+        self,
+        node_id: str,
+        function_name: str,
+        args: Tuple[Any, ...],
+        kwargs: Dict[str, Any],
+    ) -> Any:
         """
         Asynchronously execute a function on a remote node.
         
@@ -1733,9 +2005,9 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
         
         try:
             # Serialize arguments
-            self.info(f"🔄 [SEND] Serializing arguments for transmission...")
+            self.info("🔄 [SEND] Serializing arguments for transmission...")
             serialized_args, serialized_kwargs = self._serializer.serialize_args(*args, **kwargs)
-            self.info(f"✅ [SEND] Arguments serialized successfully")
+            self.info("✅ [SEND] Arguments serialized successfully")
             
             # Create execution request
             exec_request = service_pb2.ExecutionRequest()
@@ -1751,7 +2023,7 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
             self.info(f"📋 [SEND] Created execution request message for node '{node_id}'")
             
             # Create future to wait for result
-            result_future = asyncio.Future()
+            result_future = create_loop_future()
             
             # Store the future for result processing
             async with self._global_lock:
@@ -1768,7 +2040,11 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
                     self.info(f"🎯 [SEND] Node '{node_id}' should now receive and process function '{function_name}'")
                 else:
                     self.error(f"❌ [SEND] FAILED! No communication channel available for node '{node_id}'")
-                    raise RemoteExecutionError(f"No communication channel available for node {node_id}")
+                    raise RemoteExecutionError(
+                        function_name=function_name,
+                        node_id=node_id,
+                        message=f"No communication channel available for node {node_id}",
+                    )
             
             self.info(f"⏳ [WAIT] Waiting for result from node '{node_id}' for call {call_id}...")
             
@@ -1794,8 +2070,14 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
                     self._pending_function_calls.pop(call_id, None)
                 
                 self.error(f"⏰ [WAIT] ❌ TIMEOUT! No response from node '{node_id}' for function '{function_name}' (call {call_id})")
-                raise TimeoutError(f"Function '{function_name}' execution timed out on node '{node_id}'")
+                raise TimeoutError(
+                    message=f"Function '{function_name}' execution timed out on node '{node_id}'",
+                    timeout_seconds=300.0,
+                    operation=f"execute:{function_name}",
+                )
                 
+        except EasyRemoteError:
+            raise
         except Exception as e:
             # Clean up on error
             async with self._global_lock:
@@ -1804,7 +2086,12 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
                     self._nodes[node_id].increment_error_count()
             
             self.error(f"💥 [SEND] ❌ ERROR sending function '{function_name}' to node '{node_id}' (call {call_id}): {e}")
-            raise RemoteExecutionError(f"Function execution failed: {e}") from e
+            raise ExceptionTranslator.as_remote_execution_error(
+                e,
+                function_name=function_name,
+                node_id=node_id,
+                message=f"Function execution dispatch failed on node '{node_id}'",
+            ) from e
     
     async def execute_function_with_load_balancing(self, function_name: str, 
                                            load_balancing_config: Union[bool, str, dict], 
@@ -1835,7 +2122,8 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
         
         if not available_nodes:
             raise FunctionNotFoundError(
-                f"Function '{function_name}' not found on any available nodes"
+                function_name=function_name,
+                message=f"Function '{function_name}' not found on any available nodes",
             )
         
         try:
@@ -1852,20 +2140,39 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
             )
             
             if not selected_node:
-                raise NodeNotFoundError("Load balancer could not select a suitable node")
+                raise NoAvailableNodesError(
+                    message="Load balancer could not select a suitable node",
+                    function_name=function_name,
+                    total_nodes=len(available_nodes),
+                    healthy_nodes=len(available_nodes),
+                )
             
             self.info(f"Load balancer selected node '{selected_node}' for function '{function_name}'")
             
             # Execute on the selected node using the new implementation
             return await self.execute_function(selected_node, function_name, *args, **kwargs)
             
+        except EasyRemoteError:
+            raise
         except Exception as e:
             self.error(f"Load balanced execution failed for function '{function_name}': {e}")
-            raise RemoteExecutionError(f"Load balanced execution failed: {e}") from e
+            raise LoadBalancingError(
+                message=f"Load balanced execution failed for function '{function_name}'",
+                strategy=str(load_balancing_config),
+                available_nodes=len(available_nodes),
+                cause=e,
+            ) from e
     
     async def _async_cleanup(self):
         """Cleanup server resources and background tasks."""
         self.debug("Starting server cleanup")
+
+        if self._state in {ServerState.STARTING, ServerState.RUNNING, ServerState.ERROR}:
+            try:
+                await self._set_state(ServerState.STOPPING)
+            except RuntimeError:
+                # Best effort lifecycle transition during shutdown.
+                pass
         
         # Signal shutdown to all background tasks
         self._shutdown_event.set()
@@ -1885,12 +2192,14 @@ class DistributedComputingGateway(service_pb2_grpc.RemoteServiceServicer, Modern
         if self._grpc_server:
             self.debug("Stopping gRPC server")
             await self._grpc_server.stop(grace=5.0)
+            self._grpc_server = None
         
         # Clear global instance
         with DistributedComputingGateway._instance_lock:
             DistributedComputingGateway._global_instance = None
         
-        await self._set_state(ServerState.STOPPED)
+        if self._state != ServerState.STOPPED:
+            await self._set_state(ServerState.STOPPED)
         self.info("Server cleanup completed")
     
     async def _remove_node_safely(self, node_id: str, reason: str = "unknown"):

@@ -1,4 +1,5 @@
-from typing import Tuple, Dict, Any, Optional, Union, Callable
+import threading
+from typing import Tuple, Dict, Any, Optional, Callable
 from .config import SerializationConfig, SerializationProtocol
 from .backends import SerializationBackend, PickleBackend, JSONBackend
 from .analysis import FunctionAnalysis, analyze_function
@@ -83,7 +84,7 @@ class Serializer(ModernLogger):
             self.error(f"Failed to serialize arguments: {e}")
             raise SerializationError(
                 operation="serialize_args",
-                message=f"Failed to serialize function arguments",
+                message="Failed to serialize function arguments",
                 cause=e
             ) from e
     
@@ -218,26 +219,36 @@ class Serializer(ModernLogger):
         return {"cached_functions": len(self._analysis_cache)}
 
 
+_DEFAULT_SERIALIZER: Optional[Serializer] = None
+_DEFAULT_SERIALIZER_LOCK = threading.Lock()
+
+
+def _get_default_serializer() -> Serializer:
+    """Get a lazily initialized process-wide serializer instance."""
+    global _DEFAULT_SERIALIZER
+    if _DEFAULT_SERIALIZER is None:
+        with _DEFAULT_SERIALIZER_LOCK:
+            if _DEFAULT_SERIALIZER is None:
+                _DEFAULT_SERIALIZER = Serializer()
+    return _DEFAULT_SERIALIZER
+
+
 # Convenience functions for backward compatibility
 def serialize_result(result: Any) -> bytes:
     """Serialize function execution result using default serializer."""
-    default_serializer = Serializer()
-    return default_serializer.serialize_result(result)
+    return _get_default_serializer().serialize_result(result)
 
 
 def deserialize_result(result_bytes: bytes) -> Any:
     """Deserialize function execution result using default serializer."""
-    default_serializer = Serializer()
-    return default_serializer.deserialize_result(result_bytes)
+    return _get_default_serializer().deserialize_result(result_bytes)
 
 
 def serialize_args(*args, **kwargs) -> Tuple[bytes, bytes]:
     """Serialize function arguments using default serializer."""
-    default_serializer = Serializer()
-    return default_serializer.serialize_args(*args, **kwargs)
+    return _get_default_serializer().serialize_args(*args, **kwargs)
 
 
 def deserialize_args(args_bytes: bytes, kwargs_bytes: bytes) -> Tuple[tuple, dict]:
     """Deserialize function arguments using default serializer."""
-    default_serializer = Serializer()
-    return default_serializer.deserialize_args(args_bytes, kwargs_bytes)
+    return _get_default_serializer().deserialize_args(args_bytes, kwargs_bytes)

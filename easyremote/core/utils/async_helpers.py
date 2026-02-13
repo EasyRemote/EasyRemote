@@ -56,7 +56,7 @@ Usage Example:
     >>> async with ManagedEventLoop() as loop_manager:
     ...     result = await loop_manager.execute(my_coroutine())
 
-Author: Silan Hu
+Author: Silan Hu (silan.hu@u.nus.edu)
 Version: 2.0.0
 """
 
@@ -64,16 +64,13 @@ import asyncio
 import threading
 import logging
 import time
-import weakref
 from typing import (
-    Coroutine, Any, Optional, Callable, Dict, List, Set, Union, 
-    TypeVar, Generic, Awaitable, ContextManager
+    Coroutine, Any, Optional, Callable, Dict, Set, TypeVar
 )
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from concurrent.futures import ThreadPoolExecutor, Future, TimeoutError as FutureTimeoutError
-from contextlib import asynccontextmanager, contextmanager
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 from .logger import ModernLogger
 
@@ -200,6 +197,9 @@ class AsyncExecutionHelper(ModernLogger):
         self._active_tasks: Dict[str, asyncio.Task] = {}
         self._task_results: Dict[str, AsyncTaskResult] = {}
         self._task_counter = 0
+        self._counter_lock = threading.Lock()
+        self._results_lock = threading.Lock()
+        self._stats_lock = threading.Lock()
         
         # Thread pool for sync operations
         self._thread_pool: Optional[ThreadPoolExecutor] = None
@@ -343,7 +343,8 @@ class AsyncExecutionHelper(ModernLogger):
         finally:
             # Store task result for metrics
             if self.enable_metrics:
-                self._task_results[task_id] = task_result
+                with self._results_lock:
+                    self._task_results[task_id] = task_result
     
     def _select_execution_strategy(self) -> ExecutionStrategy:
         """Select the most appropriate execution strategy for current context."""
@@ -527,7 +528,8 @@ class AsyncExecutionHelper(ModernLogger):
             finally:
                 # Store task result
                 if self.enable_metrics:
-                    self._task_results[task_id] = task_result
+                    with self._results_lock:
+                        self._task_results[task_id] = task_result
         
         thread = threading.Thread(target=run_background_task, daemon=daemon)
         thread.start()
@@ -556,7 +558,7 @@ class AsyncExecutionHelper(ModernLogger):
             ...     result = await helper.run_in_executor(time.sleep, 1)
             ...     return "completed"
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         
         if kwargs:
             import functools
@@ -567,38 +569,44 @@ class AsyncExecutionHelper(ModernLogger):
     
     def _generate_task_id(self) -> str:
         """Generate unique task ID."""
-        self._task_counter += 1
-        return f"task_{self._task_counter}_{int(time.time() * 1000)}"
+        with self._counter_lock:
+            self._task_counter += 1
+            counter = self._task_counter
+        return f"task_{counter}_{int(time.time() * 1000)}"
     
     def _record_execution_metrics(self, execution_time_ms: float, success: bool):
         """Record execution metrics for performance monitoring."""
         if not self.enable_metrics:
             return
-        
-        self._execution_stats["total_executions"] += 1
-        self._execution_stats["total_execution_time_ms"] += execution_time_ms
-        
-        if success:
-            self._execution_stats["successful_executions"] += 1
-        else:
-            self._execution_stats["failed_executions"] += 1
-        
-        # Update average execution time
-        self._execution_stats["average_execution_time_ms"] = (
-            self._execution_stats["total_execution_time_ms"] / 
-            self._execution_stats["total_executions"]
-        )
+
+        with self._stats_lock:
+            self._execution_stats["total_executions"] += 1
+            self._execution_stats["total_execution_time_ms"] += execution_time_ms
+
+            if success:
+                self._execution_stats["successful_executions"] += 1
+            else:
+                self._execution_stats["failed_executions"] += 1
+
+            # Update average execution time
+            self._execution_stats["average_execution_time_ms"] = (
+                self._execution_stats["total_execution_time_ms"] /
+                self._execution_stats["total_executions"]
+            )
     
     def get_execution_stats(self) -> Dict[str, Any]:
         """Get execution statistics and metrics."""
-        stats = dict(self._execution_stats)
+        with self._stats_lock:
+            stats = dict(self._execution_stats)
+        with self._results_lock:
+            completed_tasks = len(self._task_results)
         stats.update({
             "success_rate": (
-                self._execution_stats["successful_executions"] / 
-                max(self._execution_stats["total_executions"], 1)
+                stats["successful_executions"] /
+                max(stats["total_executions"], 1)
             ),
             "active_tasks": len(self._active_tasks),
-            "completed_tasks": len(self._task_results),
+            "completed_tasks": completed_tasks,
             "thread_pool_active": self._thread_pool is not None
         })
         return stats
@@ -612,6 +620,8 @@ class AsyncExecutionHelper(ModernLogger):
         
         # Clear task tracking
         self._active_tasks.clear()
+        with self._results_lock:
+            self._task_results.clear()
         
         self.debug("AsyncExecutionHelper cleanup completed")
     
@@ -619,7 +629,7 @@ class AsyncExecutionHelper(ModernLogger):
         """Ensure cleanup on object destruction."""
         try:
             self.cleanup()
-        except:
+        except Exception:
             pass
 
 

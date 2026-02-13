@@ -64,7 +64,7 @@ Usage Example:
     ...         data=training_data
     ...     )
 
-Author: Silan Hu
+Author: Silan Hu (silan.hu@u.nus.edu)
 Version: 2.0.0
 """
 
@@ -73,7 +73,7 @@ import time
 import uuid
 import threading
 from typing import (
-    Optional, Dict, Any, List, TypeVar, Generic, Tuple
+    Optional, Dict, Any, List, TypeVar, Generic, Tuple, Set
 )
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -87,7 +87,8 @@ from ..utils.exceptions import (
     EasyRemoteError,
     NoAvailableNodesError,
     TimeoutError,
-    SerializationError
+    SerializationError,
+    ExceptionTranslator,
 )
 from ..data.serialize import serialize_args, deserialize_result
 from ..protos import service_pb2, service_pb2_grpc
@@ -145,7 +146,7 @@ class RetryPolicy:
     circuit_breaker_timeout_ms: float = 60000.0  # Circuit open duration
     
     # Retry conditions
-    retryable_status_codes: set = field(default_factory=lambda: {
+    retryable_status_codes: Set[grpc.StatusCode] = field(default_factory=lambda: {
         grpc.StatusCode.UNAVAILABLE,
         grpc.StatusCode.DEADLINE_EXCEEDED,
         grpc.StatusCode.RESOURCE_EXHAUSTED,
@@ -795,8 +796,9 @@ class DistributedComputingClient(ModernLogger):
             >>> result = client.execute_with_context(context, training_data)
         """
         if not self._circuit_breaker.can_execute():
-            raise EasyRemoteError(
-                f"Circuit breaker is open for gateway {self.gateway_address}"
+            raise EasyRemoteConnectionError(
+                message=f"Circuit breaker is open for gateway {self.gateway_address}",
+                address=self.gateway_address,
             )
         
         # Ensure connection
@@ -832,7 +834,10 @@ class DistributedComputingClient(ModernLogger):
                 elif context.strategy == ExecutionStrategy.DIRECT_TARGET:
                     result = self._execute_direct_target(context, args, kwargs)
                 else:
-                    raise EasyRemoteError(f"Unsupported execution strategy: {context.strategy}")
+                    raise RemoteExecutionError(
+                        function_name=context.function_name,
+                        message=f"Unsupported execution strategy: {context.strategy}",
+                    )
                 
                 # Record successful execution
                 execution_time = (time.time() - start_time) * 1000
@@ -877,15 +882,22 @@ class DistributedComputingClient(ModernLogger):
         self._circuit_breaker.record_failure()
         self._connection_metrics["failed_requests"] += 1
         
-        raise EasyRemoteError(
-            f"Function '{context.function_name}' failed after {self.retry_policy.max_attempts} attempts",
-            cause=last_exception
+        if isinstance(last_exception, EasyRemoteError):
+            raise last_exception
+
+        raise ExceptionTranslator.as_remote_execution_error(
+            last_exception or Exception("Unknown execution failure"),
+            function_name=context.function_name,
+            message=(
+                f"Function '{context.function_name}' failed after "
+                f"{self.retry_policy.max_attempts} attempts"
+            ),
         )
     
     def _execute_load_balanced(self, 
                               context: ExecutionContext, 
-                              args: tuple, 
-                              kwargs: dict) -> ExecutionResult:
+                              args: Tuple[Any, ...], 
+                              kwargs: Dict[str, Any]) -> ExecutionResult[Any]:
         """Execute function using intelligent load balancing."""
         call_id = str(uuid.uuid4())
         
@@ -898,7 +910,11 @@ class DistributedComputingClient(ModernLogger):
             self.debug(f"📦 [CLIENT] Arguments serialized for '{context.function_name}'")
         except Exception as e:
             self.error(f"❌ [CLIENT] Failed to serialize arguments: {e}")
-            raise SerializationError(f"Failed to serialize arguments: {e}", cause=e)
+            raise SerializationError(
+                operation="serialize_args",
+                message="Failed to serialize arguments for load-balanced request",
+                cause=e,
+            )
         
         # Create load balanced call request
         request = service_pb2.LoadBalancedCallRequest(
@@ -951,7 +967,8 @@ class DistributedComputingClient(ModernLogger):
             if e.code() == grpc.StatusCode.NOT_FOUND:
                 self.error(f"❌ [CLIENT] No nodes available for function '{context.function_name}'")
                 raise NoAvailableNodesError(
-                    f"No nodes available for function '{context.function_name}'"
+                    message=f"No nodes available for function '{context.function_name}'",
+                    function_name=context.function_name,
                 )
             self.error(f"💥 [CLIENT] gRPC error during call: {e}")
             raise EasyRemoteConnectionError(
@@ -961,18 +978,26 @@ class DistributedComputingClient(ModernLogger):
     
     def _execute_direct_target(self, 
                               context: ExecutionContext, 
-                              args: tuple, 
-                              kwargs: dict) -> ExecutionResult:
+                              args: Tuple[Any, ...], 
+                              kwargs: Dict[str, Any]) -> ExecutionResult[Any]:
         """Execute function on specific target node."""
         if not context.preferred_node_ids:
-            raise EasyRemoteError("Direct target strategy requires preferred_node_ids")
+            raise NoAvailableNodesError(
+                message="Direct target strategy requires preferred_node_ids",
+                function_name=context.function_name,
+                requirements={"preferred_node_ids": "required"},
+            )
         
         node_id = context.preferred_node_ids[0]  # Use first preferred node
         
         try:
             args_bytes, kwargs_bytes = serialize_args(*args, **kwargs)
         except Exception as e:
-            raise SerializationError(f"Failed to serialize arguments: {e}", cause=e)
+            raise SerializationError(
+                operation="serialize_args",
+                message="Failed to serialize arguments for direct target request",
+                cause=e,
+            )
         
         request = service_pb2.DirectCallRequest(
             call_id=str(uuid.uuid4()),
@@ -1021,7 +1046,6 @@ class DistributedComputingClient(ModernLogger):
         return isinstance(exception, (
             EasyRemoteConnectionError,
             TimeoutError,
-            ConnectionError
         ))
     
     def _generate_cache_key(self, function_name: str, args: tuple, kwargs: dict) -> str:
@@ -1166,7 +1190,7 @@ class DistributedComputingClient(ModernLogger):
             
         except grpc.RpcError as e:
             if e.code() == grpc.StatusCode.NOT_FOUND:
-                raise NoAvailableNodesError(f"Node '{node_id}' not found")
+                raise NoAvailableNodesError(message=f"Node '{node_id}' not found")
             raise EasyRemoteConnectionError(
                 message=f"Failed to get node status: {e}",
                 cause=e
@@ -1236,7 +1260,7 @@ class DistributedComputingClient(ModernLogger):
         """Cleanup resources on object destruction."""
         try:
             self.disconnect()
-        except:
+        except Exception:
             pass
 
 
@@ -1398,8 +1422,8 @@ def call(function_name: str, *args, **kwargs) -> Any:
         EasyRemoteError: If no default client is set
     """
     if _default_client is None:
-        raise EasyRemoteError(
-            "No default gateway configured. Call set_default_gateway() first."
+        raise EasyRemoteConnectionError(
+            message="No default gateway configured. Call set_default_gateway() first."
         )
     return _default_client.execute(function_name, *args, **kwargs)
 
@@ -1421,8 +1445,8 @@ def call_node(node_id: str, function_name: str, *args, **kwargs) -> Any:
         EasyRemoteError: If no default client is set
     """
     if _default_client is None:
-        raise EasyRemoteError(
-            "No default gateway configured. Call set_default_gateway() first."
+        raise EasyRemoteConnectionError(
+            message="No default gateway configured. Call set_default_gateway() first."
         )
     
     context = ExecutionContext(
@@ -1446,8 +1470,8 @@ def list_nodes() -> List[Dict[str, Any]]:
         EasyRemoteError: If no default client is set
     """
     if _default_client is None:
-        raise EasyRemoteError(
-            "No default gateway configured. Call set_default_gateway() first."
+        raise EasyRemoteConnectionError(
+            message="No default gateway configured. Call set_default_gateway() first."
         )
     return _default_client.list_nodes()
 

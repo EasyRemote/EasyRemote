@@ -30,6 +30,8 @@ class ErrorCategory(Enum):
     DATA = "data"
     EXECUTION = "execution"
     CONFIGURATION = "configuration"
+    CONCURRENCY = "concurrency"
+    PROTOCOL = "protocol"
 
 
 @dataclass
@@ -110,6 +112,16 @@ class ErrorCodeRegistry:
             'code': 'E006',
             'severity': ErrorSeverity.HIGH,
             'category': ErrorCategory.SYSTEM
+        },
+        'ConcurrencyBoundaryError': {
+            'code': 'E007',
+            'severity': ErrorSeverity.HIGH,
+            'category': ErrorCategory.CONCURRENCY
+        },
+        'ProtocolHandlingError': {
+            'code': 'E008',
+            'severity': ErrorSeverity.MEDIUM,
+            'category': ErrorCategory.PROTOCOL
         }
     }
     
@@ -636,6 +648,134 @@ class TimeoutError(EasyRemoteError):
             self.info(f"    ↳ [cyan]Timeout[/cyan]: {timeout_seconds}s")
         if operation:
             self.info(f"    ↳ [cyan]Operation[/cyan]: {operation}")
+
+
+class ConcurrencyBoundaryError(EasyRemoteError):
+    """
+    Exception raised when async/thread concurrency boundaries are violated.
+
+    Typical causes:
+    - Accessing an event-loop-bound resource from another loop
+    - Attempting cross-loop reuse of lock/future objects
+    """
+
+    def __init__(
+        self,
+        message: str,
+        resource_name: Optional[str] = None,
+        bound_loop_id: Optional[str] = None,
+        current_loop_id: Optional[str] = None,
+        cause: Optional[Exception] = None,
+    ):
+        additional_data: Dict[str, Any] = {}
+        if resource_name:
+            additional_data["resource_name"] = resource_name
+        if bound_loop_id:
+            additional_data["bound_loop_id"] = bound_loop_id
+        if current_loop_id:
+            additional_data["current_loop_id"] = current_loop_id
+
+        super().__init__(message, cause=cause, additional_data=additional_data)
+
+
+class ProtocolHandlingError(EasyRemoteError):
+    """
+    Exception raised for protocol parsing/handling failures.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        protocol: Optional[str] = None,
+        method: Optional[str] = None,
+        cause: Optional[Exception] = None,
+    ):
+        additional_data: Dict[str, Any] = {}
+        if protocol:
+            additional_data["protocol"] = protocol
+        if method:
+            additional_data["method"] = method
+        super().__init__(message, cause=cause, additional_data=additional_data)
+
+
+class ExceptionTranslator:
+    """
+    Translate generic exceptions into layered EasyRemote exceptions.
+    """
+
+    @staticmethod
+    def as_serialization_error(
+        exc: Exception,
+        operation: str,
+        message: Optional[str] = None,
+    ) -> SerializationError:
+        if isinstance(exc, SerializationError):
+            return exc
+        return SerializationError(
+            operation=operation,
+            message=message or f"Serialization failure during {operation}: {exc}",
+            cause=exc,
+        )
+
+    @staticmethod
+    def as_remote_execution_error(
+        exc: Exception,
+        function_name: str,
+        node_id: Optional[str] = None,
+        message: Optional[str] = None,
+    ) -> RemoteExecutionError:
+        if isinstance(exc, RemoteExecutionError):
+            return exc
+        return RemoteExecutionError(
+            function_name=function_name,
+            node_id=node_id,
+            message=message or f"Remote execution failed: {exc}",
+            cause=exc,
+        )
+
+    @staticmethod
+    def as_load_balancing_error(
+        exc: Exception,
+        strategy: Optional[str] = None,
+        message: Optional[str] = None,
+    ) -> LoadBalancingError:
+        if isinstance(exc, LoadBalancingError):
+            return exc
+        return LoadBalancingError(
+            message=message or f"Load balancing failed: {exc}",
+            strategy=strategy,
+            cause=exc,
+        )
+
+    @staticmethod
+    def as_connection_error(
+        exc: Exception,
+        address: Optional[str] = None,
+        message: Optional[str] = None,
+    ) -> ConnectionError:
+        if isinstance(exc, ConnectionError):
+            return exc
+        return ConnectionError(
+            message=message or f"Connection failure: {exc}",
+            address=address,
+            cause=exc,
+        )
+
+    @staticmethod
+    def as_protocol_error(
+        exc: Exception,
+        protocol: Optional[str] = None,
+        method: Optional[str] = None,
+        message: Optional[str] = None,
+    ) -> ProtocolHandlingError:
+        if isinstance(exc, ProtocolHandlingError):
+            return exc
+        return ProtocolHandlingError(
+            message=message or f"Protocol handling failed: {exc}",
+            protocol=protocol,
+            method=method,
+            cause=exc,
+        )
 
 
 class ExceptionFormatter:
