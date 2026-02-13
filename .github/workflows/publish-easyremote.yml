@@ -49,7 +49,7 @@ jobs:
         run: uv sync --frozen
 
       - name: Lint
-        run: uv run ruff check easyremote tests gallery examples --output-format=full
+        run: uvx ruff check easyremote tests gallery examples --output-format=full
 
       - name: Test
         run: uv run pytest -q
