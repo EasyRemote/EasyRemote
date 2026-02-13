@@ -1510,7 +1510,7 @@ class DistributedComputingGateway(
         Client->Gateway:
         - start: initialize one stream call
         - cancel: cancel active stream forwarding
-        - ack: reserved for future flow-control extension
+        - ack: credit-based flow-control window (backpressure)
 
         Gateway->Client:
         - exec_res: stream output chunks and done marker
