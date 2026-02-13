@@ -69,11 +69,12 @@ Version: 2.0.0
 """
 
 import grpc
+import queue
 import time
 import uuid
 import threading
 from typing import (
-    Optional, Dict, Any, List, TypeVar, Generic, Tuple, Set
+    Optional, Dict, Any, List, TypeVar, Generic, Tuple, Set, Iterator, Iterable
 )
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -431,6 +432,69 @@ class ClientSession(ModernLogger):
         
         self._operations_count += 1
         return self._client.execute_with_context(context, *args, **kwargs)
+
+    def execute_on_node(
+        self,
+        node_id: str,
+        function_name: str,
+        *args,
+        timeout_ms: Optional[float] = None,
+        **kwargs,
+    ) -> Any:
+        """Execute function on a specific node with session context."""
+        if not self._active:
+            raise RuntimeError("Session is closed")
+
+        self._operations_count += 1
+        return self._client.execute_on_node(
+            node_id,
+            function_name,
+            *args,
+            timeout_ms=timeout_ms,
+            **kwargs,
+        )
+
+    def stream(self, function_name: str, *args, **kwargs) -> Iterator[Any]:
+        """Stream function output with session context."""
+        if not self._active:
+            raise RuntimeError("Session is closed")
+
+        self._operations_count += 1
+        return self._client.stream(function_name, *args, **kwargs)
+
+    def stream_with_context(
+        self,
+        context: ExecutionContext,
+        *args,
+        **kwargs,
+    ) -> Iterator[Any]:
+        """Stream function output with custom execution context."""
+        if not self._active:
+            raise RuntimeError("Session is closed")
+
+        self._operations_count += 1
+        return self._client.stream_with_context(context, *args, **kwargs)
+
+    def stream_on_node(
+        self,
+        node_id: str,
+        function_name: str,
+        *args,
+        timeout_ms: Optional[float] = None,
+        **kwargs,
+    ) -> Iterator[Any]:
+        """Stream function output from a specific node with session context."""
+        if not self._active:
+            raise RuntimeError("Session is closed")
+
+        self._operations_count += 1
+        return self._client.stream_on_node(
+            node_id,
+            function_name,
+            *args,
+            timeout_ms=timeout_ms,
+            **kwargs,
+        )
     
     def close(self):
         """Close the session and cleanup resources."""
@@ -764,6 +828,31 @@ class DistributedComputingClient(ModernLogger):
         
         execution_result = self.execute_with_context(context, *args, **kwargs)
         return execution_result.result
+
+    def execute_on_node(
+        self,
+        node_id: str,
+        function_name: str,
+        *args,
+        timeout_ms: Optional[float] = None,
+        **kwargs,
+    ) -> Any:
+        """
+        Execute function on a specific compute node.
+        """
+        target_node_id = str(node_id).strip()
+        if not target_node_id:
+            raise ValueError("node_id cannot be empty")
+
+        context = ExecutionContext(
+            function_name=function_name,
+            strategy=ExecutionStrategy.DIRECT_TARGET,
+            preferred_node_ids=[target_node_id],
+            timeout_ms=timeout_ms,
+            enable_caching=False,
+        )
+        execution_result = self.execute_with_context(context, *args, **kwargs)
+        return execution_result.result
     
     def execute_with_context(self, 
                            context: ExecutionContext, 
@@ -893,6 +982,203 @@ class DistributedComputingClient(ModernLogger):
                 f"{self.retry_policy.max_attempts} attempts"
             ),
         )
+
+    def stream(self, function_name: str, *args, **kwargs) -> Iterator[Any]:
+        """
+        Stream remote function output using load-balanced routing.
+        """
+        context = ExecutionContext(
+            function_name=function_name,
+            strategy=ExecutionStrategy.LOAD_BALANCED,
+            enable_caching=False,
+        )
+        return self.stream_with_context(context, *args, **kwargs)
+
+    def stream_on_node(
+        self,
+        node_id: str,
+        function_name: str,
+        *args,
+        timeout_ms: Optional[float] = None,
+        **kwargs,
+    ) -> Iterator[Any]:
+        """
+        Stream remote function output from a specific node.
+        """
+        target_node_id = str(node_id).strip()
+        if not target_node_id:
+            raise ValueError("node_id cannot be empty")
+
+        context = ExecutionContext(
+            function_name=function_name,
+            strategy=ExecutionStrategy.DIRECT_TARGET,
+            preferred_node_ids=[target_node_id],
+            timeout_ms=timeout_ms,
+            enable_caching=False,
+        )
+        return self.stream_with_context(context, *args, **kwargs)
+
+    def stream_with_context(
+        self,
+        context: ExecutionContext,
+        *args,
+        cancel_event: Optional[threading.Event] = None,
+        initial_credits: int = 32,
+        **kwargs,
+    ) -> Iterator[Any]:
+        """
+        Stream remote function output through bidirectional StreamCall RPC.
+        """
+        if self._connection_state != ConnectionState.CONNECTED:
+            self.connect()
+
+        call_id = str(uuid.uuid4())
+
+        try:
+            args_bytes, kwargs_bytes = serialize_args(*args, **kwargs)
+        except Exception as e:
+            raise SerializationError(
+                operation="serialize_args",
+                message="Failed to serialize arguments for stream request",
+                cause=e,
+            )
+
+        request_timeout_seconds = (context.timeout_ms or self.request_timeout_ms) / 1000.0
+        outgoing_control: "queue.Queue[Optional[Any]]" = queue.Queue()
+        cancelled = threading.Event()
+
+        def request_iterator():
+            start_frame = service_pb2.StreamCallFrame()
+            start_frame.start.call_id = call_id
+            start_frame.start.function_name = context.function_name
+            start_frame.start.args = args_bytes
+            start_frame.start.kwargs = kwargs_bytes
+
+            if context.strategy == ExecutionStrategy.DIRECT_TARGET:
+                if not context.preferred_node_ids:
+                    raise NoAvailableNodesError(
+                        message="Direct stream strategy requires preferred_node_ids",
+                        function_name=context.function_name,
+                        requirements={"preferred_node_ids": "required"},
+                    )
+                start_frame.start.node_id = context.preferred_node_ids[0]
+                start_frame.start.use_load_balancing = False
+            else:
+                start_frame.start.use_load_balancing = True
+                start_frame.start.load_balancing_strategy = context.strategy.value
+
+            yield start_frame
+
+            credits = max(0, min(int(initial_credits), 1024))
+            if credits:
+                ack_frame = service_pb2.StreamCallFrame()
+                ack_frame.ack.call_id = call_id
+                ack_frame.ack.credits = credits
+                yield ack_frame
+
+            while True:
+                frame = outgoing_control.get()
+                if frame is None:
+                    break
+                yield frame
+
+        response_stream = self._gateway_stub.StreamCall(
+            request_iterator(),
+            timeout=request_timeout_seconds,
+        )
+
+        if cancel_event is not None:
+
+            def _watch_cancel() -> None:
+                cancel_event.wait()
+                if cancelled.is_set():
+                    return
+                try:
+                    cancel_frame = service_pb2.StreamCallFrame()
+                    cancel_frame.cancel.call_id = call_id
+                    cancel_frame.cancel.reason = "client_cancel_requested"
+                    outgoing_control.put(cancel_frame)
+                    cancelled.set()
+                    outgoing_control.put(None)
+                except Exception:
+                    pass
+
+                cancel_rpc = getattr(response_stream, "cancel", None)
+                if callable(cancel_rpc):
+                    try:
+                        cancel_rpc()
+                    except Exception:
+                        pass
+
+            threading.Thread(
+                target=_watch_cancel,
+                name=f"EasyRemoteStreamCancel-{call_id}",
+                daemon=True,
+            ).start()
+
+        try:
+            for frame in response_stream:
+                if frame.HasField("error"):
+                    raise RemoteExecutionError(
+                        function_name=context.function_name,
+                        node_id=frame.error.node_id or None,
+                        message=frame.error.message or "Stream call failed",
+                    )
+
+                if not frame.HasField("exec_res"):
+                    continue
+
+                exec_result = frame.exec_res
+                if exec_result.has_error:
+                    raise RemoteExecutionError(
+                        function_name=exec_result.function_name or context.function_name,
+                        node_id=exec_result.node_id or None,
+                        message=exec_result.error_message,
+                    )
+
+                if exec_result.is_done:
+                    break
+
+                payload = exec_result.chunk or exec_result.result
+                if not payload:
+                    continue
+
+                try:
+                    item = deserialize_result(payload)
+                    yield item
+                    if not cancelled.is_set():
+                        ack_frame = service_pb2.StreamCallFrame()
+                        ack_frame.ack.call_id = call_id
+                        ack_frame.ack.credits = 1
+                        outgoing_control.put(ack_frame)
+                except Exception as exc:
+                    raise SerializationError(
+                        operation="deserialize_result",
+                        message="Failed to deserialize stream payload",
+                        cause=exc,
+                    ) from exc
+        except grpc.RpcError as e:
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            raise EasyRemoteConnectionError(
+                message=f"gRPC stream call failed: {e}",
+                cause=e,
+            )
+        finally:
+            if not cancelled.is_set():
+                cancel_frame = service_pb2.StreamCallFrame()
+                cancel_frame.cancel.call_id = call_id
+                cancel_frame.cancel.reason = "client_stream_closed"
+                outgoing_control.put(cancel_frame)
+                cancelled.set()
+            outgoing_control.put(None)
+
+            cancel = getattr(response_stream, "cancel", None)
+            if callable(cancel):
+                try:
+                    cancel()
+                except Exception:
+                    pass
     
     def _execute_load_balanced(self, 
                               context: ExecutionContext, 
@@ -902,8 +1188,8 @@ class DistributedComputingClient(ModernLogger):
         call_id = str(uuid.uuid4())
         
         try:
-            # 📤 Enhanced client logging
-            self.debug(f"📤 [CLIENT] Preparing to call function '{context.function_name}' (call_id: {call_id})")
+            #  Enhanced client logging
+            self.debug(f" [CLIENT] Preparing to call function '{context.function_name}' (call_id: {call_id})")
             
             # Serialize arguments
             args_bytes, kwargs_bytes = serialize_args(*args, **kwargs)
@@ -928,7 +1214,7 @@ class DistributedComputingClient(ModernLogger):
         )
         
         try:
-            self.debug(f"🚀 [CLIENT] Sending request to gateway for '{context.function_name}'...")
+            self.debug(f" [CLIENT] Sending request to gateway for '{context.function_name}'...")
             
             start_time = time.time()
             response = self._gateway_stub.CallWithLoadBalancing(
@@ -1137,11 +1423,13 @@ class DistributedComputingClient(ModernLogger):
             for node_info in response.nodes:
                 nodes.append({
                     "node_id": node_info.node_id,
-                    "functions": list(node_info.functions),
+                    "functions": [item.name for item in node_info.functions],
                     "status": node_info.status,
                     "last_heartbeat": node_info.last_heartbeat,
                     "current_load": node_info.current_load,
-                    "capabilities": getattr(node_info, 'capabilities', {})
+                    "capabilities": list(getattr(node_info, "capabilities", [])),
+                    "location": getattr(node_info, "location", ""),
+                    "version": getattr(node_info, "version", ""),
                 })
             
             return nodes
@@ -1151,6 +1439,64 @@ class DistributedComputingClient(ModernLogger):
                 message=f"Failed to list nodes: {e}",
                 cause=e
             )
+
+    def find_nodes(
+        self,
+        *,
+        required_capabilities: Optional[Iterable[str]] = None,
+        required_functions: Optional[Iterable[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Find nodes matching required capabilities/functions.
+        """
+        capability_set = {
+            str(item).strip()
+            for item in (required_capabilities or [])
+            if str(item).strip()
+        }
+        function_set = {
+            str(item).strip()
+            for item in (required_functions or [])
+            if str(item).strip()
+        }
+
+        candidates = self.list_nodes()
+        matched: List[Dict[str, Any]] = []
+        for node in candidates:
+            node_capabilities = set(node.get("capabilities", []))
+            node_functions = set(node.get("functions", []))
+            if capability_set and not capability_set.issubset(node_capabilities):
+                continue
+            if function_set and not function_set.issubset(node_functions):
+                continue
+            matched.append(node)
+        return matched
+
+    def resolve_node_id(
+        self,
+        *,
+        required_capabilities: Optional[Iterable[str]] = None,
+        required_functions: Optional[Iterable[str]] = None,
+    ) -> str:
+        """
+        Resolve exactly one node id by required capability/function filters.
+        """
+        matches = self.find_nodes(
+            required_capabilities=required_capabilities,
+            required_functions=required_functions,
+        )
+        if not matches:
+            raise NoAvailableNodesError(
+                message="No nodes match required capability/function filters",
+            )
+        if len(matches) > 1:
+            candidate_ids = sorted(item["node_id"] for item in matches)
+            raise NoAvailableNodesError(
+                message=(
+                    "Multiple nodes match filters; refine selector. matches={0}"
+                ).format(candidate_ids)
+            )
+        return str(matches[0]["node_id"])
     
     def get_node_status(self, node_id: str) -> Dict[str, Any]:
         """
@@ -1448,15 +1794,7 @@ def call_node(node_id: str, function_name: str, *args, **kwargs) -> Any:
         raise EasyRemoteConnectionError(
             message="No default gateway configured. Call set_default_gateway() first."
         )
-    
-    context = ExecutionContext(
-        function_name=function_name,
-        strategy=ExecutionStrategy.DIRECT_TARGET,
-        preferred_node_ids=[node_id]
-    )
-    
-    result = _default_client.execute_with_context(context, *args, **kwargs)
-    return result.result
+    return _default_client.execute_on_node(node_id, function_name, *args, **kwargs)
 
 
 def list_nodes() -> List[Dict[str, Any]]:
@@ -1474,6 +1812,28 @@ def list_nodes() -> List[Dict[str, Any]]:
             message="No default gateway configured. Call set_default_gateway() first."
         )
     return _default_client.list_nodes()
+
+
+def call_stream(function_name: str, *args, **kwargs) -> Iterator[Any]:
+    """
+    Stream function output using the default client.
+    """
+    if _default_client is None:
+        raise EasyRemoteConnectionError(
+            message="No default gateway configured. Call set_default_gateway() first."
+        )
+    return _default_client.stream(function_name, *args, **kwargs)
+
+
+def call_stream_node(node_id: str, function_name: str, *args, **kwargs) -> Iterator[Any]:
+    """
+    Stream function output from a specific node using the default client.
+    """
+    if _default_client is None:
+        raise EasyRemoteConnectionError(
+            message="No default gateway configured. Call set_default_gateway() first."
+        )
+    return _default_client.stream_on_node(node_id, function_name, *args, **kwargs)
 
 
 # Backward compatibility aliases
@@ -1500,6 +1860,8 @@ __all__ = [
     'get_default_client',
     'call',
     'call_node', 
+    'call_stream',
+    'call_stream_node',
     'list_nodes',
     
     # Backward compatibility

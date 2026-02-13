@@ -106,6 +106,42 @@ message DirectCallResponse {
     bytes result = 3;
 }
 
+message StreamCallStart {
+    string call_id = 1;
+    string function_name = 2;
+    string node_id = 3;
+    bytes args = 4;
+    bytes kwargs = 5;
+    bool use_load_balancing = 6;
+    string load_balancing_strategy = 7;
+}
+
+message StreamCallCancel {
+    string call_id = 1;
+    string reason = 2;
+}
+
+message StreamCallAck {
+    string call_id = 1;
+    int32 credits = 2;
+}
+
+message StreamCallError {
+    string call_id = 1;
+    string message = 2;
+    string node_id = 3;
+}
+
+message StreamCallFrame {
+    oneof payload {
+        StreamCallStart start = 1;
+        StreamCallCancel cancel = 2;
+        StreamCallAck ack = 3;
+        ExecutionResult exec_res = 4;
+        StreamCallError error = 5;
+    }
+}
+
 // List nodes request message
 message ListNodesRequest {
     string client_id = 1;
@@ -158,6 +194,9 @@ service RemoteService {
     
     // Direct node execution
     rpc CallDirect(DirectCallRequest) returns (DirectCallResponse);
+
+    // Bidirectional client streaming execution
+    rpc StreamCall(stream StreamCallFrame) returns (stream StreamCallFrame);
     
     // Node management
     rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
