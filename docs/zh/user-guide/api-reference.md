@@ -277,7 +277,7 @@ info = client.get_function_info("add_numbers")
 - `is_connected` (bool): 连接状态
 - `server_address` (str): 服务器地址
 
-## 🔧 工具函数
+## 工具函数
 
 ### 健康检查
 
@@ -298,7 +298,7 @@ from easyremote.utils import setup_logging
 setup_logging(level="INFO")  # DEBUG, INFO, WARNING, ERROR
 ```
 
-## 🎯 使用模式
+##  使用模式
 
 ### 基本模式
 

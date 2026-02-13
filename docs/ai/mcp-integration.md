@@ -37,6 +37,37 @@ Conformance tests:
 
 ## 2. Minimal usage
 
+### 2.1 Zero-boilerplate (recommended)
+
+```python
+import asyncio
+from easyremote.mcp import MCPService
+
+service = MCPService(name="tool-mesh", version="1.0.0")
+
+@service.capability(description="Add two numbers", tags=("math",))
+def add_numbers(a, b):
+    return a + b
+
+async def main():
+    response = await service.handle_mcp(
+        {
+            "jsonrpc": "2.0",
+            "id": "call-1",
+            "method": "tools/call",
+            "params": {
+                "name": "add_numbers",
+                "arguments": {"a": 2, "b": 3},
+            },
+        }
+    )
+    print(response)
+
+asyncio.run(main())
+```
+
+### 2.2 Custom runtime (advanced)
+
 ```python
 import asyncio
 

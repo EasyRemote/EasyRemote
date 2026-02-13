@@ -27,14 +27,14 @@ English | [中文](README_zh.md)
 
 We call it: **"EasyNet"**.
 
-### 🎯 Core Philosophy: Code as Resource, Device as Node, Execution as Collaboration
+###  Core Philosophy: Code as Resource, Device as Node, Execution as Collaboration
 
 EasyRemote is the first-stage implementation of EasyNet, allowing you to:
 
 * **🧠 Define task logic using familiar Python function structures**
 * **🔒 Deploy computing nodes on any device while maintaining privacy, performance, and control**  
 * **🌐 Transform local functions into globally accessible task interfaces through lightweight VPS gateways**
-* **🚀 Eventually launch tasks as simply as using `torchrun`, automatically scheduling to the most suitable resources for execution**
+* ** Eventually launch tasks as simply as using `torchrun`, automatically scheduling to the most suitable resources for execution**
 
 ### 💡 Our Paradigm Shift
 
@@ -96,7 +96,7 @@ result = Client("your-gateway:8080").execute("ai_inference", "Hello AI")
 #### 🇨🇳 Chinese Documentation
 - **[📖 中文文档中心](docs/zh/README.md)** - Complete Chinese documentation navigation
 
-### 🚀 Quick Start
+###  Quick Start
 - **[5-Minute Quick Start](docs/en/user-guide/quick-start.md)** - Fastest way to get started | [中文](docs/zh/user-guide/quick-start.md)
 - **[Installation Guide](docs/en/user-guide/installation.md)** - Detailed installation instructions | [中文](docs/zh/user-guide/installation.md)
 
@@ -133,7 +133,7 @@ def medical_diagnosis(scan_data):
 - **EasyNet Model**: Contribute computing power to earn credits, use credits to call others' computing power
 - **Gateway Cost**: $5/month vs traditional cloud $200+/million calls
 
-### **3. 🚀 Consumer Devices Participating in Global AI**
+### **3.  Consumer Devices Participating in Global AI**
 ```python
 # Your gaming PC can provide AI inference services globally
 @node.register
@@ -148,11 +148,11 @@ def gradient_computation(batch_data):
 
 ---
 
-## 🎯 Three-Paradigm Evolution: Computing Revolution Through Paradigmatic Leaps
+##  Three-Paradigm Evolution: Computing Revolution Through Paradigmatic Leaps
 
 > **"Computing Evolution is not linear progression, but paradigmatic leaps"**
 
-### **🚀 Paradigm 1: FDCN (Function-Driven Compute Network)**
+### ** Paradigm 1: FDCN (Function-Driven Compute Network)**
 **Core Innovation**: From local calls → cross-node function calls  
 **Technical Expression**: `@remote` decorator for transparent distributed execution  
 **Paradigm Analogy**: RPC → gRPC → **EasyRemote** (spatial decoupling of function calls)
@@ -276,14 +276,14 @@ $ easynet "Train a medical imaging AI with my local data, 95%+ accuracy required
 **EasyNet's Breakthroughs**:
 - 💰 **Computing Sharing Economy**: Contribute idle resources, gain global computing power
 - 🔐 **Privacy by Design**: Data never leaves your device
-- 🚀 **Edge-First**: Zero latency, optimal performance
+-  **Edge-First**: Zero latency, optimal performance
 - 🌐 **Decentralized**: No single points of failure, no vendor lock-in
 
-### **🎯 Our Mission**
+### ** Our Mission**
 
 > **Redefining the future of computing**: From a few cloud providers monopolizing computing power to every device being part of the computing network.
 
-### **🚀 Join Now**
+### ** Join Now**
 
 ```bash
 # Become an early node in EasyNet
@@ -314,7 +314,7 @@ node.serve()
 
 ## 📞 Join the Community
 
-* **🎯 Technical Discussions**: [GitHub Issues](https://github.com/Qingbolan/EasyCompute/issues)
+* ** Technical Discussions**: [GitHub Issues](https://github.com/Qingbolan/EasyCompute/issues)
 * **💬 Community Chat**: [GitHub Discussions](https://github.com/Qingbolan/EasyCompute/discussions)
 * **📧 Business Collaboration**: [silan.hu@u.nus.edu](mailto:silan.hu@u.nus.edu)
 * **👨‍💻 Project Founder**: [Silan Hu](https://github.com/Qingbolan) - NUS PhD Candidate
@@ -325,7 +325,7 @@ node.serve()
 
 ## 🌟 "The future of software isn't deployed on the cloud, but runs on your system + EasyNet"
 
-**🚀 Ready to join the computing revolution?**
+** Ready to join the computing revolution?**
 
 ```bash
 pip install easyremote

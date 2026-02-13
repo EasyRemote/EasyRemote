@@ -1,6 +1,6 @@
 # EasyRemote Project Overview
 
-## 🎯 Project Vision
+##  Project Vision
 
 EasyRemote aims to make distributed computing as simple as function calls, enabling anyone to share and utilize computational resources with minimal setup and maximum ease.
 
@@ -228,7 +228,7 @@ async def advanced_function(data):
 - **IDE Integration**: Full type hints and autocomplete support
 - **Testing Support**: Easy mocking and testing of remote functions
 
-## 🚀 Real-World Applications
+##  Real-World Applications
 
 ### Personal Development
 ```python

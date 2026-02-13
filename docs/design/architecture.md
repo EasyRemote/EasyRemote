@@ -548,7 +548,7 @@ def cacheable(ttl: int = 3600):
     return decorator
 ```
 
-## 🔧 Configuration & Management
+## Configuration & Management
 
 ### Node Configuration
 
@@ -627,7 +627,7 @@ config = GatewayConfig(
 server = EasyRemoteServer(config)
 ```
 
-## 🚀 Future Architecture Enhancements
+##  Future Architecture Enhancements
 
 ### Planned Improvements
 

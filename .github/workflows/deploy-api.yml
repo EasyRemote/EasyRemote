@@ -88,7 +88,7 @@ jobs:
           mkdir -p ~/.ssh
           if [ "$DEPLOY_ENV" = "release" ]; then
             echo "${{ secrets.PROD_SSH_KEY_B64 }}" | base64 -d > ~/.ssh/deploy_key
-            echo "🚀 Target: geo-scope.ai"
+            echo " Target: geo-scope.ai"
           else
             echo "${{ secrets.DEV_SSH_KEY_B64 }}" | base64 -d > ~/.ssh/deploy_key
             echo "🧪 Target: dev.geo-scope.ai"

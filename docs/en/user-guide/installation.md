@@ -43,7 +43,7 @@ cd EasyCompute
 pip install -e .
 ```
 
-## 🔧 Dependency Management
+## Dependency Management
 
 ### Core Dependencies
 ```bash

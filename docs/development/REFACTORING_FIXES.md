@@ -138,7 +138,7 @@ class SimpleLoadBalancer:
 | **功能匹配度** | 0% (完全错位) | 100% (精确匹配) | **+100%** |
 | **依赖完整性** | 缺失关键依赖 | 完整依赖 | **修复** |
 
-## 🎯 使用建议
+##  使用建议
 
 ### 当前API版本 (实际可用)```pythonfrom easyremote.core.tools import SystemDiagnostics, PerformanceMonitor# 系统诊断diagnostics = SystemDiagnostics()health = await diagnostics.run_full_diagnostics()print(f"系统状态: {health.overall_status}")# 基础监控monitor = PerformanceMonitor()metrics = await monitor.collect_system_metrics()print(f"CPU使用率: {metrics.cpu_percent}%")```
 
@@ -157,7 +157,7 @@ from backup.tools_complex.performance_monitor import PerformanceMonitor
 - [x] 维护了项目简洁理念
 - [x] 代码量减少96%
 
-## 🚀 后续建议
+##  后续建议
 
 1. **测试验证**：运行现有examples确保功能正常
 2. **文档更新**：更新README移除企业级功能描述

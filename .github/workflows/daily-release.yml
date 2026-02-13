@@ -187,7 +187,7 @@ jobs:
             const notes_zh = '${{ steps.ai_summary.outputs.notes_zh }}';
             const notes_en = '${{ steps.ai_summary.outputs.notes_en }}';
 
-            console.log(`🚀 Triggering release workflow for version ${version}`);
+            console.log(` Triggering release workflow for version ${version}`);
 
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,

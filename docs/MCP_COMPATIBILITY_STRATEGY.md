@@ -4,7 +4,7 @@
 
 ---
 
-## 🎯 战略重定位
+##  战略重定位
 
 ### **MCP现状分析**
 Model Context Protocol (MCP) 已成为AI应用连接外部资源的标准：
@@ -22,7 +22,7 @@ Model Context Protocol (MCP) 已成为AI应用连接外部资源的标准：
 - ❌ **无故障转移**：节点故障会导致服务不可用
 
 ### **EasyRemote的突破性创新**
-**🚀 我们不是要替代MCP，而是让MCP支持分布式计算！**
+** 我们不是要替代MCP，而是让MCP支持分布式计算！**
 
 ```
 MCP标准协议 + EasyRemote分布式引擎 = 下一代AI基础设施
@@ -271,7 +271,7 @@ class UniversalMcpAdapter:
 
 ---
 
-## 🚀 创新突破点
+##  创新突破点
 
 ### **突破1：MCP工具的自动分布式化**
 
@@ -453,7 +453,7 @@ class McpDeveloperEcosystem:
 
 ---
 
-## 🎯 成功指标
+##  成功指标
 
 ### **技术指标**
 - [ ] MCP协议100%兼容性
@@ -495,7 +495,7 @@ $ mcp-client call image_process --image photo.jpg
 # 📊 性能监控
 ```
 
-**这不是替代MCP，而是让MCP插上分布式计算的翅膀！** 🚀 
+**这不是替代MCP，而是让MCP插上分布式计算的翅膀！**  
 
 # 终极目标：Torchrun for the World
 $ easynet "训练一个能识别医学影像异常的AI模型"

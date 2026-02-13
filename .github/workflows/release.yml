@@ -585,7 +585,7 @@ jobs:
           ZIP_PATH="${APP_PATH}.zip"
           ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
 
-          echo "📤 Submitting for notarization..."
+          echo " Submitting for notarization..."
 
           # 使用 notarytool 提交公证，捕获输出以获取 submission ID
           NOTARY_OUTPUT=$(mktemp)
@@ -687,7 +687,7 @@ jobs:
           NEW_FILENAME="GEO-SCOPE_${VERSION}_${{ matrix.arch }}.${{ matrix.ext }}"
 
           # 上传文件到 Release 服务器
-          echo "📤 Uploading $NEW_FILENAME..."
+          echo " Uploading $NEW_FILENAME..."
 
           UPLOAD_RESPONSE=$(curl -s -X POST \
             "${{ env.RELEASE_SERVER_URL }}/api/uploads/${{ matrix.os_name }}/${{ matrix.arch }}/$NEW_FILENAME" \
@@ -728,7 +728,7 @@ jobs:
             --arg sha256 "${{ steps.artifacts.outputs.sha256 }}" \
             '{target: $target, arch: $arch, url: $url, signature: $signature, size: $size, sha256: $sha256}')
 
-          echo "📤 Registering build with signature length: ${#SIGNATURE}"
+          echo " Registering build with signature length: ${#SIGNATURE}"
 
           # 注册构建信息
           curl -s -X POST \

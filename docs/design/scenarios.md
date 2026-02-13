@@ -1,6 +1,6 @@
 # EasyRemote Application Scenarios
 
-## 🎯 Real-World Use Cases
+##  Real-World Use Cases
 
 EasyRemote's simple three-role architecture enables a wide range of practical applications, from personal productivity to enterprise-scale distributed computing. This document explores real-world scenarios using the actual EasyRemote API.
 
@@ -1292,7 +1292,7 @@ hybrid_cloud_roi = await calculator.calculate_scenario_roi(
 # Typical result: 200-400% ROI in first year
 ```
 
-## 🎯 Scenario Selection Guide
+##  Scenario Selection Guide
 
 ### For Teams (2-20 people)
 **Best Scenarios**: GPU Sharing, Demo Deployment, Personal AI Assistant
