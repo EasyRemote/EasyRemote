@@ -15,6 +15,10 @@
 
 - `agent_route/mcp_gateway_demo.py`
 - `agent_route/a2a_gateway_demo.py`
+- `agent_route/protocol_service_quickstart.py`
+- `agent_route/skill_pipeline_quickstart.py`
+- `agent_route/user_remote_agent_service_quickstart.py`
+- `agent_route/user_device_dynamic_camera_skill.py`
 
 覆盖能力：
 - MCP: `initialize`、`tools/list`、`tools/call`、通知请求、批量请求、错误对象一致性。
@@ -25,20 +29,29 @@
 - `decorator_route/server.py`
 - `decorator_route/compute_node.py`
 - `decorator_route/client.py`
+- `decorator_route/remote_stream_quickstart.py`
 
 覆盖能力：
 - `@node.register` 注册函数。
 - `@remote` 远程调用（指定节点 + 负载均衡模式）。
+- `@remote(stream=True)` 流式结果消费（同步 `for` / 异步 `async for`）。
+- Client/Gateway 双向流式 RPC（支持 cancel 控制帧）。
+- 节点有界执行队列 + worker 池，避免过载。
 - 同步调用入口的工程化封装。
 
 ## 运行方式（uv 管理）
 
 - MCP Demo: `uv run python examples/agent_route/mcp_gateway_demo.py`
 - A2A Demo: `uv run python examples/agent_route/a2a_gateway_demo.py`
+- 协议服务快速封装（装饰器 + OOP 模版）：`uv run python examples/agent_route/protocol_service_quickstart.py`
+- Skill 化远程能力导出与跨设备管道调用：`uv run python examples/agent_route/skill_pipeline_quickstart.py`
+- 用户侧远程 Agent（运行时安装技能 + 语言偏好）：`uv run python examples/agent_route/user_remote_agent_service_quickstart.py`
+- 远程 Agent 动态下发“拍照/录视频”能力并在用户设备注册函数：`uv run python examples/agent_route/user_device_dynamic_camera_skill.py`
 - Decorator 路线：
 1. `uv run python examples/decorator_route/server.py`
 2. `uv run python examples/decorator_route/compute_node.py`
 3. `uv run python examples/decorator_route/client.py`
+- `@remote` 稳定服务 + 流式快速演示：`uv run python examples/decorator_route/remote_stream_quickstart.py`
 
 ## 未来应支持（建议新增示例）
 

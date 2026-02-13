@@ -93,3 +93,8 @@ RELEASE.bat
 *.log
 
 backup
+
+# Demo artifacts
+customer-selfie.jpg
+site-check.mp4
+out.jpg
