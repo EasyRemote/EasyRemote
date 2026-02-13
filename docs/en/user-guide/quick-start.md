@@ -10,6 +10,13 @@ EasyRemote enables you to build distributed computing networks in the simplest w
 pip install easyremote
 ```
 
+For repository development/testing workflow, use uv:
+
+```bash
+uv sync
+uv run pytest -q
+```
+
 ## 🎯 Core Concepts
 
 EasyRemote is built on three core components:
@@ -82,10 +89,10 @@ Congratulations! You have successfully:
 ## 🔗 Next Steps
 
 - 📖 [Detailed Installation Guide](installation.md)
-- 🎓 [Basic Tutorial](../tutorials/basic-usage.md)
-- 🚀 [Advanced Scenarios](../tutorials/advanced-scenarios.md)
-- 📚 [API Reference](api-reference.md)
-- 💡 [More Examples](examples.md)
+- 💡 [Core Examples](examples.md)
+- 🌐 [MCP Implemented Scope](../../ai/mcp-integration.md)
+- 🤝 [A2A Implemented Scope](../../ai/a2a-integration.md)
+- 🧪 Gallery smoke test: `uv run python gallery/run_smoke_tests.py`
 
 ## 💡 Tips
 

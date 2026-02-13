@@ -3,7 +3,7 @@
 ## 📋 系统要求
 
 ### 最低要求
-- Python 3.8+
+- Python 3.9+
 - 操作系统: Windows, macOS, Linux
 - 内存: 512MB
 - 网络: 稳定的互联网连接
@@ -50,10 +50,17 @@ pip install -e .
 # EasyRemote的核心依赖会自动安装
 pip install grpcio>=1.50.0
 pip install protobuf>=4.21.0
-pip install asyncio
 ```
 
 ### 可选依赖
+#### 内置扩展包（extras）
+```bash
+# GPU 指标采集（可选）
+pip install "easyremote[gpu]"
+
+# Protobuf/gRPC 代码生成工具（可选）
+pip install "easyremote[build]"
+```
 
 #### AI/ML工作负载
 ```bash
@@ -92,6 +99,15 @@ docker run easyremote/easyremote:latest node --gateway your-gateway:8080
 
 ## 🏗️ 开发环境安装
 
+### 推荐流程（贡献者使用 uv）
+
+```bash
+uv sync
+uv run ruff check easyremote tests gallery examples --output-format=full
+uv run pytest -q
+uv run python gallery/run_smoke_tests.py
+```
+
 ### 创建虚拟环境
 ```bash
 # 使用venv
@@ -107,6 +123,12 @@ conda activate easyremote
 ### 安装开发依赖
 ```bash
 pip install easyremote[dev]
+
+# 如果使用 uv，安装项目 + 默认 dev/test 分组
+uv sync
+
+# 按需安装扩展能力
+uv sync --extra gpu --extra build
 
 # 或者手动安装开发工具
 pip install pytest
@@ -162,8 +184,11 @@ pip install easyremote --force-reinstall
 ```bash
 # 问题: grpc模块相关错误
 # 解决: 重新安装grpc依赖
-pip uninstall grpcio grpcio-tools
-pip install grpcio grpcio-tools --no-cache-dir
+pip uninstall grpcio
+pip install grpcio --no-cache-dir
+
+# 仅在需要重新生成 proto 代码时安装 grpcio-tools
+pip install "easyremote[build]"
 ```
 
 #### 3. 网络连接问题

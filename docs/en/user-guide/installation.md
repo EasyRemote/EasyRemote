@@ -3,7 +3,7 @@
 ## 📋 System Requirements
 
 ### Minimum Requirements
-- Python 3.8+
+- Python 3.9+
 - Operating System: Windows, macOS, Linux
 - Memory: 512MB
 - Network: Stable internet connection
@@ -50,10 +50,17 @@ pip install -e .
 # EasyRemote core dependencies will be installed automatically
 pip install grpcio>=1.50.0
 pip install protobuf>=4.21.0
-pip install asyncio
 ```
 
 ### Optional Dependencies
+#### Built-in package extras
+```bash
+# GPU metrics (optional)
+pip install "easyremote[gpu]"
+
+# Protobuf/gRPC code generation tools (optional)
+pip install "easyremote[build]"
+```
 
 #### AI/ML Workloads
 ```bash
@@ -92,6 +99,15 @@ docker run easyremote/easyremote:latest node --gateway your-gateway:8080
 
 ## 🏗️ Development Environment Setup
 
+### Recommended workflow (uv, for contributors)
+
+```bash
+uv sync
+uv run ruff check easyremote tests gallery examples --output-format=full
+uv run pytest -q
+uv run python gallery/run_smoke_tests.py
+```
+
 ### Create virtual environment
 ```bash
 # Using venv
@@ -107,6 +123,12 @@ conda activate easyremote
 ### Install development dependencies
 ```bash
 pip install easyremote[dev]
+
+# If you use uv, install project + default dev/test groups
+uv sync
+
+# Add optional feature extras when needed
+uv sync --extra gpu --extra build
 
 # Or manually install development tools
 pip install pytest
@@ -162,8 +184,11 @@ pip install easyremote --force-reinstall
 ```bash
 # Issue: grpc module related errors
 # Solution: Reinstall grpc dependencies
-pip uninstall grpcio grpcio-tools
-pip install grpcio grpcio-tools --no-cache-dir
+pip uninstall grpcio
+pip install grpcio --no-cache-dir
+
+# Install grpcio-tools only if you need proto code generation
+pip install "easyremote[build]"
 ```
 
 #### 3. Network Connection Issues
