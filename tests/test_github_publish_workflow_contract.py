@@ -28,6 +28,7 @@ def test_publish_workflow_uses_uv_quality_gate() -> None:
     content = workflow.read_text(encoding="utf-8")
 
     assert "uv sync --frozen" in content
+    assert "uvx ruff check" in content
     assert "uv run pytest -q" in content
     assert "uv build" in content
     assert "uvx --from twine twine check dist/*" in content
