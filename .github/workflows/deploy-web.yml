@@ -1,0 +1,133 @@
+# GEO-SCOPE Web Deploy Workflow
+# 前端自动构建部署
+#
+# 触发逻辑:
+#   push develop + Frontend/**        → test
+#   PR to product + Frontend/**       → test (验证)
+#   PR merged + Frontend/** 变更      → release
+#   workflow_dispatch                 → 手动选择
+
+name: Deploy Web
+
+on:
+  push:
+    branches: [develop, product]
+    paths:
+      - 'Frontend/**'
+      - '.github/workflows/deploy-web.yml'
+
+  pull_request:
+    branches: [product]
+    paths:
+      - 'Frontend/**'
+
+  pull_request_target:
+    types: [closed]
+    branches: [product]
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: '部署环境'
+        required: true
+        default: 'test'
+        type: choice
+        options: [test, release]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+      deploy_env: ${{ steps.check.outputs.deploy_env }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check changes
+        id: check
+        uses: ./.github/actions/check-changes
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          check_paths: 'Frontend'
+          manual_environment: ${{ github.event.inputs.environment }}
+
+  build-and-deploy:
+    needs: check
+    if: needs.check.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_ENV: ${{ needs.check.outputs.deploy_env }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # pull_request_target 时使用合并提交的 SHA，确保获取合并后的代码
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha || github.ref }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: Frontend/package-lock.json
+
+      - name: Build
+        working-directory: Frontend
+        run: |
+          npm ci
+
+          VERSION=$(node ../scripts/version.js)
+          APP_MODE=$( [ "$DEPLOY_ENV" = "release" ] && echo "release" || echo "test" )
+
+          cat > .env.local << EOF
+          VITE_APP_MODE=${APP_MODE}
+          VITE_APP_VERSION=${VERSION}
+          VITE_API_URL_DEV=http://localhost:8000
+          VITE_API_URL_TEST=https://dev.geo-scope.ai
+          VITE_API_URL_PROD=https://geo-scope.ai
+          VITE_RELEASE_URL_DEV=http://localhost:8001
+          VITE_RELEASE_URL_TEST=https://releases.geo-scope.ai
+          VITE_RELEASE_URL_PROD=https://releases.geo-scope.ai
+          BACKEND_DIRECTORY=/api
+          RELEASE_DIRECTORY=/api
+          EOF
+
+          echo "📦 Version: $VERSION | Mode: $APP_MODE"
+          npm run build
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist-${{ env.DEPLOY_ENV }}
+          path: Frontend/dist
+          retention-days: 30
+
+      - name: Deploy
+        run: |
+          mkdir -p ~/.ssh
+          if [ "$DEPLOY_ENV" = "release" ]; then
+            echo "${{ secrets.PROD_SSH_KEY_B64 }}" | base64 -d > ~/.ssh/deploy_key
+            TARGET="/www/wwwroot/geo-scope.ai/"
+            URL="https://geo-scope.ai"
+          else
+            echo "${{ secrets.DEV_SSH_KEY_B64 }}" | base64 -d > ~/.ssh/deploy_key
+            TARGET="/www/wwwroot/dev.geo-scope.ai/"
+            URL="https://dev.geo-scope.ai"
+          fi
+          chmod 600 ~/.ssh/deploy_key
+
+          rsync -avz --delete \
+            --exclude='api/' --exclude='.user.ini' --exclude='.htaccess' \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
+            Frontend/dist/ root@${{ secrets.SERVER_HOST }}:${TARGET}
+
+          echo "✅ Deployed to $TARGET"
+
+          # Health check
+          for i in 1 2 3; do
+            curl -sf "$URL" && echo "✅ Site OK" && exit 0
+            sleep 3
+          done
+          exit 1
