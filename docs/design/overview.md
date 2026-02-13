@@ -37,6 +37,9 @@ def train_model(data):
     return your_gpu_model.train(data)  # Runs on your local GPU
 
 # Consumer side - use remote GPU
+from easyremote.core.nodes.client import set_default_gateway
+set_default_gateway("your-vps:8080")
+
 @remote(node_id="gpu-node")
 def train_model(data):
     pass  # Implementation is remote
@@ -70,12 +73,12 @@ result = train_model(my_data)  # Feels completely local!
 
 ```python
 # Expose your demo to the world
-@node.register(public=True)
+@node.register
 def demo_function(input_data):
     return amazing_ai_model(input_data)
 
-# Automatically creates public API endpoint
-# https://your-vps.com/api/demo_function
+# Function is now callable from clients through the gateway
+# once the node is connected and registered.
 ```
 
 **Use Cases**:
@@ -104,7 +107,7 @@ def demo_function(input_data):
 from easyremote import ComputeNode
 
 node = ComputeNode(
-    vps_address="your-vps:8080",
+    gateway_address="your-vps:8080",
     node_id="my-gpu-machine"
 )
 
@@ -172,13 +175,17 @@ response = requests.post("https://your-vps/api/expensive_computation",
 ### 1. Pythonic API Design
 ```python
 # Natural decorator syntax
-@node.register(async_func=True, stream=True)
+@node.register(
+    timeout_seconds=60,
+    load_balancing=True,
+    max_concurrent=4,
+)
 async def stream_processing(data):
     for chunk in process_large_data(data):
         yield chunk
 
 # Familiar function call syntax
-@remote(node_id="worker", timeout=30)
+@remote(node_id="worker", timeout=30, gateway_address="your-vps:8080")
 def remote_task(param1, param2="default"):
     pass
 
@@ -199,12 +206,16 @@ def simple_function(x):
     return x * 2
 
 # Advanced features when needed
+from easyremote.core.data import ResourceRequirements
+
 @node.register(
-    async_func=True,
-    stream=True,
-    timeout=60,
-    retry_policy="exponential_backoff",
-    resource_requirements={"gpu": True, "memory": "8GB"}
+    timeout_seconds=60,
+    resource_requirements=ResourceRequirements(
+        gpu_required=True,
+        min_memory_mb=8192,
+    ),
+    tags={"gpu", "high_memory"},
+    priority=8,
 )
 async def advanced_function(data):
     # Complex computation
@@ -253,12 +264,12 @@ results = [team_gpu_training(f"project_{i}", params)
 ### Research & Academia
 ```python
 # University HPC cluster integration
-@node.register(public=True, auth_required=True)
+@node.register(timeout_seconds=900, tags={"research", "hpc"})
 def run_simulation(research_params):
     return hpc_cluster.submit_job(research_params)
 
 # Researchers from other institutions
-@remote(node_id="university-hpc", api_key="research_key")
+@remote(node_id="university-hpc", timeout=300, gateway_address="your-vps:8080")
 def run_simulation(research_params): pass
 
 # Collaborative research workflows
@@ -268,7 +279,7 @@ simulation_results = run_simulation(my_research_params)
 ### Startup & Enterprise
 ```python
 # Cost-effective AI inference
-@node.register(scaling="auto")
+@node.register(load_balancing=True, max_concurrent=8)
 def ai_inference(user_request):
     return production_model.predict(user_request)
 

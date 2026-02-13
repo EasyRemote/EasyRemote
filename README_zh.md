@@ -101,13 +101,15 @@ result = Client("your-gateway:8080").execute("ai_inference", "Hello AI")
 - **[安装指南](docs/zh/user-guide/installation.md)** - 详细安装说明 | [English](docs/en/user-guide/installation.md)
 
 ### 📖 用户指南
-- **[API参考文档](docs/zh/user-guide/api-reference.md)** - 完整API说明 | [English](docs/en/user-guide/api-reference.md)
-- **[基础使用教程](docs/zh/tutorials/basic-usage.md)** - 详细基础教程 | [English](docs/en/tutorials/basic-usage.md)
-- **[高级场景教程](docs/zh/tutorials/advanced-scenarios.md)** - 复杂应用实现 | [English](docs/en/tutorials/advanced-scenarios.md)
+- **[API参考文档](docs/zh/user-guide/api-reference.md)** - 完整 API 说明
+- **[核心示例](docs/zh/user-guide/examples.md)** - 当前可运行示例（Agent 路线 + Decorator 路线）
+- **[业务落地与路线分层](docs/zh/CORE_USE_CASES_AND_ROUTES.md)** - 当前支持与未来路线（MCP/A2A 与 Decorator 分层）
+- **[Killer Apps Gallery](gallery/README.md)** - 现实业务杀手应用栏目（专门罗列）
+- **[Gallery 项目模板](gallery/projects/README.md)** - 从清理示例重建的快速上手项目
 
-### 🏗️ 技术深入
-- **[系统架构](docs/zh/architecture/overview.md)** - 整体架构设计 | [English](docs/en/architecture/overview.md)
-- **[部署指南](docs/zh/tutorials/deployment.md)** - 多环境部署方案 | [English](docs/en/tutorials/deployment.md)
+### 🏗️ 协议深入
+- **[MCP 已实现范围](docs/ai/mcp-integration.md)** - 当前协议行为与边界
+- **[A2A 已实现范围](docs/ai/a2a-integration.md)** - 当前协议行为与边界
 
 ### 🔬 研究资料
 - **[技术白皮书](docs/zh/research/whitepaper.md)** - EasyNet理论基础 | [English](docs/en/research/whitepaper.md)

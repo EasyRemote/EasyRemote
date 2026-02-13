@@ -101,13 +101,14 @@ result = Client("your-gateway:8080").execute("ai_inference", "Hello AI")
 - **[Installation Guide](docs/en/user-guide/installation.md)** - Detailed installation instructions | [中文](docs/zh/user-guide/installation.md)
 
 ### 📖 User Guide
-- **[API Reference](docs/en/user-guide/api-reference.md)** - Complete API documentation | [中文](docs/zh/user-guide/api-reference.md)
-- **[Basic Tutorial](docs/en/tutorials/basic-usage.md)** - Detailed basic tutorial | [中文](docs/zh/tutorials/basic-usage.md)
-- **[Advanced Scenarios](docs/en/tutorials/advanced-scenarios.md)** - Complex application implementation | [中文](docs/zh/tutorials/advanced-scenarios.md)
+- **[Examples](docs/en/user-guide/examples.md)** - Core runnable examples | [中文](docs/zh/user-guide/examples.md)
+- **[Business Use Cases & Route Layers](docs/zh/CORE_USE_CASES_AND_ROUTES.md)** - Current vs roadmap (MCP/A2A and decorator paths)
+- **[Killer Apps Gallery](gallery/README.md)** - Real-world use-case catalog with flagship applications
+- **[Gallery Projects](gallery/projects/README.md)** - Quickstart project templates restored from removed demos
 
-### 🏗️ Technical Deep Dive
-- **[System Architecture](docs/en/architecture/overview.md)** - Overall architecture design | [中文](docs/zh/architecture/overview.md)
-- **[Deployment Guide](docs/en/tutorials/deployment.md)** - Multi-environment deployment solutions | [中文](docs/zh/tutorials/deployment.md)
+### 🏗️ Protocol Deep Dive
+- **[MCP Implemented Scope](docs/ai/mcp-integration.md)** - Current protocol behavior and limits
+- **[A2A Implemented Scope](docs/ai/a2a-integration.md)** - Current protocol behavior and limits
 
 ### 🔬 Research Materials
 - **[Technical Whitepaper](docs/en/research/whitepaper.md)** - EasyNet theoretical foundation | [中文](docs/zh/research/whitepaper.md)
