@@ -345,7 +345,7 @@ class EasyRemoteConfiguration:
         self.environment = environment
         self.created_at = datetime.now()
         self.last_updated = datetime.now()
-        self.version = "2.0.0"
+        self.version = "2.0.1"
         
         # Optimize for environment
         self._optimize_for_environment(environment)

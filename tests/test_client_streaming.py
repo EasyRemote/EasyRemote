@@ -10,7 +10,7 @@ Author: Silan Hu (silan.hu@u.nus.edu)
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, Iterable, Iterator, List, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 from easyremote.core.nodes.client import (
     ConnectionState,
