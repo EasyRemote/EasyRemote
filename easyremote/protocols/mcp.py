@@ -9,7 +9,7 @@ This adapter translates MCP-style requests into EasyRemote runtime invocations.
 Author: Silan Hu (silan.hu@u.nus.edu)
 """
 
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from .adapter import InvalidParamsError, JsonRpcProtocolAdapter
 from .models import FunctionInvocation, ProtocolName
@@ -31,6 +31,59 @@ class MCPProtocolAdapter(JsonRpcProtocolAdapter):
     TOOLS_LIST_METHODS = {"tools/list", "mcp.tools/list"}
     TOOLS_CALL_METHODS = {"tools/call", "mcp.tools/call"}
 
+    @staticmethod
+    def _runtime_identity(runtime: ProtocolRuntime) -> Dict[str, str]:
+        name = str(getattr(runtime, "runtime_name", "easyremote")).strip()
+        version = str(getattr(runtime, "runtime_version", "0.1.4")).strip()
+        return {
+            "name": name or "easyremote",
+            "version": version or "0.1.4",
+        }
+
+    @staticmethod
+    async def _collect_chunks(value: Any) -> List[Any]:
+        if hasattr(value, "__aiter__"):
+            chunks: List[Any] = []
+            async for item in value:
+                chunks.append(item)
+            return chunks
+
+        if hasattr(value, "__iter__") and not isinstance(
+            value,
+            (str, bytes, bytearray, Mapping),
+        ):
+            return list(value)
+
+        return [value]
+
+    async def _normalize_call_result(
+        self,
+        result: Any,
+        stream_requested: bool,
+    ) -> List[Dict[str, Any]]:
+        if stream_requested:
+            chunks = await self._collect_chunks(result)
+            return [
+                {
+                    "type": "json",
+                    "json": {
+                        "mode": "stream",
+                        "chunks": chunks,
+                        "chunkCount": len(chunks),
+                    },
+                }
+            ]
+
+        if hasattr(result, "__aiter__") or (
+            hasattr(result, "__iter__")
+            and not isinstance(result, (str, bytes, bytearray, Mapping))
+        ):
+            result = await self._collect_chunks(result)
+
+        if isinstance(result, (dict, list, int, float, bool)) or result is None:
+            return [{"type": "json", "json": result}]
+        return [{"type": "text", "text": str(result)}]
+
     @property
     def protocol(self) -> ProtocolName:
         return ProtocolName.MCP
@@ -48,15 +101,16 @@ class MCPProtocolAdapter(JsonRpcProtocolAdapter):
             request_id, method, params, is_notification = self._parse_jsonrpc_request(
                 payload
             )
+            runtime_identity = self._runtime_identity(runtime)
 
             if method in self.INITIALIZE_METHODS:
                 response = self._success(
                     request_id,
                     {
                         "protocolVersion": "2024-11-05",
-                        "serverInfo": {"name": "easyremote", "version": "0.1.4"},
+                        "serverInfo": runtime_identity,
                         "capabilities": {
-                            "tools": {"listChanged": False},
+                            "tools": {"listChanged": False, "streaming": True},
                             "resources": {"subscribe": False},
                         },
                     },
@@ -99,11 +153,10 @@ class MCPProtocolAdapter(JsonRpcProtocolAdapter):
                     load_balancing=params.get("load_balancing", False),
                 )
                 result = await runtime.execute_invocation(invocation)
-
-                if isinstance(result, (dict, list, int, float, bool)) or result is None:
-                    content = [{"type": "json", "json": result}]
-                else:
-                    content = [{"type": "text", "text": str(result)}]
+                content = await self._normalize_call_result(
+                    result=result,
+                    stream_requested=bool(params.get("stream")),
+                )
 
                 response = self._success(request_id, {"content": content})
                 return None if is_notification else response

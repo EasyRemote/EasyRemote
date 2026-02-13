@@ -282,6 +282,86 @@ def test_mcp_notification_with_invalid_params_returns_none_response():
     assert response is None
 
 
+def test_mcp_tools_call_stream_mode_wraps_chunks():
+    class StreamRuntime(FakeRuntime):
+        async def list_functions(self):
+            return [
+                FunctionDescriptor(
+                    name="stream_values",
+                    description="Return iterable chunks",
+                    node_ids=["node-stream"],
+                )
+            ]
+
+        async def execute_invocation(self, invocation: FunctionInvocation):
+            return [1, 2, 3]
+
+    runtime = StreamRuntime()
+    gateway = ProtocolGateway(runtime=runtime, adapters=(MCPProtocolAdapter(),))
+
+    response = asyncio.run(
+        gateway.handle_request(
+            "mcp",
+            {
+                "jsonrpc": "2.0",
+                "id": "stream-call-1",
+                "method": "tools/call",
+                "params": {
+                    "name": "stream_values",
+                    "arguments": {},
+                    "stream": True,
+                },
+            },
+        )
+    )
+
+    payload = response["result"]["content"][0]["json"]
+    assert payload["mode"] == "stream"
+    assert payload["chunkCount"] == 3
+    assert payload["chunks"] == [1, 2, 3]
+
+
+def test_a2a_task_execute_stream_mode_wraps_chunks():
+    class StreamRuntime(FakeRuntime):
+        async def list_functions(self):
+            return [
+                FunctionDescriptor(
+                    name="stream_values",
+                    description="Return iterable chunks",
+                    node_ids=["node-stream"],
+                )
+            ]
+
+        async def execute_invocation(self, invocation: FunctionInvocation):
+            return ["a", "b"]
+
+    runtime = StreamRuntime()
+    gateway = ProtocolGateway(runtime=runtime, adapters=(A2AProtocolAdapter(),))
+
+    response = asyncio.run(
+        gateway.handle_request(
+            "a2a",
+            {
+                "jsonrpc": "2.0",
+                "id": "stream-task-1",
+                "method": "task.execute",
+                "params": {
+                    "task": {
+                        "function": "stream_values",
+                        "input": {},
+                        "stream": True,
+                    }
+                },
+            },
+        )
+    )
+
+    output = response["result"]["task"]["output"]
+    assert output["mode"] == "stream"
+    assert output["chunkCount"] == 2
+    assert output["chunks"] == ["a", "b"]
+
+
 def test_mcp_batch_mixed_request_and_notification():
     runtime = FakeRuntime()
     gateway = ProtocolGateway(runtime=runtime, adapters=(MCPProtocolAdapter(),))

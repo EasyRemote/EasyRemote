@@ -10,7 +10,7 @@ discovery and distributed task execution.
 Author: Silan Hu (silan.hu@u.nus.edu)
 """
 
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from .adapter import InvalidParamsError, JsonRpcProtocolAdapter
 from .models import FunctionInvocation, ProtocolName
@@ -42,6 +42,31 @@ class A2AProtocolAdapter(JsonRpcProtocolAdapter):
         "tasks.execute",
     }
 
+    @staticmethod
+    def _runtime_identity(runtime: ProtocolRuntime) -> Dict[str, str]:
+        name = str(getattr(runtime, "runtime_name", "easyremote-gateway")).strip()
+        version = str(getattr(runtime, "runtime_version", "0.1.4")).strip()
+        return {
+            "name": name or "easyremote-gateway",
+            "version": version or "0.1.4",
+        }
+
+    @staticmethod
+    async def _collect_chunks(value: Any) -> List[Any]:
+        if hasattr(value, "__aiter__"):
+            chunks: List[Any] = []
+            async for item in value:
+                chunks.append(item)
+            return chunks
+
+        if hasattr(value, "__iter__") and not isinstance(
+            value,
+            (str, bytes, bytearray, Mapping),
+        ):
+            return list(value)
+
+        return [value]
+
     @property
     def protocol(self) -> ProtocolName:
         return ProtocolName.A2A
@@ -59,6 +84,7 @@ class A2AProtocolAdapter(JsonRpcProtocolAdapter):
             request_id, method, params, is_notification = self._parse_jsonrpc_request(
                 payload
             )
+            runtime_identity = self._runtime_identity(runtime)
 
             if method in self.CAPABILITIES_METHODS:
                 descriptors = await runtime.list_functions()
@@ -78,8 +104,9 @@ class A2AProtocolAdapter(JsonRpcProtocolAdapter):
                     request_id,
                     {
                         "agent": {
-                            "name": "easyremote-gateway",
+                            "name": runtime_identity["name"],
                             "protocol": "a2a",
+                            "version": runtime_identity["version"],
                             "capabilities": capabilities,
                         }
                     },
@@ -89,6 +116,24 @@ class A2AProtocolAdapter(JsonRpcProtocolAdapter):
             if method in self.TASK_METHODS:
                 invocation = self._parse_invocation(params)
                 result = await runtime.execute_invocation(invocation)
+                stream_requested = bool(params.get("stream"))
+                task_payload = params.get("task")
+                if isinstance(task_payload, Mapping):
+                    stream_requested = bool(task_payload.get("stream", stream_requested))
+
+                if stream_requested:
+                    output: Any = {
+                        "mode": "stream",
+                        "chunks": await self._collect_chunks(result),
+                    }
+                    output["chunkCount"] = len(output["chunks"])
+                elif hasattr(result, "__aiter__") or (
+                    hasattr(result, "__iter__")
+                    and not isinstance(result, (str, bytes, bytearray, Mapping))
+                ):
+                    output = await self._collect_chunks(result)
+                else:
+                    output = result
                 task_id = params.get("task_id")
                 if not task_id and isinstance(params.get("task"), Mapping):
                     task_id = params["task"].get("id")
@@ -100,7 +145,7 @@ class A2AProtocolAdapter(JsonRpcProtocolAdapter):
                         "task": {
                             "id": task_id,
                             "status": "completed",
-                            "output": result,
+                            "output": output,
                         }
                     },
                 )
