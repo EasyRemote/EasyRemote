@@ -1,6 +1,6 @@
 # EasyRemote 快速开始指南
 
-## 🚀 5分钟上手EasyRemote
+##  5分钟上手EasyRemote
 
 EasyRemote让您能够以最简单的方式构建分布式计算网络。只需要12行代码，您就可以将本地函数部署为全球可访问的服务。
 
@@ -17,7 +17,7 @@ uv sync
 uv run pytest -q
 ```
 
-## 🎯 基本概念
+##  基本概念
 
 EasyRemote基于三个核心组件：
 
@@ -79,7 +79,109 @@ result2 = client.execute("ai_inference", "Hello World")
 print(f"AI结果: {result2}")  # 输出: AI处理结果: Hello World
 ```
 
-## 🎉 成功！
+### 4. 几行代码升级为稳定远程服务 + 流式调用
+
+```python
+from easyremote import remote
+from easyremote.core.nodes.client import set_default_gateway
+
+set_default_gateway("your-vps-ip:8080")  # 内置重试与熔断
+
+@remote(function_name="transcribe_audio", load_balancing=True, timeout=30)
+def transcribe_audio(path):
+    return path
+
+@remote(function_name="stream_video_frames", load_balancing=True, stream=True, timeout=60)
+def stream_video_frames(source):
+    return source
+
+print(transcribe_audio("meeting.wav"))
+for chunk in stream_video_frames("camera://lobby"):
+    print(chunk)
+```
+
+### 5. 远程能力导出为 Agent Skill 管道（跨设备复用）
+
+```python
+from easyremote import RemoteSkill, pipeline_function
+
+skill = RemoteSkill(
+    name="voice-agent",
+    gateway_address="your-vps-ip:8080",
+    namespace="assistant",
+)
+
+@skill.voice(name="transcribe_live", timeout=30)
+def transcribe_live(audio):
+    return audio
+
+# 将 JSON 通过消息队列/文件/RPC 发送到另一台设备
+pipeline_json = skill.export_pipeline(include_gateway=True)
+
+# 在另一台设备重建为可调用管道函数
+remote_pipe = pipeline_function(pipeline_json)
+print(remote_pipe.capabilities())
+```
+
+### 6. 用户侧远程 Agent 服务（运行时安装技能 + 语言偏好）
+
+```python
+from easyremote import RemoteAgentService
+
+service = RemoteAgentService(
+    user_id="alice",
+    preferred_language="zh-CN",
+    gateway_address="your-vps-ip:8080",
+)
+
+# 远程 agent 将新技能管道推送到用户软件并即时安装
+service.install_skill(pipeline_json)
+
+# 直接运行已安装能力
+result = service.run_any("transcribe_live", b"pcm16-bytes")
+print(result)
+```
+
+### 7. 远程 Agent 运行时安装新设备能力（拍照/录视频）
+
+```python
+from easyremote import UserDeviceCapabilityHost
+
+host = UserDeviceCapabilityHost(node)  # node = 用户侧 ComputeNode
+host.register_action("camera.take_photo", take_photo)
+host.register_action("camera.record_video", record_video)
+
+# 服务端 agent 下发技能 payload（metadata.device_action 指定本地动作）
+host.install_skill(camera_skill_payload)
+```
+
+安装后会立即在节点注册新函数，远程 agent 可直接调用。
+
+### 8. 节点/网关压力保护（生产建议）
+
+```python
+from easyremote import Server
+from easyremote.core.nodes.compute_node import NodeConfiguration, ComputeNode
+
+# 网关侧：限制总流数、单节点流数、流缓冲区大小
+server = Server(
+    port=8080,
+    max_total_active_streams=512,
+    max_streams_per_node=32,
+    stream_response_queue_size=256,
+)
+
+# 节点侧：限制并发执行与排队深度（超出会快速拒绝）
+config = NodeConfiguration(
+    gateway_address="your-vps-ip:8080",
+    node_id="node-a",
+    max_concurrent_executions=8,
+    queue_size_limit=512,
+)
+node = ComputeNode(gateway_address=config.gateway_address, node_id=config.node_id, config=config)
+```
+
+## 成功！
 
 恭喜！您已经成功：
 - ✅ 部署了一个分布式计算网络
@@ -90,7 +192,7 @@ print(f"AI结果: {result2}")  # 输出: AI处理结果: Hello World
 
 - 📖 [详细安装指南](installation.md)
 - 🎓 [基础教程](../tutorials/basic-usage.md)
-- 🚀 [高级场景](../tutorials/advanced-scenarios.md)
+-  [高级场景](../tutorials/advanced-scenarios.md)
 - 📚 [API参考](api-reference.md)
 - 💡 [更多示例](examples.md)
 - 🧪 Gallery 冒烟测试：`uv run python gallery/run_smoke_tests.py`

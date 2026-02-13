@@ -117,3 +117,24 @@ Author: Silan Hu (silan.hu@u.nus.edu)
 
 当前阻塞：
 - 需要 MCP resources/prompts 能力对齐与标准化测试。
+
+## K9 远程设备能力注入（拍照/录像/流媒体）
+
+业务价值：服务端 agentbot 可按需把“拍照/录视频”等能力动态注入用户设备，避免预装全部能力，降低客户端复杂度。
+
+落地路径：
+- Agent 路线：agentbot 生成 skill payload，并远程调用用户节点安装入口函数。
+- Human 路线：用户设备节点通过 `UserDeviceCapabilityHost` 把 payload 映射为本地可执行动作并注册函数。
+
+当前可交付：
+- 用户授权动作注册（`camera.take_photo` / `camera.record_video` / `camera.stream_video` / `voice.stream_pcm`）。
+- 节点带 `user:<id>` capability 上报，agent 可按用户定位目标远程节点。
+- 运行时安装新能力并刷新网关函数目录。
+- 安装后立即远程调用新函数（含双向流式调用）。
+
+下一步增强：
+- payload 签名校验与信任链。
+- 用户交互授权策略（按 capability/action 粒度）。
+
+项目模板：
+- `gallery/projects/06_runtime_device_capability_injection`

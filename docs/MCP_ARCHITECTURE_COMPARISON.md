@@ -56,18 +56,18 @@
 │           [Agent-A] ↔ [Agent-B] ↔ [Agent-C]                   │
 │            ML-Spec    Data-Proc    Eval-Test                   │
 │                           ↓                                     │
-│              🎯 Execution + Learning + Optimization             │
+│               Execution + Learning + Optimization             │
 │                           ↓                                     │
 │                   📊 Rich Results + Insights                   │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 
 特点：
-🚀 用户只需表达目标意图
-🚀 系统自动理解和分解任务
-🚀 智能Agent网络自组织协作
-🚀 去中心化P2P协调机制
-🚀 自学习和持续优化
+ 用户只需表达目标意图
+ 系统自动理解和分解任务
+ 智能Agent网络自组织协作
+ 去中心化P2P协调机制
+ 自学习和持续优化
 ```
 
 ---
@@ -205,7 +205,7 @@ class IntentDrivenArchitecture:
 
 ---
 
-## 🎯 关键突破点分析
+##  关键突破点分析
 
 ### **突破点1: 从"调用函数"到"表达意图"**
 

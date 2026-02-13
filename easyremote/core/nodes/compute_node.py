@@ -87,7 +87,7 @@ import psutil
 import os
 from typing import (
     Optional, Callable, Dict, Any, Set, Union, List, Tuple, 
-    TypeVar
+    TypeVar, Iterable
 )
 from concurrent import futures
 from datetime import datetime
@@ -114,6 +114,8 @@ from ..utils.logger import ModernLogger
 from ..config import  Environment
 
 T = TypeVar('T')
+
+_STREAM_CONTROL_KWARG = "__easyremote_stream__"
 
 
 class NodeConnectionState(Enum):
@@ -168,6 +170,7 @@ class NodeConfiguration:
     gateway_address: str
     node_id: str
     client_location: Optional[str] = None       # Geographic location
+    node_capabilities: Set[str] = field(default_factory=set)
     
     # Connection and communication settings
     reconnect_interval_seconds: float = 3.0    # Base reconnection interval
@@ -208,6 +211,13 @@ class NodeConfiguration:
     
     def __post_init__(self):
         """Validate configuration parameters after initialization."""
+        normalized_capabilities: Set[str] = set()
+        for capability in self.node_capabilities:
+            value = str(capability).strip()
+            if value:
+                normalized_capabilities.add(value)
+        self.node_capabilities = normalized_capabilities
+
         if self.reconnect_interval_seconds <= 0:
             raise ValueError("Reconnect interval must be positive")
         if self.heartbeat_interval_seconds <= 0:
@@ -657,6 +667,7 @@ class DistributedComputeNode(ModernLogger):
     def __init__(self, 
                  gateway_address: str,
                  node_id: Optional[str] = None,
+                 node_capabilities: Optional[Iterable[Any]] = None,
                  config: Optional[NodeConfiguration] = None,
                  log_level: str = "info"):
         """
@@ -693,12 +704,15 @@ class DistributedComputeNode(ModernLogger):
         if config is None:
             config = NodeConfiguration(
                 gateway_address=gateway_address,
-                node_id=node_id
+                node_id=node_id,
+                node_capabilities=self._normalize_capabilities(node_capabilities),
             )
         else:
             # Ensure consistency
             config.gateway_address = gateway_address
             config.node_id = node_id
+            if node_capabilities is not None:
+                config.node_capabilities = self._normalize_capabilities(node_capabilities)
         
         self.config = config
         
@@ -730,6 +744,7 @@ class DistributedComputeNode(ModernLogger):
         self._service_thread: Optional[threading.Thread] = None
         self._grpc_aio_initialized: bool = False
         self._background_tasks: Set[asyncio.Task] = set()
+        self._execution_worker_tasks: Set[asyncio.Task] = set()
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._health_monitor_task: Optional[asyncio.Task] = None
         self._resource_monitor_task: Optional[asyncio.Task] = None
@@ -762,6 +777,17 @@ class DistributedComputeNode(ModernLogger):
             DistributedComputeNode._node_registry[config.node_id] = self
         
         self.info(f"DistributedComputeNode '{self.config.node_id}' initialized successfully")
+
+    @staticmethod
+    def _normalize_capabilities(values: Optional[Iterable[Any]]) -> Set[str]:
+        if values is None:
+            return set()
+        normalized: Set[str] = set()
+        for item in values:
+            value = str(item).strip()
+            if value:
+                normalized.add(value)
+        return normalized
     
     def _generate_unique_node_id(self) -> str:
         """
@@ -1223,8 +1249,43 @@ class DistributedComputeNode(ModernLogger):
                 self._health_monitoring_loop()
             )
             self._background_tasks.add(self._health_monitor_task)
+
+        worker_count = max(1, min(self.config.max_concurrent_executions, 32))
+        for worker_id in range(worker_count):
+            worker_task = asyncio.create_task(
+                self._execution_worker_loop(worker_id),
+                name=f"ExecutionWorker-{worker_id}",
+            )
+            self._background_tasks.add(worker_task)
+            self._execution_worker_tasks.add(worker_task)
         
         self.debug(f"Started {len(self._background_tasks)} background tasks")
+
+    async def _execution_worker_loop(self, worker_id: int) -> None:
+        """
+        Pull execution requests from the bounded queue and execute them.
+
+        This queue-based worker model applies backpressure before node overload.
+        """
+        self.debug(f"Execution worker {worker_id} started")
+        try:
+            while not self._shutdown_event.is_set():
+                try:
+                    exec_req = await asyncio.wait_for(
+                        self._execution_queue.get(),
+                        timeout=0.2,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                try:
+                    await self._execute_function_request(exec_req)
+                finally:
+                    self._execution_queue.task_done()
+        except asyncio.CancelledError:
+            self.debug(f"Execution worker {worker_id} cancelled")
+        finally:
+            self._execution_worker_tasks.discard(asyncio.current_task())
     
     async def _service_loop(self):
         """Main service loop with connection management and reconnection."""
@@ -1357,6 +1418,53 @@ class DistributedComputeNode(ModernLogger):
                 address=self.config.gateway_address,
                 cause=e,
             ) from e
+
+    async def refresh_gateway_registration(self) -> bool:
+        """
+        Re-publish current function catalog to gateway.
+
+        Returns:
+            True if refresh succeeded, False if node is not connected.
+        """
+        if self._gateway_stub is None:
+            return False
+        if self.connection_state != NodeConnectionState.CONNECTED:
+            return False
+
+        await self._register_with_gateway()
+        await self._set_connection_state(NodeConnectionState.CONNECTED)
+        return True
+
+    def refresh_gateway_registration_now(self, timeout_seconds: float = 8.0) -> bool:
+        """
+        Synchronous helper for refreshing node registration.
+
+        Use this when node runs in background mode and caller is sync code.
+        In async code, prefer awaiting `refresh_gateway_registration()`.
+        """
+        coroutine = self.refresh_gateway_registration()
+
+        current_loop: Optional[asyncio.AbstractEventLoop]
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        if self._event_loop and self._event_loop.is_running():
+            if current_loop is self._event_loop:
+                raise RuntimeError(
+                    "refresh_gateway_registration_now cannot run inside node event loop; "
+                    "await refresh_gateway_registration() instead."
+                )
+            future = asyncio.run_coroutine_threadsafe(coroutine, self._event_loop)
+            return bool(future.result(timeout=timeout_seconds))
+
+        if current_loop is not None:
+            raise RuntimeError(
+                "Cannot call refresh_gateway_registration_now from async context. "
+                "Use await refresh_gateway_registration()."
+            )
+        return bool(asyncio.run(coroutine))
     
     def _convert_node_info_to_proto(self, node_info: NodeInfo) -> service_pb2.NodeInfo:
         """Convert NodeInfo to protobuf format."""
@@ -1535,21 +1643,45 @@ class DistributedComputeNode(ModernLogger):
         elif control_message.HasField('exec_req'):
             # Handle execution request
             exec_req = control_message.exec_req
-            self.info(f"🎯 [NODE] RECEIVED execution request! function={exec_req.function_name}, call_id={exec_req.call_id}")
+            self.info(f" [NODE] RECEIVED execution request! function={exec_req.function_name}, call_id={exec_req.call_id}")
             
-            # Execute function asynchronously
-            self.info(f"🚀 [NODE] Starting async execution task for {exec_req.function_name}")
-            asyncio.create_task(self._execute_function_request(exec_req))
-            self.info(f"✅ [NODE] Async execution task created for {exec_req.function_name}")
+            try:
+                self._execution_queue.put_nowait(exec_req)
+                self.info(
+                    f" [NODE] Enqueued execution request for {exec_req.function_name} "
+                    f"(queue_size={self._execution_queue.qsize()})"
+                )
+            except asyncio.QueueFull:
+                error_msg = (
+                    f"Execution queue is full on node '{self.config.node_id}'. "
+                    "Please retry later."
+                )
+                self.warning(
+                    f"⚠️ [NODE] Queue full, rejecting call_id={exec_req.call_id}: {error_msg}"
+                )
+                await self._send_overload_response(exec_req, error_msg)
         else:
             self.debug("🔍 [NODE] Received unknown control message type")
+
+    async def _send_overload_response(self, exec_req, message: str) -> None:
+        exec_result = service_pb2.ExecutionResult()
+        exec_result.call_id = exec_req.call_id
+        exec_result.function_name = exec_req.function_name
+        exec_result.node_id = self.config.node_id
+        exec_result.has_error = True
+        exec_result.error_message = message
+        exec_result.is_done = True
+
+        control_msg = service_pb2.ControlMessage()
+        control_msg.exec_res.CopyFrom(exec_result)
+        await self._outgoing_messages.put(control_msg)
     
     async def _execute_function_request(self, exec_req):
         """Execute a function request and send back the result."""
         call_id = exec_req.call_id
         function_name = exec_req.function_name
         
-        self.info(f"🎯 [NODE-EXEC] Starting execution: call_id={call_id}, function={function_name}")
+        self.info(f" [NODE-EXEC] Starting execution: call_id={call_id}, function={function_name}")
         
         try:
             # Check if function exists
@@ -1578,6 +1710,7 @@ class DistributedComputeNode(ModernLogger):
             
             # Deserialize arguments
             args, kwargs = self._serializer.deserialize_args(exec_req.args, exec_req.kwargs)
+            stream_requested = bool(kwargs.pop(_STREAM_CONTROL_KWARG, False))
             self.info(f"✅ [NODE-EXEC] Arguments deserialized: args={len(args)}, kwargs={len(kwargs)}")
             
             # Create execution context
@@ -1591,86 +1724,150 @@ class DistributedComputeNode(ModernLogger):
             self._active_executions[call_id] = exec_context
             start_time = time.time()
             
-            self.info(f"🚀 [NODE-EXEC] EXECUTING function '{function_name}' with call_id {call_id} - START!")
-            
-            # Execute function
-            try:
-                if registration.function_info.function_type in (FunctionType.ASYNC, FunctionType.ASYNC_GENERATOR):
-                    self.debug(f"⚡ [NODE-EXEC] Running async function {function_name}")
-                    result = await func(*args, **kwargs)
-                else:
-                    # Run sync function in thread pool to avoid blocking
-                    self.debug(f"🔄 [NODE-EXEC] Running sync function {function_name} in thread pool")
-                    loop = asyncio.get_running_loop()
-                    bound_call = self._build_executor_callable(
-                        func=func,
-                        args=tuple(args),
-                        kwargs=dict(kwargs),
-                    )
-                    result = await loop.run_in_executor(
-                        self._thread_executor,
-                        bound_call,
-                    )
-                
-                execution_time = time.time() - start_time
-                self.info(f"🎉 [NODE-EXEC] SUCCESS! Function '{function_name}' completed in {execution_time:.3f}s, result: {result}")
-                
-                # Serialize result
-                self.debug(f"📦 [NODE-EXEC] Serializing result for {function_name}")
-                serialized_result = self._serializer.serialize_result(result)
-                self.debug(f"✅ [NODE-EXEC] Result serialized for {function_name}")
-                
-                # Create success response
+            self.info(f" [NODE-EXEC] EXECUTING function '{function_name}' with call_id {call_id} - START!")
+
+            async def _enqueue_execution_result(
+                *,
+                has_error: bool,
+                error_message: str = "",
+                result: bytes = b"",
+                is_done: bool = True,
+                chunk: bytes = b"",
+            ) -> None:
                 exec_result = service_pb2.ExecutionResult()
                 exec_result.call_id = call_id
                 exec_result.function_name = function_name
                 exec_result.node_id = self.config.node_id
-                exec_result.has_error = False
-                exec_result.result = serialized_result
-                exec_result.is_done = True
+                exec_result.has_error = has_error
+                exec_result.error_message = error_message
+                exec_result.result = result
+                exec_result.is_done = is_done
+                exec_result.chunk = chunk
+
+                control_msg = service_pb2.ControlMessage()
+                control_msg.exec_res.CopyFrom(exec_result)
+
+                if hasattr(self, "_outgoing_messages"):
+                    await self._outgoing_messages.put(control_msg)
+                else:
+                    raise RemoteExecutionError(
+                        function_name=function_name,
+                        node_id=self.config.node_id,
+                        message="No _outgoing_messages queue available",
+                    )
+            
+            # Execute function
+            try:
+                function_type = registration.function_info.function_type
+
+                if function_type in (FunctionType.GENERATOR, FunctionType.ASYNC_GENERATOR):
+                    # For non-stream callers, keep backward compatibility by aggregating
+                    # the stream chunks and returning them as one list result.
+                    if stream_requested:
+                        self.debug(f"🌊 [NODE-EXEC] Running stream function {function_name}")
+                        if function_type == FunctionType.ASYNC_GENERATOR:
+                            async for chunk_item in func(*args, **kwargs):
+                                serialized_chunk = self._serializer.serialize_result(chunk_item)
+                                await _enqueue_execution_result(
+                                    has_error=False,
+                                    is_done=False,
+                                    chunk=serialized_chunk,
+                                )
+                        else:
+                            for chunk_item in func(*args, **kwargs):
+                                serialized_chunk = self._serializer.serialize_result(chunk_item)
+                                await _enqueue_execution_result(
+                                    has_error=False,
+                                    is_done=False,
+                                    chunk=serialized_chunk,
+                                )
+
+                        execution_time = time.time() - start_time
+                        self.info(
+                            f"🎉 [NODE-EXEC] STREAM COMPLETED! Function '{function_name}' "
+                            f"completed in {execution_time:.3f}s"
+                        )
+                        await _enqueue_execution_result(has_error=False, is_done=True)
+                        registration.update_execution_stats(True, execution_time * 1000)
+                        self._successful_executions += 1
+                    else:
+                        self.debug(
+                            f"📚 [NODE-EXEC] Running stream function {function_name} "
+                            "in aggregate mode for non-stream caller"
+                        )
+                        aggregated_chunks: List[Any] = []
+                        if function_type == FunctionType.ASYNC_GENERATOR:
+                            async for chunk_item in func(*args, **kwargs):
+                                aggregated_chunks.append(chunk_item)
+                        else:
+                            for chunk_item in func(*args, **kwargs):
+                                aggregated_chunks.append(chunk_item)
+
+                        execution_time = time.time() - start_time
+                        serialized_result = self._serializer.serialize_result(aggregated_chunks)
+                        await _enqueue_execution_result(
+                            has_error=False,
+                            result=serialized_result,
+                            is_done=True,
+                        )
+                        registration.update_execution_stats(True, execution_time * 1000)
+                        self._successful_executions += 1
+
+                else:
+                    if function_type == FunctionType.ASYNC:
+                        self.debug(f"⚡ [NODE-EXEC] Running async function {function_name}")
+                        result = await func(*args, **kwargs)
+                    else:
+                        # Run sync function in thread pool to avoid blocking.
+                        self.debug(
+                            f"🔄 [NODE-EXEC] Running sync function {function_name} in thread pool"
+                        )
+                        loop = asyncio.get_running_loop()
+                        bound_call = self._build_executor_callable(
+                            func=func,
+                            args=tuple(args),
+                            kwargs=dict(kwargs),
+                        )
+                        result = await loop.run_in_executor(
+                            self._thread_executor,
+                            bound_call,
+                        )
                 
-                self.info(f"✅ [NODE-EXEC] Created success response for {function_name}")
-                
-                # Update statistics
-                registration.update_execution_stats(True, execution_time * 1000)
-                self._successful_executions += 1
+                    execution_time = time.time() - start_time
+                    self.info(
+                        f"🎉 [NODE-EXEC] SUCCESS! Function '{function_name}' completed "
+                        f"in {execution_time:.3f}s, result: {result}"
+                    )
+
+                    self.debug(f"📦 [NODE-EXEC] Serializing result for {function_name}")
+                    serialized_result = self._serializer.serialize_result(result)
+                    self.debug(f"✅ [NODE-EXEC] Result serialized for {function_name}")
+
+                    await _enqueue_execution_result(
+                        has_error=False,
+                        result=serialized_result,
+                        is_done=True,
+                    )
+
+                    registration.update_execution_stats(True, execution_time * 1000)
+                    self._successful_executions += 1
                 
             except Exception as e:
                 execution_time = time.time() - start_time
                 self.error(f"💥 [NODE-EXEC] FUNCTION FAILED! '{function_name}' failed after {execution_time:.3f}s: {e}")
-                
-                # Create error response
-                exec_result = service_pb2.ExecutionResult()
-                exec_result.call_id = call_id
-                exec_result.function_name = function_name
-                exec_result.node_id = self.config.node_id
-                exec_result.has_error = True
-                exec_result.error_message = str(e)
-                exec_result.is_done = True
-                
-                # Update statistics
+                await _enqueue_execution_result(
+                    has_error=True,
+                    error_message=str(e),
+                    is_done=True,
+                )
                 registration.update_execution_stats(False, execution_time * 1000)
-            
-            # Send result back to server
-            control_msg = service_pb2.ControlMessage()
-            control_msg.exec_res.CopyFrom(exec_result)
-            
-            self.info(f"📤 [NODE-EXEC] Sending result back to server for {function_name}")
-            
-            # Note: In a real implementation, we'd need to send this back through the control stream
-            # For now, we'll store it in a queue that the control stream generator can pick up
-            if hasattr(self, '_outgoing_messages'):
-                await self._outgoing_messages.put(control_msg)
-                self.info("✅ [NODE-EXEC] Result queued for transmission to server")
-            else:
-                self.error("❌ [NODE-EXEC] No _outgoing_messages queue available!")
+            finally:
+                self.info(f" [NODE-EXEC] Result queued for transmission to server for {function_name}")
+                self._active_executions.pop(call_id, None)
             
         except Exception as e:
             self.error(f"💥 [NODE-EXEC] Critical error executing function request {call_id}: {e}")
-            
-            # Clean up active execution tracking
-            if call_id in self._active_executions:
-                del self._active_executions[call_id]
+            self._active_executions.pop(call_id, None)
 
     @staticmethod
     def _build_executor_callable(
@@ -1821,6 +2018,7 @@ class DistributedComputeNode(ModernLogger):
             functions=functions,
             status=NodeStatus.ONLINE if self.is_connected else NodeStatus.OFFLINE,
             last_heartbeat=self._last_heartbeat_time or datetime.now(),
+            capabilities=set(self.config.node_capabilities),
             version="1.0.0"
         )
         
@@ -1906,6 +2104,7 @@ class ComputeNodeBuilder:
         """Initialize builder with default configuration."""
         self._gateway_address: Optional[str] = None
         self._node_id: Optional[str] = None
+        self._capabilities: Set[str] = set()
         self._config: Optional[NodeConfiguration] = None
         self._environment: Environment = Environment.DEVELOPMENT
         self._log_level: str = "info"
@@ -1918,6 +2117,14 @@ class ComputeNodeBuilder:
     def with_node_id(self, node_id: str) -> 'ComputeNodeBuilder':
         """Set custom node identifier."""
         self._node_id = node_id
+        return self
+
+    def with_capabilities(self, *capabilities: str) -> 'ComputeNodeBuilder':
+        """Attach node capabilities exposed to gateway node listing."""
+        for capability in capabilities:
+            value = str(capability).strip()
+            if value:
+                self._capabilities.add(value)
         return self
     
     def with_environment(self, environment: Environment) -> 'ComputeNodeBuilder':
@@ -2003,10 +2210,13 @@ class ComputeNodeBuilder:
             self._config.gateway_address = self._gateway_address
             if self._node_id:
                 self._config.node_id = self._node_id
+        if self._capabilities:
+            self._config.node_capabilities = set(self._capabilities)
         
         return DistributedComputeNode(
             gateway_address=self._gateway_address,
             node_id=self._node_id,
+            node_capabilities=self._capabilities,
             config=self._config,
             log_level=self._log_level
         )

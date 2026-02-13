@@ -1,6 +1,6 @@
 # EasyRemote Quick Start Guide
 
-## 🚀 Get Started with EasyRemote in 5 Minutes
+##  Get Started with EasyRemote in 5 Minutes
 
 EasyRemote enables you to build distributed computing networks in the simplest way possible. With just 12 lines of code, you can deploy local functions as globally accessible services.
 
@@ -17,7 +17,7 @@ uv sync
 uv run pytest -q
 ```
 
-## 🎯 Core Concepts
+##  Core Concepts
 
 EasyRemote is built on three core components:
 
@@ -79,7 +79,110 @@ result2 = client.execute("ai_inference", "Hello World")
 print(f"AI result: {result2}")  # Output: AI processing result: Hello World
 ```
 
-## 🎉 Success!
+### 4. Convert Local Calls to Stable Remote + Streaming in a Few Lines
+
+```python
+from easyremote import remote
+from easyremote.core.nodes.client import set_default_gateway
+
+set_default_gateway("your-vps-ip:8080")  # built-in retry and circuit breaker
+
+@remote(function_name="transcribe_audio", load_balancing=True, timeout=30)
+def transcribe_audio(path):
+    return path
+
+@remote(function_name="stream_video_frames", load_balancing=True, stream=True, timeout=60)
+def stream_video_frames(source):
+    return source
+
+print(transcribe_audio("meeting.wav"))
+for chunk in stream_video_frames("camera://lobby"):
+    print(chunk)
+```
+
+### 5. Share Remote Capabilities as an Agent Skill Pipeline
+
+```python
+from easyremote import RemoteSkill, pipeline_function
+
+skill = RemoteSkill(
+    name="voice-agent",
+    gateway_address="your-vps-ip:8080",
+    namespace="assistant",
+)
+
+@skill.voice(name="transcribe_live", timeout=30)
+def transcribe_live(audio):
+    return audio
+
+# send this JSON to another device (queue/file/RPC)
+pipeline_json = skill.export_pipeline(include_gateway=True)
+
+# rebuild as callable pipeline on another device
+remote_pipe = pipeline_function(pipeline_json)
+print(remote_pipe.capabilities())
+```
+
+### 6. User-Side Remote Agent Service (Runtime Skill Install + Language)
+
+```python
+from easyremote import RemoteAgentService
+
+service = RemoteAgentService(
+    user_id="alice",
+    preferred_language="zh-CN",
+    gateway_address="your-vps-ip:8080",
+)
+
+# remote agent pushes new skill payload to user software
+service.install_skill(pipeline_json)
+
+# run installed skill directly
+result = service.run_any("transcribe_live", b"pcm16-bytes")
+print(result)
+```
+
+### 7. Remote Agent Installs New Device Capabilities (Photo/Video) at Runtime
+
+```python
+from easyremote import UserDeviceCapabilityHost
+
+host = UserDeviceCapabilityHost(node)  # node = user-side ComputeNode
+host.register_action("camera.take_photo", take_photo)
+host.register_action("camera.record_video", record_video)
+
+# payload pushed from server-side agent:
+# capability metadata carries device_action mapping
+host.install_skill(camera_skill_payload)
+```
+
+This registers new node functions immediately so remote agent can call them.
+
+### 8. Node/Gateway Pressure Protection (Production Recommendation)
+
+```python
+from easyremote import Server
+from easyremote.core.nodes.compute_node import NodeConfiguration, ComputeNode
+
+# Gateway-side safeguards: total streams, per-node streams, stream buffer size
+server = Server(
+    port=8080,
+    max_total_active_streams=512,
+    max_streams_per_node=32,
+    stream_response_queue_size=256,
+)
+
+# Node-side safeguards: execution concurrency and bounded queue depth
+config = NodeConfiguration(
+    gateway_address="your-vps-ip:8080",
+    node_id="node-a",
+    max_concurrent_executions=8,
+    queue_size_limit=512,
+)
+node = ComputeNode(gateway_address=config.gateway_address, node_id=config.node_id, config=config)
+```
+
+## Success!
 
 Congratulations! You have successfully:
 - ✅ Deployed a distributed computing network

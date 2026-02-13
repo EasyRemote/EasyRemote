@@ -10,6 +10,7 @@ Author: Silan Hu (silan.hu@u.nus.edu)
 from typing import Any, Dict, Mapping, Optional, Union
 
 from ..protocols import MCPProtocolAdapter, ProtocolGateway, ProtocolName, ProtocolRuntime
+from ..protocols.service import MCPService
 
 
 class MCPGateway:
@@ -32,4 +33,5 @@ class MCPGateway:
 __all__ = [
     "MCPGateway",
     "MCPProtocolAdapter",
+    "MCPService",
 ]

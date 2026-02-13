@@ -135,7 +135,7 @@ def get_performance_monitor():
 | **Protobuf问题** | 1 | 0 | 1 |
 | **总计** | **10** | **9** | **1** |
 
-## 🎯 修复效果
+##  修复效果
 
 ### 立即可用的功能
 - ✅ 简化的tools模块（监控、健康检查、负载测试）
@@ -147,7 +147,7 @@ def get_performance_monitor():
 - ❌ 完整的compute node功能（需要protobuf修复）
 - ❌ 完整的distributed computing功能
 
-## 🚀 后续建议
+##  后续建议
 
 1. **优先修复Protobuf问题**
    ```bash

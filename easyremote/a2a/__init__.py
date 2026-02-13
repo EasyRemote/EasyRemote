@@ -10,6 +10,7 @@ Author: Silan Hu (silan.hu@u.nus.edu)
 from typing import Any, Dict, Mapping, Optional, Union
 
 from ..protocols import A2AProtocolAdapter, ProtocolGateway, ProtocolName, ProtocolRuntime
+from ..protocols.service import A2AService
 
 
 class A2AGateway:
@@ -32,4 +33,5 @@ class A2AGateway:
 __all__ = [
     "A2AGateway",
     "A2AProtocolAdapter",
+    "A2AService",
 ]

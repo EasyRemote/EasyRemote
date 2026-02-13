@@ -416,7 +416,7 @@ class SmartLoadBalancer:
         return total_score
 ```
 
-## 🎯 Role-Based Use Cases
+##  Role-Based Use Cases
 
 ### GPU Sharing Team
 ```python
@@ -544,7 +544,7 @@ class ClientMetrics:
     feature_adoption: float
 ```
 
-## 🚀 Role Evolution
+##  Role Evolution
 
 ### Current State
 - **Simple**: Three clear roles with distinct responsibilities

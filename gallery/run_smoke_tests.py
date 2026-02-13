@@ -153,6 +153,18 @@ class GallerySmokeTester:
                 client_script=self.gallery_root
                 / "projects/05_local_data_residency_ai/client.py",
             ),
+            HumanCase(
+                name="H5 Runtime Device Capability Injection",
+                port=18084,
+                server_script=self.gallery_root
+                / "projects/06_runtime_device_capability_injection/server.py",
+                node_scripts=(
+                    self.gallery_root
+                    / "projects/06_runtime_device_capability_injection/user_device_node.py",
+                ),
+                client_script=self.gallery_root
+                / "projects/06_runtime_device_capability_injection/agent_client.py",
+            ),
         )
 
     def _run_protocol_case(self, case: ProtocolCase) -> SmokeResult:

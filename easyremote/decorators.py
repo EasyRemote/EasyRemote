@@ -8,10 +8,13 @@ Author: Silan Hu (silan.hu@u.nus.edu)
 """
 
 import asyncio
+import time
 import functools
 import os
-from concurrent.futures import Future as ConcurrentFuture
-from typing import Any, Callable, Optional, TypeVar, Union, cast
+import queue
+import threading
+from concurrent.futures import Future as ConcurrentFuture, TimeoutError as FuturesTimeoutError
+from typing import Any, AsyncIterator, Callable, Iterator, Mapping, Optional, TypeVar, Union, cast
 
 from .core.utils.exceptions import ExceptionTranslator, RemoteExecutionError
 
@@ -251,6 +254,258 @@ class RemoteFunction:
                 function_name=self.function_name,
             ) from exc
 
+    async def _yield_chunks(self, value: Any) -> AsyncIterator[Any]:
+        """
+        Normalize any output into an async chunk stream.
+        """
+        if hasattr(value, "__aiter__"):
+            async for item in value:
+                yield item
+            return
+
+        if hasattr(value, "__iter__") and not isinstance(
+            value,
+            (str, bytes, bytearray, Mapping),
+        ):
+            for item in value:
+                yield item
+            return
+
+        yield value
+
+    async def _invoke_stream_via_server(
+        self,
+        server: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> AsyncIterator[Any]:
+        """
+        Execute one streaming call via in-process server backend.
+        """
+        current_loop = asyncio.get_running_loop()
+        server_loop = self._resolve_server_loop(server)
+        if (
+            server_loop is not None
+            and server_loop.is_running()
+            and server_loop is not current_loop
+        ):
+            # For cross-loop server ownership, reuse coroutine dispatch safety and
+            # emit chunks from the aggregated result as a compatibility fallback.
+            result = await self._invoke_via_server(server, *args, **kwargs)
+            async for item in self._yield_chunks(result):
+                yield item
+            return
+
+        if self.load_balancing and hasattr(server, "stream_function_with_load_balancing"):
+            stream_result = server.stream_function_with_load_balancing(
+                self.function_name,
+                self.load_balancing,
+                *args,
+                **kwargs
+            )
+        elif hasattr(server, "stream_function"):
+            stream_result = server.stream_function(
+                self.node_id,
+                self.function_name,
+                *args,
+                **kwargs
+            )
+        else:
+            # Backward-compatible fallback: execute non-stream and emit one chunk.
+            result = await self._invoke_via_server(server, *args, **kwargs)
+            async for item in self._yield_chunks(result):
+                yield item
+            return
+
+        async for item in self._yield_chunks(stream_result):
+            yield item
+
+    async def _invoke_stream_via_client(
+        self,
+        client: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> AsyncIterator[Any]:
+        """
+        Execute streaming call via standalone client backend.
+
+        If the client exposes native stream API, bridge synchronous gRPC iteration
+        into async chunks in real time. Otherwise fallback to unary result mode.
+        """
+        if hasattr(client, "stream_with_context") and callable(client.stream_with_context):
+            context = self._build_client_execution_context()
+            if hasattr(context, "enable_caching"):
+                context.enable_caching = False
+
+            loop = asyncio.get_running_loop()
+            item_queue: asyncio.Queue = asyncio.Queue(maxsize=64)
+            sentinel = object()
+            cancel_event = threading.Event()
+
+            def _worker() -> None:
+                try:
+                    stream_iter = client.stream_with_context(
+                        context,
+                        *args,
+                        cancel_event=cancel_event,
+                        **kwargs,
+                    )
+                    for item in stream_iter:
+                        if cancel_event.is_set():
+                            break
+                        while True:
+                            if cancel_event.is_set():
+                                break
+                            fut = asyncio.run_coroutine_threadsafe(
+                                item_queue.put(item),
+                                loop,
+                            )
+                            try:
+                                fut.result(timeout=0.25)
+                                break
+                            except FuturesTimeoutError:
+                                try:
+                                    fut.cancel()
+                                except Exception:
+                                    pass
+                                # Give the loop time to progress (queue.get consumer).
+                                time.sleep(0.01)
+                except Exception as exc:
+                    fut = asyncio.run_coroutine_threadsafe(
+                        item_queue.put(exc),
+                        loop,
+                    )
+                    try:
+                        fut.result(timeout=0.25)
+                    except FuturesTimeoutError:
+                        try:
+                            fut.cancel()
+                        except Exception:
+                            pass
+                finally:
+                    cancel_event.set()
+                    fut = asyncio.run_coroutine_threadsafe(
+                        item_queue.put(sentinel),
+                        loop,
+                    )
+                    try:
+                        fut.result(timeout=0.25)
+                    except FuturesTimeoutError:
+                        try:
+                            fut.cancel()
+                        except Exception:
+                            pass
+
+            stream_thread = threading.Thread(
+                target=_worker,
+                name=f"EasyRemoteClientStream-{self.function_name}",
+                daemon=True,
+            )
+            stream_thread.start()
+
+            try:
+                while True:
+                    payload = await item_queue.get()
+                    if payload is sentinel:
+                        break
+                    if isinstance(payload, Exception):
+                        raise payload
+                    yield payload
+            finally:
+                cancel_event.set()
+            return
+
+        result = await self._invoke_via_client(client, *args, **kwargs)
+        async for item in self._yield_chunks(result):
+            yield item
+
+    async def _invoke_stream(self, *args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+        """
+        Execute one remote invocation in streaming mode.
+        """
+        try:
+            server = self._get_server()
+            if server is not None:
+                async for item in self._invoke_stream_via_server(
+                    server,
+                    *args,
+                    **kwargs,
+                ):
+                    yield item
+                return
+
+            client = self._get_client()
+            if client is not None:
+                async for item in self._invoke_stream_via_client(
+                    client,
+                    *args,
+                    **kwargs,
+                ):
+                    yield item
+                return
+
+            raise RemoteExecutionError(
+                function_name=self.function_name,
+                message=(
+                    "No EasyRemote execution backend available. "
+                    "Start a local Server, call set_default_gateway(...), "
+                    "set EASYREMOTE_GATEWAY, or pass gateway_address to @remote."
+                )
+            )
+        except Exception as exc:
+            raise ExceptionTranslator.as_remote_execution_error(
+                exc,
+                function_name=self.function_name,
+            ) from exc
+
+    def stream(self, *args: Any, **kwargs: Any) -> Union[Iterator[Any], AsyncIterator[Any]]:
+        """
+        Stream-friendly call entry.
+
+        Behavior:
+        - No running loop: blocks and returns a sync iterator of collected chunks.
+        - Running loop: returns async iterator for real-time chunk consumption.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return self._stream_sync_iter(*args, **kwargs)
+        return self._invoke_stream(*args, **kwargs)
+
+    def _stream_sync_iter(self, *args: Any, **kwargs: Any) -> Iterator[Any]:
+        """
+        Bridge async stream execution into a sync iterator for non-async callers.
+        """
+        stream_queue: "queue.Queue[Any]" = queue.Queue(maxsize=64)
+        sentinel = object()
+
+        def _runner() -> None:
+            async def _consume() -> None:
+                async for chunk in self._invoke_stream(*args, **kwargs):
+                    stream_queue.put(chunk)
+
+            try:
+                asyncio.run(_consume())
+            except Exception as exc:
+                stream_queue.put(exc)
+            finally:
+                stream_queue.put(sentinel)
+
+        stream_thread = threading.Thread(
+            target=_runner,
+            name=f"EasyRemoteStreamSync-{self.function_name}",
+            daemon=True,
+        )
+        stream_thread.start()
+
+        while True:
+            payload = stream_queue.get()
+            if payload is sentinel:
+                break
+            if isinstance(payload, Exception):
+                raise payload
+            yield payload
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """
         Sync-friendly call entry.
@@ -259,6 +514,9 @@ class RemoteFunction:
         - No running loop: blocks until completion via asyncio.run.
         - Running loop: returns coroutine for caller to await.
         """
+        if self.is_stream:
+            return self.stream(*args, **kwargs)
+
         coroutine = self._invoke(*args, **kwargs)
         try:
             asyncio.get_running_loop()
@@ -298,6 +556,14 @@ def register(
             load_balancing=load_balancing,
             gateway_address=gateway_address,
         )
+
+        if stream:
+
+            @functools.wraps(func)
+            def stream_wrapper(*args: Any, **kwargs: Any) -> Any:
+                return remote_function.stream(*args, **kwargs)
+
+            return cast(T, stream_wrapper)
 
         if async_func:
 

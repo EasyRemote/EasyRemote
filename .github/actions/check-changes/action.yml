@@ -82,7 +82,7 @@ runs:
         echo "=========================================="
         echo "📦 Event: $EVENT"
         echo "🔀 Ref: $REF"
-        echo "🎯 Check paths: $CHECK_PATHS"
+        echo " Check paths: $CHECK_PATHS"
         echo "=========================================="
 
         # =============================================

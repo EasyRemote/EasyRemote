@@ -1,6 +1,6 @@
 # EasyRemote Protobuf问题修复报告
 
-## 🎯 修复摘要
+##  修复摘要
 
 成功修复了EasyRemote项目中的protobuf问题，使NodeInfo和HeartbeatMessage消息类型可以正常使用，解决了分布式计算节点注册和心跳功能的核心问题。
 
@@ -132,7 +132,7 @@ def test_protobuf_imports():
 ### 测试结果
 
 ```
-🎉 ALL TESTS PASSED! 🎉
+🎉 ALL TESTS PASSED!
 ✅ Protobuf issues have been resolved
 ✅ Tools module is working correctly
 ✅ Core module imports are working
@@ -149,7 +149,7 @@ def test_protobuf_imports():
 | **模块导入**          | ❌ 导入失败   | ✅ 导入成功   | 修复导入路径     |
 | **配置导入**          | ❌ 函数不存在 | ✅ 正常导入   | 使用正确函数名   |
 
-## 🔧 技术细节
+## 技术细节
 
 ### Protobuf消息字段映射
 
@@ -180,7 +180,7 @@ rpc RegisterNode(NodeInfo) returns (RegisterResponse);
 rpc SendHeartbeat(HeartbeatMessage) returns (HeartbeatResponse);
 ```
 
-## 🚀 影响和效果
+##  影响和效果
 
 ### 立即可用功能
 

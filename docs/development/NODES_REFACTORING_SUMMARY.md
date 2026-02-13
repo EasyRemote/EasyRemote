@@ -152,7 +152,7 @@ with client.session() as session:
 
 ---
 
-## 🎯 Advanced Features Implemented
+##  Advanced Features Implemented
 
 ### **1. Design Patterns**
 - **Strategy Pattern**: Pluggable execution and load balancing strategies
@@ -179,7 +179,7 @@ with client.session() as session:
 
 ---
 
-## 🚀 Usage Examples
+##  Usage Examples
 
 ### **Simple Production Server**
 ```python
@@ -284,7 +284,7 @@ from easyremote.core.nodes import (
 
 ---
 
-## 🎉 Conclusion
+## Conclusion
 
 The comprehensive refactoring of EasyRemote's core nodes module has successfully transformed the framework from basic distributed computing components to a production-ready, enterprise-grade platform. The improvements include:
 

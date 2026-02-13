@@ -1,6 +1,6 @@
 # EasyRemote API Design Philosophy
 
-## 🎯 Design Goal: Optimal Simplicity
+##  Design Goal: Optimal Simplicity
 
 EasyRemote's API is designed around a core principle: **make distributed computing as simple as local function calls, without sacrificing essential functionality**.
 
@@ -130,7 +130,7 @@ client = quick_client()
 | `@node.register`   | `@node.expose`, `@node.publish`  | Standard Python registry pattern            |
 | `server.start()`   | `server.run()`, `server.serve()` | Consistent with threading/subprocess        |
 
-## 🎯 Key Advantages
+##  Key Advantages
 
 ### 1. Cognitive Load Minimization
 

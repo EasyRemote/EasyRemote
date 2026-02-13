@@ -6,21 +6,8 @@
 """Generated protocol buffer code."""
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
-try:
-  from google.protobuf import runtime_version as _runtime_version
-except ImportError:  # pragma: no cover - compatibility for older protobuf runtime
-  _runtime_version = None
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
-if _runtime_version is not None:
-  _runtime_version.ValidateProtobufRuntimeVersion(
-      _runtime_version.Domain.PUBLIC,
-      5,
-      29,
-      0,
-      '',
-      'service.proto'
-  )
 # @@protoc_insertion_point(imports)
 
 _sym_db = _symbol_database.Default()
@@ -28,7 +15,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\rservice.proto\x12\neasyremote\"D\n\x0c\x46unctionSpec\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x10\n\x08is_async\x18\x02 \x01(\x08\x12\x14\n\x0cis_generator\x18\x03 \x01(\x08\"\xfe\x01\n\x08NodeInfo\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12+\n\tfunctions\x18\x03 \x03(\x0b\x32\x18.easyremote.FunctionSpec\x12!\n\x19max_concurrent_executions\x18\x04 \x01(\x05\x12\x1a\n\x12\x63urrent_executions\x18\x05 \x01(\x05\x12\x0f\n\x07version\x18\x06 \x01(\t\x12\x14\n\x0c\x63\x61pabilities\x18\x07 \x03(\t\x12\x10\n\x08location\x18\x08 \x01(\t\x12\x16\n\x0elast_heartbeat\x18\t \x01(\x03\x12\x14\n\x0c\x63urrent_load\x18\n \x01(\x02\"\x8e\x01\n\x10HeartbeatMessage\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\x11\n\ttimestamp\x18\x02 \x01(\x03\x12\x11\n\tcpu_usage\x18\x03 \x01(\x02\x12\x14\n\x0cmemory_usage\x18\x04 \x01(\x02\x12\x11\n\tgpu_usage\x18\x05 \x01(\x02\x12\x1a\n\x12\x61\x63tive_connections\x18\x06 \x01(\x05\"O\n\x0fRegisterRequest\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12+\n\tfunctions\x18\x02 \x03(\x0b\x32\x18.easyremote.FunctionSpec\"4\n\x10RegisterResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\"#\n\x10HeartbeatRequest\x12\x0f\n\x07node_id\x18\x01 \x01(\t\"%\n\x11HeartbeatResponse\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\"X\n\x10\x45xecutionRequest\x12\x15\n\rfunction_name\x18\x01 \x01(\t\x12\x0c\n\x04\x61rgs\x18\x02 \x01(\x0c\x12\x0e\n\x06kwargs\x18\x03 \x01(\x0c\x12\x0f\n\x07\x63\x61ll_id\x18\x04 \x01(\t\"\xa4\x01\n\x0f\x45xecutionResult\x12\x11\n\thas_error\x18\x01 \x01(\x08\x12\x15\n\rerror_message\x18\x02 \x01(\t\x12\x0e\n\x06result\x18\x03 \x01(\x0c\x12\x0f\n\x07is_done\x18\x04 \x01(\x08\x12\r\n\x05\x63hunk\x18\x05 \x01(\x0c\x12\x0f\n\x07\x63\x61ll_id\x18\x06 \x01(\t\x12\x15\n\rfunction_name\x18\x07 \x01(\t\x12\x0f\n\x07node_id\x18\x08 \x01(\t\"\x98\x01\n\x17LoadBalancedCallRequest\x12\x0f\n\x07\x63\x61ll_id\x18\x01 \x01(\t\x12\x15\n\rfunction_name\x18\x02 \x01(\t\x12\x0c\n\x04\x61rgs\x18\x03 \x01(\x0c\x12\x0e\n\x06kwargs\x18\x04 \x01(\x0c\x12\x10\n\x08strategy\x18\x05 \x01(\t\x12\x14\n\x0crequirements\x18\x06 \x01(\t\x12\x0f\n\x07timeout\x18\x07 \x01(\x05\"\x89\x01\n\x18LoadBalancedCallResponse\x12\x11\n\thas_error\x18\x01 \x01(\x08\x12\x15\n\rerror_message\x18\x02 \x01(\t\x12\x0e\n\x06result\x18\x03 \x01(\x0c\x12\x18\n\x10selected_node_id\x18\x04 \x01(\t\x12\x19\n\x11\x65xecution_time_ms\x18\x05 \x01(\x02\"j\n\x11\x44irectCallRequest\x12\x0f\n\x07\x63\x61ll_id\x18\x01 \x01(\t\x12\x0f\n\x07node_id\x18\x02 \x01(\t\x12\x15\n\rfunction_name\x18\x03 \x01(\t\x12\x0c\n\x04\x61rgs\x18\x04 \x01(\x0c\x12\x0e\n\x06kwargs\x18\x05 \x01(\x0c\"N\n\x12\x44irectCallResponse\x12\x11\n\thas_error\x18\x01 \x01(\x08\x12\x15\n\rerror_message\x18\x02 \x01(\t\x12\x0e\n\x06result\x18\x03 \x01(\x0c\"%\n\x10ListNodesRequest\x12\x11\n\tclient_id\x18\x01 \x01(\t\"8\n\x11ListNodesResponse\x12#\n\x05nodes\x18\x01 \x03(\x0b\x32\x14.easyremote.NodeInfo\"7\n\x11NodeStatusRequest\x12\x11\n\tclient_id\x18\x01 \x01(\t\x12\x0f\n\x07node_id\x18\x02 \x01(\t\"\xc3\x01\n\x12NodeStatusResponse\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x11\n\tcpu_usage\x18\x03 \x01(\x02\x12\x14\n\x0cmemory_usage\x18\x04 \x01(\x02\x12\x11\n\tgpu_usage\x18\x05 \x01(\x02\x12\x14\n\x0c\x63urrent_load\x18\x06 \x01(\x02\x12\x11\n\tfunctions\x18\x07 \x03(\t\x12\x14\n\x0chealth_score\x18\x08 \x01(\x02\x12\x11\n\tlast_seen\x18\t \x01(\x03\"\xda\x02\n\x0e\x43ontrolMessage\x12\x33\n\x0cregister_req\x18\x01 \x01(\x0b\x32\x1b.easyremote.RegisterRequestH\x00\x12\x35\n\rregister_resp\x18\x02 \x01(\x0b\x32\x1c.easyremote.RegisterResponseH\x00\x12\x35\n\rheartbeat_req\x18\x03 \x01(\x0b\x32\x1c.easyremote.HeartbeatRequestH\x00\x12\x37\n\x0eheartbeat_resp\x18\x04 \x01(\x0b\x32\x1d.easyremote.HeartbeatResponseH\x00\x12\x30\n\x08\x65xec_req\x18\x05 \x01(\x0b\x32\x1c.easyremote.ExecutionRequestH\x00\x12/\n\x08\x65xec_res\x18\x06 \x01(\x0b\x32\x1b.easyremote.ExecutionResultH\x00\x42\t\n\x07payload2\xb9\x04\n\rRemoteService\x12K\n\rControlStream\x12\x1a.easyremote.ControlMessage\x1a\x1a.easyremote.ControlMessage(\x01\x30\x01\x12\x42\n\x0cRegisterNode\x12\x14.easyremote.NodeInfo\x1a\x1c.easyremote.RegisterResponse\x12L\n\rSendHeartbeat\x12\x1c.easyremote.HeartbeatMessage\x1a\x1d.easyremote.HeartbeatResponse\x12\x62\n\x15\x43\x61llWithLoadBalancing\x12#.easyremote.LoadBalancedCallRequest\x1a$.easyremote.LoadBalancedCallResponse\x12K\n\nCallDirect\x12\x1d.easyremote.DirectCallRequest\x1a\x1e.easyremote.DirectCallResponse\x12H\n\tListNodes\x12\x1c.easyremote.ListNodesRequest\x1a\x1d.easyremote.ListNodesResponse\x12N\n\rGetNodeStatus\x12\x1d.easyremote.NodeStatusRequest\x1a\x1e.easyremote.NodeStatusResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\rservice.proto\x12\neasyremote\"D\n\x0c\x46unctionSpec\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x10\n\x08is_async\x18\x02 \x01(\x08\x12\x14\n\x0cis_generator\x18\x03 \x01(\x08\"\xfe\x01\n\x08NodeInfo\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12+\n\tfunctions\x18\x03 \x03(\x0b\x32\x18.easyremote.FunctionSpec\x12!\n\x19max_concurrent_executions\x18\x04 \x01(\x05\x12\x1a\n\x12\x63urrent_executions\x18\x05 \x01(\x05\x12\x0f\n\x07version\x18\x06 \x01(\t\x12\x14\n\x0c\x63\x61pabilities\x18\x07 \x03(\t\x12\x10\n\x08location\x18\x08 \x01(\t\x12\x16\n\x0elast_heartbeat\x18\t \x01(\x03\x12\x14\n\x0c\x63urrent_load\x18\n \x01(\x02\"\x8e\x01\n\x10HeartbeatMessage\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\x11\n\ttimestamp\x18\x02 \x01(\x03\x12\x11\n\tcpu_usage\x18\x03 \x01(\x02\x12\x14\n\x0cmemory_usage\x18\x04 \x01(\x02\x12\x11\n\tgpu_usage\x18\x05 \x01(\x02\x12\x1a\n\x12\x61\x63tive_connections\x18\x06 \x01(\x05\"O\n\x0fRegisterRequest\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12+\n\tfunctions\x18\x02 \x03(\x0b\x32\x18.easyremote.FunctionSpec\"4\n\x10RegisterResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\"#\n\x10HeartbeatRequest\x12\x0f\n\x07node_id\x18\x01 \x01(\t\"%\n\x11HeartbeatResponse\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\"X\n\x10\x45xecutionRequest\x12\x15\n\rfunction_name\x18\x01 \x01(\t\x12\x0c\n\x04\x61rgs\x18\x02 \x01(\x0c\x12\x0e\n\x06kwargs\x18\x03 \x01(\x0c\x12\x0f\n\x07\x63\x61ll_id\x18\x04 \x01(\t\"\xa4\x01\n\x0f\x45xecutionResult\x12\x11\n\thas_error\x18\x01 \x01(\x08\x12\x15\n\rerror_message\x18\x02 \x01(\t\x12\x0e\n\x06result\x18\x03 \x01(\x0c\x12\x0f\n\x07is_done\x18\x04 \x01(\x08\x12\r\n\x05\x63hunk\x18\x05 \x01(\x0c\x12\x0f\n\x07\x63\x61ll_id\x18\x06 \x01(\t\x12\x15\n\rfunction_name\x18\x07 \x01(\t\x12\x0f\n\x07node_id\x18\x08 \x01(\t\"\x98\x01\n\x17LoadBalancedCallRequest\x12\x0f\n\x07\x63\x61ll_id\x18\x01 \x01(\t\x12\x15\n\rfunction_name\x18\x02 \x01(\t\x12\x0c\n\x04\x61rgs\x18\x03 \x01(\x0c\x12\x0e\n\x06kwargs\x18\x04 \x01(\x0c\x12\x10\n\x08strategy\x18\x05 \x01(\t\x12\x14\n\x0crequirements\x18\x06 \x01(\t\x12\x0f\n\x07timeout\x18\x07 \x01(\x05\"\x89\x01\n\x18LoadBalancedCallResponse\x12\x11\n\thas_error\x18\x01 \x01(\x08\x12\x15\n\rerror_message\x18\x02 \x01(\t\x12\x0e\n\x06result\x18\x03 \x01(\x0c\x12\x18\n\x10selected_node_id\x18\x04 \x01(\t\x12\x19\n\x11\x65xecution_time_ms\x18\x05 \x01(\x02\"j\n\x11\x44irectCallRequest\x12\x0f\n\x07\x63\x61ll_id\x18\x01 \x01(\t\x12\x0f\n\x07node_id\x18\x02 \x01(\t\x12\x15\n\rfunction_name\x18\x03 \x01(\t\x12\x0c\n\x04\x61rgs\x18\x04 \x01(\x0c\x12\x0e\n\x06kwargs\x18\x05 \x01(\x0c\"N\n\x12\x44irectCallResponse\x12\x11\n\thas_error\x18\x01 \x01(\x08\x12\x15\n\rerror_message\x18\x02 \x01(\t\x12\x0e\n\x06result\x18\x03 \x01(\x0c\"\xa5\x01\n\x0fStreamCallStart\x12\x0f\n\x07\x63\x61ll_id\x18\x01 \x01(\t\x12\x15\n\rfunction_name\x18\x02 \x01(\t\x12\x0f\n\x07node_id\x18\x03 \x01(\t\x12\x0c\n\x04\x61rgs\x18\x04 \x01(\x0c\x12\x0e\n\x06kwargs\x18\x05 \x01(\x0c\x12\x1a\n\x12use_load_balancing\x18\x06 \x01(\x08\x12\x1f\n\x17load_balancing_strategy\x18\x07 \x01(\t\"3\n\x10StreamCallCancel\x12\x0f\n\x07\x63\x61ll_id\x18\x01 \x01(\t\x12\x0e\n\x06reason\x18\x02 \x01(\t\"1\n\rStreamCallAck\x12\x0f\n\x07\x63\x61ll_id\x18\x01 \x01(\t\x12\x0f\n\x07\x63redits\x18\x02 \x01(\x05\"D\n\x0fStreamCallError\x12\x0f\n\x07\x63\x61ll_id\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x0f\n\x07node_id\x18\x03 \x01(\t\"\x83\x02\n\x0fStreamCallFrame\x12,\n\x05start\x18\x01 \x01(\x0b\x32\x1b.easyremote.StreamCallStartH\x00\x12.\n\x06\x63\x61ncel\x18\x02 \x01(\x0b\x32\x1c.easyremote.StreamCallCancelH\x00\x12(\n\x03\x61\x63k\x18\x03 \x01(\x0b\x32\x19.easyremote.StreamCallAckH\x00\x12/\n\x08\x65xec_res\x18\x04 \x01(\x0b\x32\x1b.easyremote.ExecutionResultH\x00\x12,\n\x05\x65rror\x18\x05 \x01(\x0b\x32\x1b.easyremote.StreamCallErrorH\x00\x42\t\n\x07payload\"%\n\x10ListNodesRequest\x12\x11\n\tclient_id\x18\x01 \x01(\t\"8\n\x11ListNodesResponse\x12#\n\x05nodes\x18\x01 \x03(\x0b\x32\x14.easyremote.NodeInfo\"7\n\x11NodeStatusRequest\x12\x11\n\tclient_id\x18\x01 \x01(\t\x12\x0f\n\x07node_id\x18\x02 \x01(\t\"\xc3\x01\n\x12NodeStatusResponse\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x11\n\tcpu_usage\x18\x03 \x01(\x02\x12\x14\n\x0cmemory_usage\x18\x04 \x01(\x02\x12\x11\n\tgpu_usage\x18\x05 \x01(\x02\x12\x14\n\x0c\x63urrent_load\x18\x06 \x01(\x02\x12\x11\n\tfunctions\x18\x07 \x03(\t\x12\x14\n\x0chealth_score\x18\x08 \x01(\x02\x12\x11\n\tlast_seen\x18\t \x01(\x03\"\xda\x02\n\x0e\x43ontrolMessage\x12\x33\n\x0cregister_req\x18\x01 \x01(\x0b\x32\x1b.easyremote.RegisterRequestH\x00\x12\x35\n\rregister_resp\x18\x02 \x01(\x0b\x32\x1c.easyremote.RegisterResponseH\x00\x12\x35\n\rheartbeat_req\x18\x03 \x01(\x0b\x32\x1c.easyremote.HeartbeatRequestH\x00\x12\x37\n\x0eheartbeat_resp\x18\x04 \x01(\x0b\x32\x1d.easyremote.HeartbeatResponseH\x00\x12\x30\n\x08\x65xec_req\x18\x05 \x01(\x0b\x32\x1c.easyremote.ExecutionRequestH\x00\x12/\n\x08\x65xec_res\x18\x06 \x01(\x0b\x32\x1b.easyremote.ExecutionResultH\x00\x42\t\n\x07payload2\x85\x05\n\rRemoteService\x12K\n\rControlStream\x12\x1a.easyremote.ControlMessage\x1a\x1a.easyremote.ControlMessage(\x01\x30\x01\x12\x42\n\x0cRegisterNode\x12\x14.easyremote.NodeInfo\x1a\x1c.easyremote.RegisterResponse\x12L\n\rSendHeartbeat\x12\x1c.easyremote.HeartbeatMessage\x1a\x1d.easyremote.HeartbeatResponse\x12\x62\n\x15\x43\x61llWithLoadBalancing\x12#.easyremote.LoadBalancedCallRequest\x1a$.easyremote.LoadBalancedCallResponse\x12K\n\nCallDirect\x12\x1d.easyremote.DirectCallRequest\x1a\x1e.easyremote.DirectCallResponse\x12J\n\nStreamCall\x12\x1b.easyremote.StreamCallFrame\x1a\x1b.easyremote.StreamCallFrame(\x01\x30\x01\x12H\n\tListNodes\x12\x1c.easyremote.ListNodesRequest\x1a\x1d.easyremote.ListNodesResponse\x12N\n\rGetNodeStatus\x12\x1d.easyremote.NodeStatusRequest\x1a\x1e.easyremote.NodeStatusResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -61,16 +48,26 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_DIRECTCALLREQUEST']._serialized_end=1370
   _globals['_DIRECTCALLRESPONSE']._serialized_start=1372
   _globals['_DIRECTCALLRESPONSE']._serialized_end=1450
-  _globals['_LISTNODESREQUEST']._serialized_start=1452
-  _globals['_LISTNODESREQUEST']._serialized_end=1489
-  _globals['_LISTNODESRESPONSE']._serialized_start=1491
-  _globals['_LISTNODESRESPONSE']._serialized_end=1547
-  _globals['_NODESTATUSREQUEST']._serialized_start=1549
-  _globals['_NODESTATUSREQUEST']._serialized_end=1604
-  _globals['_NODESTATUSRESPONSE']._serialized_start=1607
-  _globals['_NODESTATUSRESPONSE']._serialized_end=1802
-  _globals['_CONTROLMESSAGE']._serialized_start=1805
-  _globals['_CONTROLMESSAGE']._serialized_end=2151
-  _globals['_REMOTESERVICE']._serialized_start=2154
-  _globals['_REMOTESERVICE']._serialized_end=2723
+  _globals['_STREAMCALLSTART']._serialized_start=1453
+  _globals['_STREAMCALLSTART']._serialized_end=1618
+  _globals['_STREAMCALLCANCEL']._serialized_start=1620
+  _globals['_STREAMCALLCANCEL']._serialized_end=1671
+  _globals['_STREAMCALLACK']._serialized_start=1673
+  _globals['_STREAMCALLACK']._serialized_end=1722
+  _globals['_STREAMCALLERROR']._serialized_start=1724
+  _globals['_STREAMCALLERROR']._serialized_end=1792
+  _globals['_STREAMCALLFRAME']._serialized_start=1795
+  _globals['_STREAMCALLFRAME']._serialized_end=2054
+  _globals['_LISTNODESREQUEST']._serialized_start=2056
+  _globals['_LISTNODESREQUEST']._serialized_end=2093
+  _globals['_LISTNODESRESPONSE']._serialized_start=2095
+  _globals['_LISTNODESRESPONSE']._serialized_end=2151
+  _globals['_NODESTATUSREQUEST']._serialized_start=2153
+  _globals['_NODESTATUSREQUEST']._serialized_end=2208
+  _globals['_NODESTATUSRESPONSE']._serialized_start=2211
+  _globals['_NODESTATUSRESPONSE']._serialized_end=2406
+  _globals['_CONTROLMESSAGE']._serialized_start=2409
+  _globals['_CONTROLMESSAGE']._serialized_end=2755
+  _globals['_REMOTESERVICE']._serialized_start=2758
+  _globals['_REMOTESERVICE']._serialized_end=3403
 # @@protoc_insertion_point(module_scope)

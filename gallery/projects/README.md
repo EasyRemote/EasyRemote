@@ -20,6 +20,8 @@ Author: Silan Hu (silan.hu@u.nus.edu)
   - 对应函数市场（K5）示例
 - `05_local_data_residency_ai`
   - 对应本地数据不出域（K6）示例
+- `06_runtime_device_capability_injection`
+  - 对应远程 agent 运行时下发用户设备拍照/录像/流媒体能力（K9）示例（支持按用户节点定向）
 
 ## 统一规则
 

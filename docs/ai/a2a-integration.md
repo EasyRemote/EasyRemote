@@ -44,6 +44,40 @@ Conformance tests:
 
 ## 2. Minimal usage
 
+### 2.1 Zero-boilerplate (recommended)
+
+```python
+import asyncio
+from easyremote.a2a import A2AService
+
+service = A2AService(name="incident-agent", version="1.0.0")
+
+@service.capability(description="Echo payload")
+def echo(payload):
+    return payload
+
+async def main():
+    response = await service.handle_a2a(
+        {
+            "jsonrpc": "2.0",
+            "id": "task-1",
+            "method": "task.execute",
+            "params": {
+                "task": {
+                    "id": "task-001",
+                    "function": "echo",
+                    "input": ["hello-a2a"],
+                }
+            },
+        }
+    )
+    print(response)
+
+asyncio.run(main())
+```
+
+### 2.2 Custom runtime (advanced)
+
 ```python
 import asyncio
 

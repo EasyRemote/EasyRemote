@@ -42,6 +42,7 @@ def test_gallery_makefiles_do_not_use_raw_python_commands() -> None:
         project_root / "gallery/projects/03_a2a_incident_copilot/Makefile",
         project_root / "gallery/projects/04_function_marketplace/Makefile",
         project_root / "gallery/projects/05_local_data_residency_ai/Makefile",
+        project_root / "gallery/projects/06_runtime_device_capability_injection/Makefile",
     ]
 
     violations: list[str] = []

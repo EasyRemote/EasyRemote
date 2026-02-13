@@ -1,6 +1,6 @@
 # EasyRemote 部署指南
 
-## 🎯 部署目标
+##  部署目标
 
 本指南将帮助您在不同环境中部署EasyRemote分布式计算系统：
 - 本地开发环境部署
@@ -58,7 +58,7 @@ class LocalDeployment:
         
     def start_server(self):
         """启动网关服务器"""
-        print("🚀 启动网关服务器...")
+        print(" 启动网关服务器...")
         
         server_code = '''
 from easyremote import Server
@@ -223,7 +223,7 @@ if __name__ == "__main__":
         signal.signal(signal.SIGTERM, self.signal_handler)
         
         try:
-            print("🚀 开始本地部署...")
+            print(" 开始本地部署...")
             print("=" * 50)
             
             # 启动组件
@@ -318,7 +318,7 @@ def setup_dev_environment():
 # VPS环境初始化脚本
 set -e
 
-echo "🚀 开始VPS环境初始化..."
+echo " 开始VPS环境初始化..."
 
 # 更新系统
 echo "📦 更新系统包..."
@@ -708,7 +708,7 @@ if __name__ == "__main__":
     
     def deploy(self):
         """执行生产部署"""
-        print("🚀 开始生产环境部署...")
+        print(" 开始生产环境部署...")
         print("=" * 60)
         
         try:
@@ -1011,7 +1011,7 @@ def main():
     node_type = os.getenv('EASYREMOTE_NODE_TYPE', 'general')
     node_id = os.getenv('EASYREMOTE_NODE_ID', f'node_{random.randint(1000, 9999)}')
     
-    print(f"🚀 启动计算节点: {node_id} (类型: {node_type})")
+    print(f" 启动计算节点: {node_id} (类型: {node_type})")
     print(f"🔗 连接到网关: {gateway_address}")
     
     # 创建计算节点
@@ -1307,7 +1307,7 @@ kubectl get pods
 kubectl get services
 ```
 
-## 🔧 部署后验证
+## 部署后验证
 
 ### 1. 功能测试脚本
 
@@ -1412,7 +1412,7 @@ def test_performance(server_address, num_requests=50):
 
 def main():
     """主测试函数"""
-    print("🚀 开始部署验证...")
+    print(" 开始部署验证...")
     print("=" * 50)
     
     # 配置测试目标
@@ -1511,7 +1511,7 @@ swapon --show
 ## 📚 相关资源
 
 - 📖 [基础使用教程](basic-usage.md)
-- 🚀 [高级场景教程](advanced-scenarios.md)
+-  [高级场景教程](advanced-scenarios.md)
 - 📚 [API参考文档](../user-guide/api-reference.md)
 - 🏗️ [架构设计文档](../architecture/overview.md)
 

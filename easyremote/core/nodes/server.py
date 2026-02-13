@@ -75,7 +75,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Dict, Set, Union, Any, Optional, List, Tuple
+from typing import AsyncIterator, Dict, Set, Union, Any, Optional, List, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -112,6 +112,8 @@ from ...protocols import (
     ProtocolName,
     ProtocolRuntime,
 )
+
+_STREAM_CONTROL_KWARG = "__easyremote_stream__"
 
 
 class ServerState(Enum):
@@ -354,6 +356,9 @@ class DistributedComputingGateway(
                  heartbeat_timeout_seconds: float = 30.0,
                  max_queue_size: int = 5000,
                  max_workers: int = 20,
+                 max_total_active_streams: int = 512,
+                 max_streams_per_node: int = 32,
+                 stream_response_queue_size: int = 256,
                  enable_monitoring: bool = True,
                  enable_analytics: bool = True,
                  enable_security: bool = False,
@@ -368,6 +373,9 @@ class DistributedComputingGateway(
             heartbeat_timeout_seconds: Timeout for node heartbeat responses
             max_queue_size: Maximum size for internal request queues
             max_workers: Maximum number of worker threads for request processing
+            max_total_active_streams: Maximum concurrent active stream calls
+            max_streams_per_node: Maximum concurrent stream calls per node
+            stream_response_queue_size: Queue size for stream response buffering
             enable_monitoring: Enable comprehensive performance monitoring
             enable_analytics: Enable advanced analytics and ML features
             enable_security: Enable security and authentication features
@@ -402,7 +410,14 @@ class DistributedComputingGateway(
         
         # Validate configuration parameters
         self._validate_configuration(
-            port, heartbeat_timeout_seconds, max_queue_size, max_workers, cleanup_interval_seconds
+            port,
+            heartbeat_timeout_seconds,
+            max_queue_size,
+            max_workers,
+            cleanup_interval_seconds,
+            max_total_active_streams,
+            max_streams_per_node,
+            stream_response_queue_size,
         )
         
         # Core server configuration
@@ -411,6 +426,9 @@ class DistributedComputingGateway(
         self.max_queue_size = max_queue_size
         self.max_workers = max_workers
         self.cleanup_interval_seconds = cleanup_interval_seconds
+        self.max_total_active_streams = max_total_active_streams
+        self.max_streams_per_node = max_streams_per_node
+        self.stream_response_queue_size = stream_response_queue_size
         
         # Feature flags and capabilities
         self.enable_monitoring = enable_monitoring
@@ -439,6 +457,7 @@ class DistributedComputingGateway(
         self._pending_function_calls: Dict[str, Union[asyncio.Future, Dict[str, Any]]] = {}
         self._active_stream_contexts: Dict[str, StreamExecutionContext] = {}
         self._active_stream_ids: Set[str] = set()
+        self._node_active_stream_counts: Dict[str, int] = {}
         
         # Background task management
         self._background_tasks: Set[asyncio.Task] = set()
@@ -466,8 +485,17 @@ class DistributedComputingGateway(
                  f"monitoring={enable_monitoring}, analytics={enable_analytics}, "
                  f"security={enable_security}, clustering={enable_clustering})")
     
-    def _validate_configuration(self, port: int, heartbeat_timeout_seconds: float, 
-                               max_queue_size: int, max_workers: int, cleanup_interval_seconds: float):
+    def _validate_configuration(
+        self,
+        port: int,
+        heartbeat_timeout_seconds: float,
+        max_queue_size: int,
+        max_workers: int,
+        cleanup_interval_seconds: float,
+        max_total_active_streams: int,
+        max_streams_per_node: int,
+        stream_response_queue_size: int,
+    ):
         """
         Validate server configuration parameters with comprehensive checks.
         
@@ -477,6 +505,9 @@ class DistributedComputingGateway(
             max_queue_size: Maximum queue size
             max_workers: Maximum worker threads
             cleanup_interval_seconds: Cleanup interval in seconds
+            max_total_active_streams: Maximum active stream count
+            max_streams_per_node: Maximum per-node stream count
+            stream_response_queue_size: Stream response queue size
             
         Raises:
             ValueError: If any parameter is invalid
@@ -495,6 +526,22 @@ class DistributedComputingGateway(
         
         if cleanup_interval_seconds <= 0:
             raise ValueError(f"Cleanup interval must be positive, got {cleanup_interval_seconds}")
+
+        if max_total_active_streams < 1:
+            raise ValueError(
+                f"max_total_active_streams must be positive, got {max_total_active_streams}"
+            )
+
+        if max_streams_per_node < 1:
+            raise ValueError(
+                f"max_streams_per_node must be positive, got {max_streams_per_node}"
+            )
+
+        if stream_response_queue_size < 8:
+            raise ValueError(
+                "stream_response_queue_size must be at least 8, "
+                f"got {stream_response_queue_size}"
+            )
         
         # Performance recommendations
         if max_workers > 100:
@@ -1140,8 +1187,13 @@ class DistributedComputingGateway(
             # Register the node
             async with self._global_lock:
                 self._nodes[request.node_id] = node_info
-                # Create communication queue for this node
-                self._node_communication_queues[request.node_id] = asyncio.Queue(maxsize=self.max_queue_size)
+                # Keep existing control-stream queue if present. Replacing queue
+                # during re-registration can detach active stream consumers and
+                # cause function calls to stall indefinitely.
+                if request.node_id not in self._node_communication_queues:
+                    self._node_communication_queues[request.node_id] = asyncio.Queue(
+                        maxsize=self.max_queue_size
+                    )
             
             # Update metrics
             if self.metrics:
@@ -1301,7 +1353,7 @@ class DistributedComputingGateway(
                     available_nodes
                 )
                 
-                self.info(f"🎯 [ROUTE] Load balancer selected node '{selected_node}' for function '{function_name}' - executing...")
+                self.info(f" [ROUTE] Load balancer selected node '{selected_node}' for function '{function_name}' - executing...")
                 
                 # Execute function directly on selected node
                 result = await self.execute_function(selected_node, function_name, *args, **kwargs)
@@ -1450,7 +1502,225 @@ class DistributedComputingGateway(
             response.has_error = True
             response.error_message = error_msg
             return response
-    
+
+    async def StreamCall(self, request_iterator, context):
+        """
+        Handle bidirectional client streaming execution requests.
+
+        Client->Gateway:
+        - start: initialize one stream call
+        - cancel: cancel active stream forwarding
+        - ack: credit-based flow-control window (backpressure)
+
+        Gateway->Client:
+        - exec_res: stream output chunks and done marker
+        - error: normalized stream-level failures
+        """
+        outgoing_queue: asyncio.Queue = asyncio.Queue(
+            maxsize=self.stream_response_queue_size
+        )
+        stream_call_id: Optional[str] = None
+        active_forward_task: Optional[asyncio.Task] = None
+        stop_event = asyncio.Event()
+        ack_seen = False
+        stream_credits = 0
+        credit_condition = asyncio.Condition()
+        max_stream_credits = max(1, int(self.stream_response_queue_size) * 4)
+
+        async def enqueue_error(
+            message: str,
+            *,
+            node_id: Optional[str] = None,
+        ) -> None:
+            error_call_id = stream_call_id or ""
+            await outgoing_queue.put(
+                self._build_stream_error_frame(
+                    call_id=error_call_id,
+                    message=message,
+                    node_id=node_id,
+                )
+            )
+
+        async def forward_stream(
+            *,
+            function_name: str,
+            node_id: Optional[str],
+            load_balancing_config: Union[bool, str, dict],
+            args: Tuple[Any, ...],
+            kwargs: Dict[str, Any],
+        ) -> None:
+            nonlocal ack_seen, stream_credits
+            try:
+                if load_balancing_config:
+                    stream_iter = self.stream_function_with_load_balancing(
+                        function_name,
+                        load_balancing_config,
+                        *args,
+                        **kwargs,
+                    )
+                else:
+                    stream_iter = self.stream_function(
+                        node_id,
+                        function_name,
+                        *args,
+                        **kwargs,
+                    )
+
+                async for chunk in stream_iter:
+                    if ack_seen:
+                        async with credit_condition:
+                            while stream_credits <= 0 and not stop_event.is_set():
+                                await credit_condition.wait()
+                            if stop_event.is_set():
+                                break
+                            stream_credits -= 1
+
+                    response_frame = service_pb2.StreamCallFrame()
+                    response_frame.exec_res.call_id = stream_call_id or ""
+                    response_frame.exec_res.function_name = function_name
+                    if node_id:
+                        response_frame.exec_res.node_id = node_id
+                    response_frame.exec_res.has_error = False
+                    response_frame.exec_res.is_done = False
+                    response_frame.exec_res.chunk = self._serializer.serialize_result(chunk)
+                    await outgoing_queue.put(response_frame)
+
+                done_frame = service_pb2.StreamCallFrame()
+                done_frame.exec_res.call_id = stream_call_id or ""
+                done_frame.exec_res.function_name = function_name
+                if node_id:
+                    done_frame.exec_res.node_id = node_id
+                done_frame.exec_res.has_error = False
+                done_frame.exec_res.is_done = True
+                await outgoing_queue.put(done_frame)
+            except asyncio.CancelledError:
+                # Client cancellation: terminate silently to avoid noisy errors.
+                raise
+            except Exception as exc:
+                await enqueue_error(str(exc), node_id=node_id)
+            finally:
+                stop_event.set()
+
+        async def consume_requests() -> None:
+            nonlocal stream_call_id, active_forward_task, ack_seen, stream_credits
+            try:
+                async for frame in request_iterator:
+                    if frame.HasField("start"):
+                        if active_forward_task is not None:
+                            await enqueue_error(
+                                "Duplicate start frame is not allowed for one StreamCall session."
+                            )
+                            continue
+
+                        start = frame.start
+                        stream_call_id = start.call_id or str(uuid.uuid4())
+
+                        try:
+                            args, kwargs = self._serializer.deserialize_args(
+                                start.args,
+                                start.kwargs,
+                            )
+                        except Exception as exc:
+                            await enqueue_error(f"Failed to deserialize stream arguments: {exc}")
+                            stop_event.set()
+                            break
+
+                        use_load_balancing = bool(start.use_load_balancing)
+                        lb_strategy = (
+                            start.load_balancing_strategy.strip()
+                            if start.load_balancing_strategy
+                            else "adaptive"
+                        )
+                        node_id = start.node_id.strip() if start.node_id else None
+
+                        active_forward_task = asyncio.create_task(
+                            forward_stream(
+                                function_name=start.function_name,
+                                node_id=node_id,
+                                load_balancing_config=lb_strategy
+                                if use_load_balancing
+                                else False,
+                                args=tuple(args),
+                                kwargs=dict(kwargs),
+                            ),
+                            name=f"StreamCallForward-{stream_call_id}",
+                        )
+
+                    elif frame.HasField("cancel"):
+                        cancel = frame.cancel
+                        if stream_call_id and cancel.call_id and cancel.call_id != stream_call_id:
+                            await enqueue_error(
+                                "Cancel call_id does not match active stream session."
+                            )
+                            continue
+
+                        if active_forward_task is not None and not active_forward_task.done():
+                            active_forward_task.cancel()
+                        stop_event.set()
+                        async with credit_condition:
+                            credit_condition.notify_all()
+                        break
+
+                    elif frame.HasField("ack"):
+                        ack = frame.ack
+                        if stream_call_id and ack.call_id and ack.call_id != stream_call_id:
+                            await enqueue_error(
+                                "Ack call_id does not match active stream session."
+                            )
+                            continue
+
+                        delta = int(getattr(ack, "credits", 0) or 0)
+                        if delta <= 0:
+                            continue
+
+                        ack_seen = True
+                        async with credit_condition:
+                            stream_credits = min(
+                                max_stream_credits,
+                                stream_credits + delta,
+                            )
+                            credit_condition.notify_all()
+                        continue
+                    else:
+                        await enqueue_error("Unsupported stream frame payload.")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await enqueue_error(f"Failed to process stream request: {exc}")
+                stop_event.set()
+            finally:
+                if active_forward_task is None:
+                    stop_event.set()
+
+        request_task = asyncio.create_task(
+            consume_requests(),
+            name="StreamCallRequestConsumer",
+        )
+
+        try:
+            while True:
+                if stop_event.is_set() and outgoing_queue.empty():
+                    break
+
+                try:
+                    frame = await asyncio.wait_for(outgoing_queue.get(), timeout=0.2)
+                    yield frame
+                except asyncio.TimeoutError:
+                    if stop_event.is_set() and outgoing_queue.empty():
+                        break
+                    continue
+        finally:
+            if not request_task.done():
+                request_task.cancel()
+                await asyncio.gather(request_task, return_exceptions=True)
+
+            if active_forward_task is not None and not active_forward_task.done():
+                active_forward_task.cancel()
+                await asyncio.gather(active_forward_task, return_exceptions=True)
+
+            async with credit_condition:
+                credit_condition.notify_all()
+
     async def ListNodes(self, request, context):
         """
         Handle node listing requests.
@@ -1472,6 +1742,11 @@ class DistributedComputingGateway(
                     node_proto = service_pb2.NodeInfo()
                     node_proto.node_id = node_id
                     node_proto.status = node_info.status.value if hasattr(node_info.status, 'value') else str(node_info.status)
+                    node_proto.version = getattr(node_info, "version", "") or "1.0.0"
+                    node_proto.location = getattr(node_info, "location", "") or ""
+                    node_proto.capabilities.extend(
+                        sorted(getattr(node_info, "capabilities", set()) or set())
+                    )
                     
                     # Add function names
                     for func_name in node_info.functions.keys():
@@ -1480,8 +1755,11 @@ class DistributedComputingGateway(
                     
                     # Add health metrics if available
                     if hasattr(node_info, 'health_metrics') and node_info.health_metrics:
-                        node_proto.current_load = getattr(node_info.health_metrics, 'cpu_usage', 0.0) / 100.0
-                        node_proto.last_heartbeat = int(time.time())  # Approximate
+                        cpu_percent = getattr(node_info.health_metrics, "cpu_usage_percent", 0.0)
+                        node_proto.current_load = max(0.0, min(1.0, float(cpu_percent) / 100.0))
+                    last_heartbeat = getattr(node_info, "last_heartbeat", None)
+                    if last_heartbeat is not None:
+                        node_proto.last_heartbeat = int(last_heartbeat.timestamp())
                     
                     response.nodes.append(node_proto)
             
@@ -1697,7 +1975,7 @@ class DistributedComputingGateway(
                                         # Stream result - add to queue
                                         if 'response_queue' in future_or_context:
                                             await future_or_context['response_queue'].put(exec_result)
-                                            self.info(f"📤 [RECV] Added stream result to queue for call {call_id}")
+                                            self.info(f" [RECV] Added stream result to queue for call {call_id}")
                                 else:
                                     self.warning(f"⚠️ [RECV] Received result for unknown call {call_id} from node '{node_id}'")
                             
@@ -1735,12 +2013,12 @@ class DistributedComputingGateway(
                                     response_queue.get(), 
                                     timeout=0.1  # 100ms timeout
                                 )
-                                self.info(f"📨 [CONTROL] 🎯 FOUND MESSAGE for node '{node_id}'! Queue had {queue_size} messages")
+                                self.info(f"📨 [CONTROL]  FOUND MESSAGE for node '{node_id}'! Queue had {queue_size} messages")
                                 
                                 # Check what type of message it is
                                 if outgoing_message.HasField('exec_req'):
                                     exec_req = outgoing_message.exec_req
-                                    self.info(f"🚀 [CONTROL] 📤 TRANSMITTING function call to node '{node_id}':")
+                                    self.info(f" [CONTROL]  TRANSMITTING function call to node '{node_id}':")
                                     self.info(f"   📋 Function: '{exec_req.function_name}'")
                                     self.info(f"   🆔 Call ID: {exec_req.call_id}")
                                     self.info(f"   📦 Args size: {len(exec_req.args)} bytes")
@@ -2000,7 +2278,7 @@ class DistributedComputingGateway(
         # Generate unique call ID
         call_id = str(uuid.uuid4())
         
-        self.info(f"🚀 [SEND] SENDING function call to node '{node_id}': function='{function_name}', call_id={call_id}")
+        self.info(f" [SEND] SENDING function call to node '{node_id}': function='{function_name}', call_id={call_id}")
         self.info(f"📦 [SEND] Function arguments: args={len(args)} items, kwargs={len(kwargs)} items")
         
         try:
@@ -2035,9 +2313,9 @@ class DistributedComputingGateway(
                     queue_size_before = self._node_communication_queues[node_id].qsize()
                     await self._node_communication_queues[node_id].put(control_msg)
                     queue_size_after = self._node_communication_queues[node_id].qsize()
-                    self.info(f"📤 [SEND] ✅ MESSAGE SENT to node '{node_id}' communication queue!")
+                    self.info(f" [SEND] ✅ MESSAGE SENT to node '{node_id}' communication queue!")
                     self.info(f"📊 [SEND] Queue status: before={queue_size_before}, after={queue_size_after}")
-                    self.info(f"🎯 [SEND] Node '{node_id}' should now receive and process function '{function_name}'")
+                    self.info(f" [SEND] Node '{node_id}' should now receive and process function '{function_name}'")
                 else:
                     self.error(f"❌ [SEND] FAILED! No communication channel available for node '{node_id}'")
                     raise RemoteExecutionError(
@@ -2092,6 +2370,362 @@ class DistributedComputingGateway(
                 node_id=node_id,
                 message=f"Function execution dispatch failed on node '{node_id}'",
             ) from e
+
+    def _stream_queue_soft_limit(self) -> int:
+        return max(1, int(self.max_queue_size * 0.8))
+
+    def _can_accept_stream_on_node(self, node_id: str) -> bool:
+        active_streams = self._node_active_stream_counts.get(node_id, 0)
+        if active_streams >= self.max_streams_per_node:
+            return False
+
+        communication_queue = self._node_communication_queues.get(node_id)
+        if communication_queue is None:
+            return False
+
+        if communication_queue.qsize() >= self._stream_queue_soft_limit():
+            return False
+
+        return True
+
+    def _build_stream_overload_error(
+        self,
+        *,
+        function_name: str,
+        node_id: Optional[str],
+        message: str,
+    ) -> RemoteExecutionError:
+        return RemoteExecutionError(
+            function_name=function_name,
+            node_id=node_id,
+            message=message,
+        )
+
+    def _build_stream_error_frame(
+        self,
+        *,
+        call_id: str,
+        message: str,
+        node_id: Optional[str] = None,
+    ) -> Any:
+        frame = service_pb2.StreamCallFrame()
+        frame.error.call_id = call_id
+        frame.error.message = message
+        if node_id:
+            frame.error.node_id = node_id
+        return frame
+
+    async def stream_function(
+        self,
+        node_id: Optional[str],
+        function_name: str,
+        *args,
+        **kwargs,
+    ) -> AsyncIterator[Any]:
+        """
+        Stream function output from a specific node or any matching node.
+        """
+        self.debug(f"Streaming function '{function_name}' on node '{node_id}'")
+
+        if len(self._active_stream_ids) >= self.max_total_active_streams:
+            raise self._build_stream_overload_error(
+                function_name=function_name,
+                node_id=node_id,
+                message=(
+                    "Gateway stream capacity exceeded. "
+                    f"active={len(self._active_stream_ids)}, "
+                    f"limit={self.max_total_active_streams}"
+                ),
+            )
+
+        if node_id is None:
+            if not self._nodes:
+                raise NoAvailableNodesError(
+                    message="No compute nodes are available",
+                    function_name=function_name,
+                    total_nodes=0,
+                    healthy_nodes=0,
+                )
+
+            function_nodes: List[str] = []
+            available_nodes: List[str] = []
+            for candidate_node_id, node_info in self._nodes.items():
+                if function_name in node_info.functions and node_info.is_alive():
+                    function_nodes.append(candidate_node_id)
+                    if self._can_accept_stream_on_node(candidate_node_id):
+                        available_nodes.append(candidate_node_id)
+
+            if not available_nodes:
+                if function_nodes:
+                    raise NoAvailableNodesError(
+                        message=(
+                            f"Function '{function_name}' exists but all candidate nodes are "
+                            "currently overloaded for streaming."
+                        ),
+                        function_name=function_name,
+                        total_nodes=len(function_nodes),
+                        healthy_nodes=len(function_nodes),
+                    )
+                raise FunctionNotFoundError(
+                    function_name=function_name,
+                    message=f"Function '{function_name}' not found on any available nodes",
+                )
+
+            node_id = available_nodes[0]
+
+        if node_id not in self._nodes:
+            raise NodeNotFoundError(
+                node_id=node_id,
+                available_nodes=list(self._nodes.keys()),
+                message=f"Node '{node_id}' is not available",
+            )
+
+        node_info = self._nodes[node_id]
+        if not node_info.is_alive():
+            raise NodeNotFoundError(
+                node_id=node_id,
+                message=f"Node '{node_id}' is not responding",
+            )
+
+        if not self._can_accept_stream_on_node(node_id):
+            raise self._build_stream_overload_error(
+                function_name=function_name,
+                node_id=node_id,
+                message=(
+                    f"Node '{node_id}' cannot accept new stream workload. "
+                    f"active_streams={self._node_active_stream_counts.get(node_id, 0)}, "
+                    f"per_node_limit={self.max_streams_per_node}"
+                ),
+            )
+
+        if function_name not in node_info.functions:
+            available_functions = list(node_info.functions.keys())
+            raise FunctionNotFoundError(
+                function_name=function_name,
+                node_id=node_id,
+                available_functions=available_functions,
+                message=(
+                    f"Function '{function_name}' not found on node '{node_id}'. "
+                    f"Available functions: {available_functions}"
+                ),
+            )
+
+        try:
+            async for chunk in self._stream_function_on_node(
+                node_id=node_id,
+                function_name=function_name,
+                args=args,
+                kwargs=kwargs,
+            ):
+                yield chunk
+        except EasyRemoteError:
+            raise
+        except Exception as e:
+            self.error(
+                f"Failed to stream function '{function_name}' on node '{node_id}': {e}"
+            )
+            raise ExceptionTranslator.as_remote_execution_error(
+                e,
+                function_name=function_name,
+                node_id=node_id,
+                message=f"Function stream failed on node '{node_id}'",
+            ) from e
+
+    async def _stream_function_on_node(
+        self,
+        node_id: str,
+        function_name: str,
+        args: Tuple[Any, ...],
+        kwargs: Dict[str, Any],
+    ) -> AsyncIterator[Any]:
+        call_id = str(uuid.uuid4())
+        stream_timeout_seconds = 300.0
+
+        self.info(
+            f" [STREAM-SEND] Streaming call to node '{node_id}': "
+            f"function='{function_name}', call_id={call_id}"
+        )
+
+        stream_kwargs = dict(kwargs)
+        stream_kwargs[_STREAM_CONTROL_KWARG] = True
+        serialized_args, serialized_kwargs = self._serializer.serialize_args(
+            *args, **stream_kwargs
+        )
+
+        exec_request = service_pb2.ExecutionRequest()
+        exec_request.function_name = function_name
+        exec_request.args = serialized_args
+        exec_request.kwargs = serialized_kwargs
+        exec_request.call_id = call_id
+
+        control_msg = service_pb2.ControlMessage()
+        control_msg.exec_req.CopyFrom(exec_request)
+
+        response_queue: asyncio.Queue = asyncio.Queue(
+            maxsize=self.stream_response_queue_size
+        )
+        stream_context = StreamExecutionContext(
+            call_id=call_id,
+            function_name=function_name,
+            node_id=node_id,
+            response_queue=response_queue,
+            timeout=int(stream_timeout_seconds),
+        )
+
+        async with self._global_lock:
+            if node_id not in self._node_communication_queues:
+                raise RemoteExecutionError(
+                    function_name=function_name,
+                    node_id=node_id,
+                    message=f"No communication channel available for node {node_id}",
+                )
+
+            if len(self._active_stream_ids) >= self.max_total_active_streams:
+                raise self._build_stream_overload_error(
+                    function_name=function_name,
+                    node_id=node_id,
+                    message=(
+                        "Gateway stream capacity exceeded. "
+                        f"active={len(self._active_stream_ids)}, "
+                        f"limit={self.max_total_active_streams}"
+                    ),
+                )
+
+            if not self._can_accept_stream_on_node(node_id):
+                raise self._build_stream_overload_error(
+                    function_name=function_name,
+                    node_id=node_id,
+                    message=(
+                        f"Node '{node_id}' cannot accept new stream workload. "
+                        f"active_streams={self._node_active_stream_counts.get(node_id, 0)}, "
+                        f"per_node_limit={self.max_streams_per_node}"
+                    ),
+                )
+
+            self._pending_function_calls[call_id] = {
+                "response_queue": response_queue,
+                "created_at": datetime.now(),
+            }
+            self._active_stream_contexts[call_id] = stream_context
+            self._active_stream_ids.add(call_id)
+            self._node_active_stream_counts[node_id] = (
+                self._node_active_stream_counts.get(node_id, 0) + 1
+            )
+            await self._node_communication_queues[node_id].put(control_msg)
+
+        completion_reason = "completed"
+        try:
+            while True:
+                try:
+                    exec_result = await asyncio.wait_for(
+                        response_queue.get(),
+                        timeout=stream_timeout_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    completion_reason = "timeout"
+                    raise TimeoutError(
+                        message=(
+                            f"Function '{function_name}' stream timed out "
+                            f"on node '{node_id}'"
+                        ),
+                        timeout_seconds=stream_timeout_seconds,
+                        operation=f"stream:{function_name}",
+                    )
+
+                if exec_result.has_error:
+                    completion_reason = "error"
+                    raise RemoteExecutionError(
+                        function_name=exec_result.function_name or function_name,
+                        node_id=exec_result.node_id or node_id,
+                        message=exec_result.error_message,
+                    )
+
+                if exec_result.is_done:
+                    break
+
+                serialized_chunk = exec_result.chunk or exec_result.result
+                if not serialized_chunk:
+                    continue
+
+                try:
+                    chunk = self._serializer.deserialize_result(serialized_chunk)
+                except Exception as exc:
+                    completion_reason = "serialization_error"
+                    raise ExceptionTranslator.as_serialization_error(
+                        exc,
+                        operation="deserialize_stream_chunk",
+                        message="Failed to deserialize stream chunk",
+                    ) from exc
+                yield chunk
+        finally:
+            async with self._global_lock:
+                self._pending_function_calls.pop(call_id, None)
+                self._active_stream_ids.discard(call_id)
+            await self._cleanup_stream_context(call_id, reason=completion_reason)
+
+    async def stream_function_with_load_balancing(
+        self,
+        function_name: str,
+        load_balancing_config: Union[bool, str, dict],
+        *args,
+        **kwargs,
+    ) -> AsyncIterator[Any]:
+        """
+        Stream function output from a load-balanced target node.
+        """
+        self.debug(
+            f"Streaming function '{function_name}' with load balancing: "
+            f"{load_balancing_config}"
+        )
+
+        available_nodes: List[str] = []
+        for node_id, node_info in self._nodes.items():
+            if (
+                function_name in node_info.functions
+                and node_info.is_alive()
+                and self._can_accept_stream_on_node(node_id)
+            ):
+                available_nodes.append(node_id)
+
+        if not available_nodes:
+            raise NoAvailableNodesError(
+                message=(
+                    f"No nodes available for streaming function '{function_name}'. "
+                    "Candidates are either offline, overloaded, or queue-saturated."
+                ),
+                function_name=function_name,
+                total_nodes=len(self._nodes),
+                healthy_nodes=len(
+                    [
+                        node_id
+                        for node_id, node_info in self._nodes.items()
+                        if node_info.is_alive()
+                    ]
+                ),
+            )
+
+        request_context = RequestContext(function_name=function_name)
+        selected_node = self._load_balancer.select_node(
+            function_name,
+            request_context,
+            available_nodes,
+        )
+
+        if not selected_node:
+            raise NoAvailableNodesError(
+                message="Load balancer could not select a suitable node",
+                function_name=function_name,
+                total_nodes=len(available_nodes),
+                healthy_nodes=len(available_nodes),
+            )
+
+        async for chunk in self.stream_function(
+            selected_node,
+            function_name,
+            *args,
+            **kwargs,
+        ):
+            yield chunk
     
     async def execute_function_with_load_balancing(self, function_name: str, 
                                            load_balancing_config: Union[bool, str, dict], 
@@ -2214,6 +2848,8 @@ class DistributedComputingGateway(
             if node_id in self._node_communication_queues:
                 self._node_communication_queues.pop(node_id)
                 self.debug(f"Cleaned up communication queue for node '{node_id}'")
+
+            self._node_active_stream_counts.pop(node_id, None)
         
         self.warning(f"Node '{node_id}' removed from system (reason: {reason})")
     
@@ -2221,7 +2857,15 @@ class DistributedComputingGateway(
         """Clean up a stream execution context."""
         if call_id in self._active_stream_contexts:
             stream_ctx = self._active_stream_contexts.pop(call_id)
+            node_id = stream_ctx.node_id
             await stream_ctx.cleanup(f"cleanup_{reason}")
+            if node_id in self._node_active_stream_counts:
+                next_count = max(0, self._node_active_stream_counts[node_id] - 1)
+                if next_count == 0:
+                    self._node_active_stream_counts.pop(node_id, None)
+                else:
+                    self._node_active_stream_counts[node_id] = next_count
+            self._active_stream_ids.discard(call_id)
             self.debug(f"Cleaned up stream context '{call_id}' (reason: {reason})")
     
     async def _cleanup_pending_call(self, call_id: str, reason: str = "unknown"):
@@ -2270,6 +2914,9 @@ class GatewayServerBuilder:
         self._heartbeat_timeout_seconds: float = 30.0
         self._max_queue_size: int = 5000
         self._max_workers: int = 20
+        self._max_total_active_streams: int = 512
+        self._max_streams_per_node: int = 32
+        self._stream_response_queue_size: int = 256
         self._enable_monitoring: bool = True
         self._enable_analytics: bool = True
         self._enable_security: bool = False
@@ -2285,11 +2932,30 @@ class GatewayServerBuilder:
     def with_performance_config(self, 
                                max_workers: int = 20,
                                max_queue_size: int = 5000,
-                               heartbeat_timeout_seconds: float = 30.0) -> 'GatewayServerBuilder':
+                               heartbeat_timeout_seconds: float = 30.0,
+                               max_total_active_streams: int = 512,
+                               max_streams_per_node: int = 32,
+                               stream_response_queue_size: int = 256) -> 'GatewayServerBuilder':
         """Configure performance parameters."""
         self._max_workers = max_workers
         self._max_queue_size = max_queue_size
         self._heartbeat_timeout_seconds = heartbeat_timeout_seconds
+        self._max_total_active_streams = max_total_active_streams
+        self._max_streams_per_node = max_streams_per_node
+        self._stream_response_queue_size = stream_response_queue_size
+        return self
+
+    def with_stream_limits(
+        self,
+        *,
+        max_total_active_streams: int = 512,
+        max_streams_per_node: int = 32,
+        stream_response_queue_size: int = 256,
+    ) -> 'GatewayServerBuilder':
+        """Configure stream-specific pressure limits."""
+        self._max_total_active_streams = max_total_active_streams
+        self._max_streams_per_node = max_streams_per_node
+        self._stream_response_queue_size = stream_response_queue_size
         return self
     
     def enable_monitoring(self, enabled: bool = True) -> 'GatewayServerBuilder':
@@ -2337,6 +3003,9 @@ class GatewayServerBuilder:
             heartbeat_timeout_seconds=self._heartbeat_timeout_seconds,
             max_queue_size=self._max_queue_size,
             max_workers=self._max_workers,
+            max_total_active_streams=self._max_total_active_streams,
+            max_streams_per_node=self._max_streams_per_node,
+            stream_response_queue_size=self._stream_response_queue_size,
             enable_monitoring=self._enable_monitoring,
             enable_analytics=self._enable_analytics,
             enable_security=self._enable_security,

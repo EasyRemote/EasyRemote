@@ -37,6 +37,28 @@ class FakeServer:
             "mode": "balanced",
         }
 
+    async def stream_function(self, node_id, function_name, *args, **kwargs):
+        for idx, value in enumerate(args):
+            yield {
+                "node_id": node_id,
+                "function_name": function_name,
+                "index": idx,
+                "value": value,
+                "mode": "direct_stream",
+            }
+
+    async def stream_function_with_load_balancing(
+        self, function_name, load_balancing, *args, **kwargs
+    ):
+        for idx, value in enumerate(args):
+            yield {
+                "function_name": function_name,
+                "load_balancing": load_balancing,
+                "index": idx,
+                "value": value,
+                "mode": "balanced_stream",
+            }
+
 
 class LoopBoundFakeServer:
     """
@@ -111,6 +133,18 @@ class FakeClient:
         )
 
 
+class FakeStreamingClient(FakeClient):
+    def stream_with_context(self, context, *args, **kwargs):
+        for index, value in enumerate(args):
+            yield {
+                "function_name": context.function_name,
+                "strategy": context.strategy.value,
+                "index": index,
+                "value": value,
+                "mode": "client_stream",
+            }
+
+
 def _set_fake_server() -> FakeServer:
     fake = FakeServer()
     RemoteFunction.server_resolver = staticmethod(lambda: fake)
@@ -120,6 +154,13 @@ def _set_fake_server() -> FakeServer:
 
 def _set_fake_client() -> FakeClient:
     fake = FakeClient()
+    RemoteFunction.server_resolver = staticmethod(lambda: None)
+    RemoteFunction.client_resolver = staticmethod(lambda: fake)
+    return fake
+
+
+def _set_fake_streaming_client() -> FakeStreamingClient:
+    fake = FakeStreamingClient()
     RemoteFunction.server_resolver = staticmethod(lambda: None)
     RemoteFunction.client_resolver = staticmethod(lambda: fake)
     return fake
@@ -264,5 +305,106 @@ def test_remote_falls_back_to_client_load_balanced():
         assert response["preferred_node_ids"] == []
         assert response["args"] == [9]
         assert len(fake.calls) == 1
+    finally:
+        _reset_backends()
+
+
+def test_remote_stream_returns_sync_iterator_without_running_loop():
+    _set_fake_server()
+    try:
+
+        @remote(function_name="stream_numbers", stream=True)
+        def stream_numbers(*values):
+            return values
+
+        chunks = list(stream_numbers(3, 5, 8))
+        assert [chunk["value"] for chunk in chunks] == [3, 5, 8]
+        assert all(chunk["mode"] == "direct_stream" for chunk in chunks)
+    finally:
+        _reset_backends()
+
+
+def test_remote_stream_returns_async_iterator_inside_running_loop():
+    _set_fake_server()
+    try:
+
+        @remote(function_name="stream_letters", stream=True)
+        def stream_letters(*values):
+            return values
+
+        async def run_case():
+            chunks = []
+            stream_iter = stream_letters("a", "b")
+            assert hasattr(stream_iter, "__aiter__")
+            async for chunk in stream_iter:
+                chunks.append(chunk["value"])
+            assert chunks == ["a", "b"]
+
+        asyncio.run(run_case())
+    finally:
+        _reset_backends()
+
+
+def test_remote_stream_load_balancing_prefers_stream_api():
+    _set_fake_server()
+    try:
+
+        @remote(function_name="stream_lb", stream=True, load_balancing="round_robin")
+        def stream_lb(*values):
+            return values
+
+        chunks = list(stream_lb("x", "y"))
+        assert [chunk["value"] for chunk in chunks] == ["x", "y"]
+        assert all(chunk["mode"] == "balanced_stream" for chunk in chunks)
+        assert all(chunk["load_balancing"] == "round_robin" for chunk in chunks)
+    finally:
+        _reset_backends()
+
+
+def test_remote_stream_cross_loop_server_falls_back_safely():
+    fake = LoopBoundFakeServer()
+    RemoteFunction.server_resolver = staticmethod(lambda: fake)
+    try:
+
+        @remote(function_name="loop_bound_stream", stream=True)
+        def loop_bound_stream(a, b):
+            return a + b
+
+        chunks = list(loop_bound_stream(10, 5))
+        assert len(chunks) == 1
+        assert chunks[0]["function_name"] == "loop_bound_stream"
+        assert chunks[0]["result"] == 15
+    finally:
+        fake.close()
+        _reset_backends()
+
+
+def test_remote_stream_client_fallback_returns_single_chunk():
+    _set_fake_client()
+    try:
+
+        @remote(function_name="client_stream_fallback", stream=True, load_balancing=True)
+        def client_stream_fallback(value):
+            return value
+
+        chunks = list(client_stream_fallback(42))
+        assert len(chunks) == 1
+        assert chunks[0]["mode"] == "client"
+        assert chunks[0]["function_name"] == "client_stream_fallback"
+    finally:
+        _reset_backends()
+
+
+def test_remote_stream_client_native_stream_api_emits_incremental_chunks():
+    _set_fake_streaming_client()
+    try:
+
+        @remote(function_name="client_native_stream", stream=True, load_balancing=True)
+        def client_native_stream(a, b):
+            return a + b
+
+        chunks = list(client_native_stream("alpha", "beta"))
+        assert [chunk["value"] for chunk in chunks] == ["alpha", "beta"]
+        assert all(chunk["mode"] == "client_stream" for chunk in chunks)
     finally:
         _reset_backends()

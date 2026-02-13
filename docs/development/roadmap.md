@@ -1,6 +1,6 @@
 # EasyRemote Development Roadmap
 
-## 🎯 Project Vision & Goals
+##  Project Vision & Goals
 
 EasyRemote aims to become the de facto standard for lightweight distributed computing, making it as easy to use remote functions as local ones. Our roadmap focuses on simplicity, performance, and ecosystem growth.
 
@@ -37,7 +37,7 @@ result = train_model(my_data)  # Works seamlessly!
 - No built-in monitoring/analytics
 - Manual VPS setup required
 
-## 🚀 Phase 2: Performance & Reliability (Q1-Q2 2025)
+##  Phase 2: Performance & Reliability (Q1-Q2 2025)
 
 ### Core Infrastructure Improvements
 

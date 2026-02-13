@@ -1,6 +1,6 @@
 # EasyRemote 基础使用教程
 
-## 🎯 学习目标
+##  学习目标
 
 通过本教程，您将学会：
 - 理解EasyRemote的核心概念和工作原理
@@ -39,7 +39,7 @@
 4. ComputeNode执行函数并返回结果
 5. Server将结果返回给Client
 
-## 🚀 第二部分：环境搭建
+##  第二部分：环境搭建
 
 ### 准备工作
 
@@ -90,7 +90,7 @@ logging.basicConfig(
 )
 
 def main():
-    print("🚀 启动EasyRemote网关服务器")
+    print(" 启动EasyRemote网关服务器")
     
     # 创建服务器实例
     server = Server(
@@ -189,7 +189,7 @@ def main():
     print("  - power(base, exponent): 幂运算")
     print("  - process_list(data_list): 处理数据列表")
     print("  - slow_task(duration): 模拟耗时任务")
-    print("🎯 计算节点准备就绪，等待任务...")
+    print(" 计算节点准备就绪，等待任务...")
     
     try:
         # 开始提供服务
@@ -264,7 +264,7 @@ def test_data_processing():
         
         # 处理数据
         result = client.execute("process_list", test_data)
-        print(f"📤 处理结果:")
+        print(f" 处理结果:")
         print(f"  - 数量: {result['count']}")
         print(f"  - 平均值: {result['average']:.2f}")
         print(f"  - 最大值: {result['max']}")
@@ -294,7 +294,7 @@ def test_slow_task():
         # 计算实际耗时
         elapsed_time = time.time() - start_time
         
-        print(f"📤 任务结果: {result}")
+        print(f" 任务结果: {result}")
         print(f"⏱️ 实际耗时: {elapsed_time:.2f}秒")
         print("✅ 耗时任务测试通过")
         
@@ -322,7 +322,7 @@ if __name__ == "__main__":
 python my_client.py
 ```
 
-## 🔧 第四部分：常见操作
+## 第四部分：常见操作
 
 ### 错误处理
 
@@ -496,7 +496,7 @@ watch -n 1 "netstat -an | grep :8080"
 sudo tcpdump -i any port 8080
 ```
 
-## 🎯 第六部分：最佳实践
+##  第六部分：最佳实践
 
 ### 1. 代码组织
 
@@ -589,7 +589,7 @@ async def async_function(data):
 
 ### 下一步学习路径
 
-1. **🚀 [高级场景教程](advanced-scenarios.md)** - 学习复杂应用场景
+1. ** [高级场景教程](advanced-scenarios.md)** - 学习复杂应用场景
 2. **🏗️ [架构深入](../architecture/overview.md)** - 理解系统架构原理
 3. **📚 [API完整参考](../user-guide/api-reference.md)** - 掌握所有API功能
 4. **💡 [示例代码库](../user-guide/examples.md)** - 学习实际应用案例
