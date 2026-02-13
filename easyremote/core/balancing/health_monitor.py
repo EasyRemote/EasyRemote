@@ -1,592 +1,705 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-EasyRemote Node Health Monitoring Module
+"""Deterministic node health monitoring for EasyRemote."""
 
-This module implements comprehensive health monitoring for compute nodes in the
-EasyRemote distributed computing framework. It provides real-time health assessment,
-performance metrics collection, and intelligent failure detection to ensure optimal
-system reliability and performance.
-
-Architecture:
-- Observer Pattern: Real-time health status monitoring and notification
-- Circuit Breaker Pattern: Automatic failure detection and recovery
-- Adaptive Monitoring: Dynamic monitoring intervals based on node health
-- Event-Driven Architecture: Health status change notifications
-
-Key Features:
-1. Comprehensive Health Checks:
-   * CPU, memory, GPU utilization monitoring
-   * Network connectivity and latency assessment
-   * Service availability and response time tracking
-   * Application-level health verification
-
-2. Intelligent Failure Detection:
-   * Multi-level health assessment (healthy, degraded, unhealthy, unreachable)
-   * Configurable health thresholds and recovery criteria
-   * Automatic node quarantine and recovery procedures
-   * Historical health trend analysis
-
-3. Performance Optimization:
-   * Adaptive monitoring intervals based on node health status
-   * Efficient caching with TTL-based invalidation
-   * Batch health check operations for scalability
-   * Connection pooling and reuse for gRPC communications
-
-4. Fault Tolerance and Recovery:
-   * Graceful degradation when health checks fail
-   * Automatic retry with exponential backoff
-   * Circuit breaker for persistently unhealthy nodes
-   * Health history retention for trend analysis
-
-Usage Example:
-    >>> # Initialize health monitor
-    >>> monitor = AdvancedNodeHealthMonitor(
-    ...     monitoring_interval=15.0,
-    ...     health_check_timeout=5.0,
-    ...     adaptive_monitoring=True
-    ... )
-    >>> 
-    >>> # Start monitoring with gateway reference
-    >>> await monitor.start_monitoring(gateway_instance)
-    >>> 
-    >>> # Check node health
-    >>> health_status = await monitor.check_node_health("node-1")
-    >>> if health_status.overall_health == NodeHealthLevel.HEALTHY:
-    ...     print("Node is healthy and ready for workloads")
-
-Author: Silan Hu
-Version: 2.0.0
-"""
+from __future__ import annotations
 
 import asyncio
+import threading
 import time
-import logging
-import statistics
-from typing import Dict, Optional, List, Set, Callable, Any, Tuple
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
-from collections import defaultdict, deque
+from typing import Any, Dict, List, Mapping, Optional
 
+from ..utils.concurrency import LoopBoundAsyncLock
+from ..utils.exceptions import ExceptionTranslator, LoadBalancingError
 from ..utils.logger import ModernLogger
-from ..utils.exceptions import EasyRemoteError, NodeNotFoundError
-from .strategies import NodeStats, PerformanceMetrics, NodeCapabilities
-
-
-# Configure module logger
-_logger = logging.getLogger(__name__)
+from .strategies import NodeStats
 
 
 class NodeHealthLevel(Enum):
-    """
-    Enumeration of node health levels for comprehensive health assessment.
-    
-    This provides a more nuanced view of node health than simple binary
-    healthy/unhealthy states, enabling intelligent load balancing decisions.
-    """
-    HEALTHY = "healthy"           # Node is fully operational
-    DEGRADED = "degraded"         # Node has performance issues but is usable
-    UNHEALTHY = "unhealthy"       # Node has significant issues, avoid if possible
-    UNREACHABLE = "unreachable"   # Node cannot be contacted
-    UNKNOWN = "unknown"           # Health status is not yet determined
-    QUARANTINED = "quarantined"   # Node is temporarily removed from service
+    """Health status levels used by routing and failover logic."""
+
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    UNHEALTHY = "unhealthy"
+    UNREACHABLE = "unreachable"
+    UNKNOWN = "unknown"
+    QUARANTINED = "quarantined"
 
 
 class HealthCheckType(Enum):
-    """Types of health checks that can be performed."""
-    BASIC_PING = "basic_ping"           # Simple connectivity check
-    RESOURCE_CHECK = "resource_check"   # CPU, memory, GPU utilization
-    SERVICE_CHECK = "service_check"     # Service availability and responsiveness
-    FULL_DIAGNOSTIC = "full_diagnostic" # Comprehensive health assessment
+    """Supported health check depth types."""
+
+    BASIC_PING = "basic_ping"
+    RESOURCE_CHECK = "resource_check"
+    SERVICE_CHECK = "service_check"
+    FULL_DIAGNOSTIC = "full_diagnostic"
 
 
 @dataclass
 class HealthThresholds:
-    """
-    Configurable thresholds for health assessment.
-    
-    This class defines the criteria used to determine node health levels
-    based on various performance and resource utilization metrics.
-    """
-    # CPU utilization thresholds (percentage)
-    cpu_healthy_max: float = 70.0        # Healthy if CPU < 70%
-    cpu_degraded_max: float = 85.0       # Degraded if CPU < 85%
-    cpu_unhealthy_max: float = 95.0      # Unhealthy if CPU < 95%
-    
-    # Memory utilization thresholds (percentage)
-    memory_healthy_max: float = 75.0     # Healthy if memory < 75%
-    memory_degraded_max: float = 88.0    # Degraded if memory < 88%
-    memory_unhealthy_max: float = 95.0   # Unhealthy if memory < 95%
-    
-    # Response time thresholds (milliseconds)
-    response_time_healthy_max: float = 100.0    # Healthy if response < 100ms
-    response_time_degraded_max: float = 500.0   # Degraded if response < 500ms
-    response_time_unhealthy_max: float = 2000.0 # Unhealthy if response < 2s
-    
-    # Error rate thresholds (percentage)
-    error_rate_healthy_max: float = 1.0         # Healthy if error rate < 1%
-    error_rate_degraded_max: float = 5.0        # Degraded if error rate < 5%
-    error_rate_unhealthy_max: float = 15.0      # Unhealthy if error rate < 15%
-    
+    """Thresholds for translating metrics into health levels."""
+
+    cpu_healthy_max: float = 70.0
+    cpu_degraded_max: float = 85.0
+    cpu_unhealthy_max: float = 95.0
+
+    memory_healthy_max: float = 75.0
+    memory_degraded_max: float = 88.0
+    memory_unhealthy_max: float = 95.0
+
+    response_time_healthy_max: float = 100.0
+    response_time_degraded_max: float = 500.0
+    response_time_unhealthy_max: float = 2000.0
+
+    error_rate_healthy_max: float = 1.0
+    error_rate_degraded_max: float = 5.0
+    error_rate_unhealthy_max: float = 15.0
+
     def validate_thresholds(self) -> List[str]:
-        """
-        Validate that thresholds are properly configured.
-        
-        Returns:
-            List of validation error messages (empty if valid)
-        """
-        errors = []
-        
-        # Validate CPU thresholds
-        if not (0 <= self.cpu_healthy_max <= self.cpu_degraded_max <= self.cpu_unhealthy_max <= 100):
+        """Validate threshold ordering and value ranges."""
+        errors: List[str] = []
+
+        if not (
+            0
+            <= self.cpu_healthy_max
+            <= self.cpu_degraded_max
+            <= self.cpu_unhealthy_max
+            <= 100
+        ):
             errors.append("CPU thresholds must be in ascending order between 0 and 100")
-        
-        # Validate memory thresholds
-        if not (0 <= self.memory_healthy_max <= self.memory_degraded_max <= self.memory_unhealthy_max <= 100):
-            errors.append("Memory thresholds must be in ascending order between 0 and 100")
-        
-        # Validate response time thresholds
-        if not (0 <= self.response_time_healthy_max <= self.response_time_degraded_max <= self.response_time_unhealthy_max):
-            errors.append("Response time thresholds must be in ascending order and non-negative")
-        
-        # Validate error rate thresholds
-        if not (0 <= self.error_rate_healthy_max <= self.error_rate_degraded_max <= self.error_rate_unhealthy_max <= 100):
-            errors.append("Error rate thresholds must be in ascending order between 0 and 100")
-        
+
+        if not (
+            0
+            <= self.memory_healthy_max
+            <= self.memory_degraded_max
+            <= self.memory_unhealthy_max
+            <= 100
+        ):
+            errors.append(
+                "Memory thresholds must be in ascending order between 0 and 100"
+            )
+
+        if not (
+            0
+            <= self.response_time_healthy_max
+            <= self.response_time_degraded_max
+            <= self.response_time_unhealthy_max
+        ):
+            errors.append(
+                "Response time thresholds must be in ascending order and non-negative"
+            )
+
+        if not (
+            0
+            <= self.error_rate_healthy_max
+            <= self.error_rate_degraded_max
+            <= self.error_rate_unhealthy_max
+            <= 100
+        ):
+            errors.append(
+                "Error rate thresholds must be in ascending order between 0 and 100"
+            )
+
         return errors
 
 
 @dataclass
-class NodeHealthStatus:
-    """
-    Comprehensive node health status information.
-    
-    This class encapsulates all health-related information for a compute node,
-    including current metrics, historical trends, and detailed health assessment.
-    """
-    # Core identification
+class NodeHealthSnapshot:
+    """Raw probe data used to update `NodeHealthStatus`."""
+
     node_id: str
-    
-    # Overall health assessment
+    is_reachable: bool
+    is_responding: bool
+    is_available: bool
+    cpu_usage: float = 0.0
+    memory_usage: float = 0.0
+    gpu_usage: float = 0.0
+    response_time_ms: float = 0.0
+    queue_length: int = 0
+    current_load: Optional[float] = None
+    error_rate: Optional[float] = None
+    health_check_type: HealthCheckType = HealthCheckType.RESOURCE_CHECK
+    error: Optional[str] = None
+
+
+@dataclass
+class NodeHealthStatus:
+    """Cached health state for one node."""
+
+    node_id: str
+
     overall_health: NodeHealthLevel = NodeHealthLevel.UNKNOWN
-    health_score: float = 0.0                    # 0.0 (unhealthy) to 1.0 (healthy)
-    
-    # Availability and responsiveness
-    is_reachable: bool = False                   # Can the node be contacted
-    is_available: bool = False                   # Is the node accepting new work
-    is_responding: bool = False                  # Is the node responding to requests
-    
-    # Resource utilization metrics
-    cpu_usage: float = 0.0                      # CPU utilization percentage
-    memory_usage: float = 0.0                   # Memory utilization percentage
-    gpu_usage: float = 0.0                      # GPU utilization percentage
-    
-    # Performance metrics
-    current_load: float = 0.0                   # Overall load factor
-    queue_length: int = 0                       # Number of queued requests
-    response_time_ms: float = 0.0               # Latest response time
-    average_response_time_ms: float = 0.0       # Historical average response time
-    
-    # Error and reliability metrics
-    error_rate: float = 0.0                     # Recent error rate percentage
-    success_rate: float = 1.0                   # Recent success rate percentage
-    consecutive_failures: int = 0               # Consecutive health check failures
-    
-    # Timing and versioning
+    health_score: float = 0.0
+
+    is_reachable: bool = False
+    is_available: bool = False
+    is_responding: bool = False
+
+    cpu_usage: float = 0.0
+    memory_usage: float = 0.0
+    gpu_usage: float = 0.0
+
+    current_load: float = 0.0
+    queue_length: int = 0
+    response_time_ms: float = 0.0
+    average_response_time_ms: float = 0.0
+
+    error_rate: float = 0.0
+    success_rate: float = 100.0
+    consecutive_failures: int = 0
+
     last_health_check: datetime = field(default_factory=datetime.now)
     last_successful_check: Optional[datetime] = None
-    
-    # Health check details
+
     health_check_type: HealthCheckType = HealthCheckType.BASIC_PING
-    health_check_duration_ms: float = 0.0       # Time taken for health check
-    health_check_error: Optional[str] = None    # Error message if check failed
-    
-    def update_health_metrics(self, 
-                             cpu_usage: Optional[float] = None,
-                             memory_usage: Optional[float] = None,
-                             gpu_usage: Optional[float] = None,
-                             response_time_ms: Optional[float] = None,
-                             error_rate: Optional[float] = None):
-        """
-        Update health metrics with new measurements.
-        
-        Args:
-            cpu_usage: New CPU usage percentage
-            memory_usage: New memory usage percentage
-            gpu_usage: New GPU usage percentage
-            response_time_ms: New response time in milliseconds
-            error_rate: New error rate percentage
-        """
+    health_check_duration_ms: float = 0.0
+    health_check_error: Optional[str] = None
+
+    def update_health_metrics(
+        self,
+        cpu_usage: Optional[float] = None,
+        memory_usage: Optional[float] = None,
+        gpu_usage: Optional[float] = None,
+        response_time_ms: Optional[float] = None,
+        error_rate: Optional[float] = None,
+    ) -> None:
+        """Update and normalize measurable health metrics."""
         if cpu_usage is not None:
             self.cpu_usage = max(0.0, min(100.0, cpu_usage))
-        
+
         if memory_usage is not None:
             self.memory_usage = max(0.0, min(100.0, memory_usage))
-        
+
         if gpu_usage is not None:
             self.gpu_usage = max(0.0, min(100.0, gpu_usage))
-        
+
         if response_time_ms is not None:
-            self.response_time_ms = max(0.0, response_time_ms)
-            # Simple running average for now
+            value = max(0.0, response_time_ms)
+            self.response_time_ms = value
             if self.average_response_time_ms == 0.0:
-                self.average_response_time_ms = response_time_ms
+                self.average_response_time_ms = value
             else:
-                alpha = 0.1  # Smoothing factor
+                alpha = 0.1
                 self.average_response_time_ms = (
-                    alpha * response_time_ms + (1 - alpha) * self.average_response_time_ms
+                    alpha * value + (1 - alpha) * self.average_response_time_ms
                 )
-        
+
         if error_rate is not None:
             self.error_rate = max(0.0, min(100.0, error_rate))
             self.success_rate = 100.0 - self.error_rate
-        
+
         self.last_health_check = datetime.now()
-    
+
     def calculate_health_score(self, thresholds: HealthThresholds) -> float:
-        """
-        Calculate overall health score based on current metrics.
-        
-        Args:
-            thresholds: Health thresholds for scoring
-            
-        Returns:
-            Health score from 0.0 (unhealthy) to 1.0 (healthy)
-        """
+        """Calculate a 0.0-1.0 health score from current metrics."""
         if not self.is_reachable:
             return 0.0
-        
-        # Individual metric scores (higher is better)
-        cpu_score = max(0, (thresholds.cpu_unhealthy_max - self.cpu_usage) / thresholds.cpu_unhealthy_max)
-        memory_score = max(0, (thresholds.memory_unhealthy_max - self.memory_usage) / thresholds.memory_unhealthy_max)
-        
-        # Response time score (lower response time is better)
-        response_score = max(0, 1 - (self.response_time_ms / thresholds.response_time_unhealthy_max))
-        
-        # Error rate score (lower error rate is better)
-        error_score = max(0, (100 - self.error_rate) / 100)
-        
-        # Weighted combination
-        weights = {'cpu': 0.3, 'memory': 0.3, 'response': 0.2, 'error': 0.2}
-        
-        health_score = (
-            weights['cpu'] * cpu_score +
-            weights['memory'] * memory_score +
-            weights['response'] * response_score +
-            weights['error'] * error_score
+
+        cpu_score = max(
+            0.0,
+            (thresholds.cpu_unhealthy_max - self.cpu_usage)
+            / max(thresholds.cpu_unhealthy_max, 1.0),
         )
-        
-        return health_score
-    
+        memory_score = max(
+            0.0,
+            (thresholds.memory_unhealthy_max - self.memory_usage)
+            / max(thresholds.memory_unhealthy_max, 1.0),
+        )
+        response_score = max(
+            0.0,
+            1 - (self.response_time_ms / max(thresholds.response_time_unhealthy_max, 1.0)),
+        )
+        error_score = max(0.0, (100.0 - self.error_rate) / 100.0)
+
+        return (
+            (0.3 * cpu_score)
+            + (0.3 * memory_score)
+            + (0.2 * response_score)
+            + (0.2 * error_score)
+        )
+
     def determine_health_level(self, thresholds: HealthThresholds) -> NodeHealthLevel:
-        """
-        Determine health level based on current metrics and thresholds.
-        
-        Args:
-            thresholds: Health thresholds for assessment
-            
-        Returns:
-            Determined health level
-        """
+        """Map current status into one of the defined health levels."""
         if not self.is_reachable:
+            if self.consecutive_failures >= 5:
+                return NodeHealthLevel.QUARANTINED
             return NodeHealthLevel.UNREACHABLE
-        
-        # Check for quarantine conditions
-        if self.consecutive_failures >= 5:
-            return NodeHealthLevel.QUARANTINED
-        
-        # Calculate health score and determine level
-        health_score = self.calculate_health_score(thresholds)
-        self.health_score = health_score
-        
-        if health_score >= 0.8:
+
+        score = self.calculate_health_score(thresholds)
+        self.health_score = score
+
+        if score >= 0.8:
             return NodeHealthLevel.HEALTHY
-        elif health_score >= 0.6:
+        if score >= 0.6:
             return NodeHealthLevel.DEGRADED
+        return NodeHealthLevel.UNHEALTHY
+
+
+class NodeHealthProbe(ABC):
+    """Strategy interface that reads node health from a backend system."""
+
+    @abstractmethod
+    async def collect_snapshot(self, gateway: Any, node_id: str) -> NodeHealthSnapshot:
+        """Return one health snapshot for a node."""
+
+
+class GatewayNodeHealthProbe(NodeHealthProbe):
+    """Probe implementation that reads metrics from the in-process gateway registry."""
+
+    async def collect_snapshot(self, gateway: Any, node_id: str) -> NodeHealthSnapshot:
+        if gateway is None:
+            return NodeHealthSnapshot(
+                node_id=node_id,
+                is_reachable=False,
+                is_responding=False,
+                is_available=False,
+                error="gateway instance is not configured",
+            )
+
+        nodes = getattr(gateway, "_nodes", None)
+        if not isinstance(nodes, Mapping):
+            return NodeHealthSnapshot(
+                node_id=node_id,
+                is_reachable=False,
+                is_responding=False,
+                is_available=False,
+                error="gateway has no readable node registry",
+            )
+
+        node_info = nodes.get(node_id)
+        if node_info is None:
+            return NodeHealthSnapshot(
+                node_id=node_id,
+                is_reachable=False,
+                is_responding=False,
+                is_available=False,
+                error="node not found in gateway registry",
+            )
+
+        alive = True
+        is_alive = getattr(node_info, "is_alive", None)
+        if callable(is_alive):
+            try:
+                alive = bool(is_alive())
+            except Exception as exc:
+                return NodeHealthSnapshot(
+                    node_id=node_id,
+                    is_reachable=False,
+                    is_responding=False,
+                    is_available=False,
+                    error=f"failed to query liveness: {exc}",
+                )
+
+        if not alive:
+            return NodeHealthSnapshot(
+                node_id=node_id,
+                is_reachable=False,
+                is_responding=False,
+                is_available=False,
+                error="node is not alive",
+            )
+
+        health_metrics = getattr(node_info, "health_metrics", None)
+        if health_metrics is None:
+            return NodeHealthSnapshot(
+                node_id=node_id,
+                is_reachable=True,
+                is_responding=True,
+                is_available=True,
+            )
+
+        cpu_usage = _safe_float(getattr(health_metrics, "cpu_usage_percent", 0.0), 0.0)
+        memory_usage = _safe_float(
+            getattr(health_metrics, "memory_usage_percent", 0.0), 0.0
+        )
+        gpu_usage = _safe_float(getattr(health_metrics, "gpu_usage_percent", 0.0), 0.0)
+
+        response_time_ms = _safe_float(
+            getattr(
+                health_metrics,
+                "network_latency_ms",
+                getattr(health_metrics, "response_time_ms", 0.0),
+            ),
+            0.0,
+        )
+
+        queue_length = int(
+            _safe_float(
+                getattr(
+                    health_metrics,
+                    "concurrent_executions",
+                    getattr(health_metrics, "queue_length", 0),
+                ),
+                0.0,
+            )
+        )
+
+        explicit_load = getattr(
+            health_metrics,
+            "current_load",
+            getattr(health_metrics, "load_factor", None),
+        )
+        current_load: Optional[float]
+        if explicit_load is None:
+            current_load = min(
+                ((cpu_usage + memory_usage) / 200.0) + min(queue_length / 20.0, 0.5),
+                1.0,
+            )
         else:
-            return NodeHealthLevel.UNHEALTHY
+            current_load = max(0.0, min(1.0, _safe_float(explicit_load, 0.0)))
+
+        error_rate = getattr(
+            health_metrics,
+            "error_rate_percent",
+            getattr(health_metrics, "error_rate", None),
+        )
+
+        return NodeHealthSnapshot(
+            node_id=node_id,
+            is_reachable=True,
+            is_responding=True,
+            is_available=cpu_usage < 95.0 and memory_usage < 95.0,
+            cpu_usage=cpu_usage,
+            memory_usage=memory_usage,
+            gpu_usage=gpu_usage,
+            response_time_ms=response_time_ms,
+            queue_length=max(queue_length, 0),
+            current_load=current_load,
+            error_rate=_safe_optional_float(error_rate),
+            health_check_type=HealthCheckType.RESOURCE_CHECK,
+        )
 
 
 class AdvancedNodeHealthMonitor(ModernLogger):
-    """
-    Advanced node health monitoring system with comprehensive health assessment.
-    
-    This class provides sophisticated health monitoring capabilities including
-    adaptive monitoring intervals, circuit breaker patterns, health trend analysis,
-    and intelligent failure detection and recovery mechanisms.
-    
-    Usage:
-        >>> # Initialize health monitor
-        >>> monitor = AdvancedNodeHealthMonitor(
-        ...     monitoring_interval=15.0,
-        ...     health_check_timeout=5.0
-        ... )
-        >>> 
-        >>> # Start monitoring
-        >>> await monitor.start_monitoring(gateway_instance)
-        >>> 
-        >>> # Check specific node health
-        >>> health = await monitor.check_node_health("node-1")
-        >>> print(f"Node health: {health.overall_health.value}")
-    """
-    
-    def __init__(self, 
-                 monitoring_interval: float = 15.0,
-                 health_check_timeout: float = 5.0,
-                 adaptive_monitoring: bool = True):
-        """
-        Initialize the advanced health monitoring system.
-        
-        Args:
-            monitoring_interval: Base monitoring interval in seconds
-            health_check_timeout: Timeout for health checks in seconds
-            adaptive_monitoring: Enable adaptive monitoring intervals
-        """
+    """Health monitor with deterministic probe/evaluation/scheduling behavior."""
+
+    def __init__(
+        self,
+        monitoring_interval: float = 15.0,
+        health_check_timeout: float = 5.0,
+        adaptive_monitoring: bool = True,
+        health_probe: Optional[NodeHealthProbe] = None,
+        max_concurrent_checks: int = 10,
+    ):
         super().__init__(name="AdvancedNodeHealthMonitor")
-        
-        # Configuration
+
+        if monitoring_interval <= 0:
+            raise ValueError("monitoring_interval must be positive")
+        if health_check_timeout <= 0:
+            raise ValueError("health_check_timeout must be positive")
+        if max_concurrent_checks <= 0:
+            raise ValueError("max_concurrent_checks must be positive")
+
         self.monitoring_interval = monitoring_interval
         self.health_check_timeout = health_check_timeout
         self.adaptive_monitoring = adaptive_monitoring
+        self.max_concurrent_checks = max_concurrent_checks
         self.thresholds = HealthThresholds()
-        
-        # Core state management
-        self._gateway = None
+
+        self._gateway: Optional[Any] = None
+        self._health_probe = health_probe or GatewayNodeHealthProbe()
+
         self._running = False
         self._monitoring_task: Optional[asyncio.Task] = None
-        
-        # Health status tracking
+        self._state_lock = LoopBoundAsyncLock(name="health-monitor-state-lock")
+        self._sleep_event: Optional[asyncio.Event] = None
+
         self._health_cache: Dict[str, NodeHealthStatus] = {}
-        
-        # Performance optimization
-        self._semaphore = asyncio.Semaphore(10)  # Limit concurrent checks
-        
-        self.info(f"Initialized AdvancedNodeHealthMonitor "
-                 f"(interval: {monitoring_interval}s, adaptive: {adaptive_monitoring})")
-    
-    async def start_monitoring(self, gateway_instance) -> 'AdvancedNodeHealthMonitor':
-        """
-        Start the health monitoring system.
-        
-        Args:
-            gateway_instance: Reference to the gateway server instance
-            
-        Returns:
-            Self for method chaining
-        """
-        if self._running:
-            raise RuntimeError("Health monitoring is already running")
-        
-        self._gateway = gateway_instance
-        self._running = True
-        
-        # Start main monitoring loop
-        self._monitoring_task = asyncio.create_task(self._monitoring_loop())
-        
-        self.info("Advanced node health monitoring started")
+        self._health_cache_lock = threading.RLock()
+
+        self._semaphore: Optional[asyncio.Semaphore] = None
+
+    async def start_monitoring(self, gateway_instance: Any) -> "AdvancedNodeHealthMonitor":
+        """Start background health checks for gateway nodes."""
+        async with self._state_lock:
+            if self._running:
+                raise LoadBalancingError(
+                    message="Health monitoring is already running",
+                    strategy="health_monitor",
+                )
+
+            self._gateway = gateway_instance
+            self._running = True
+            self._semaphore = asyncio.Semaphore(self.max_concurrent_checks)
+            self._sleep_event = asyncio.Event()
+            self._monitoring_task = asyncio.create_task(self._monitoring_loop())
+
+        self.info(
+            "Node health monitoring started (interval=%.2fs, adaptive=%s)",
+            self.monitoring_interval,
+            self.adaptive_monitoring,
+        )
         return self
-    
-    async def stop_monitoring(self):
-        """Stop the health monitoring system gracefully."""
-        if not self._running:
-            return
-        
-        self._running = False
-        
-        if self._monitoring_task and not self._monitoring_task.done():
-            self._monitoring_task.cancel()
+
+    async def stop_monitoring(self) -> None:
+        """Stop background health checks and wait for task termination."""
+        task: Optional[asyncio.Task] = None
+
+        async with self._state_lock:
+            if not self._running:
+                return
+
+            self._running = False
+            if self._sleep_event is not None:
+                self._sleep_event.set()
+
+            if self._monitoring_task and not self._monitoring_task.done():
+                self._monitoring_task.cancel()
+                task = self._monitoring_task
+
+        if task is not None:
             try:
-                await self._monitoring_task
+                await task
             except asyncio.CancelledError:
                 pass
-        
-        self.info("Advanced node health monitoring stopped")
-    
-    async def _monitoring_loop(self):
-        """Main monitoring loop with adaptive intervals."""
-        self.debug("Starting health monitoring loop")
-        
+
+        self.info("Node health monitoring stopped")
+
+    async def _monitoring_loop(self) -> None:
+        """Main monitor loop with adaptive but deterministic interval control."""
         try:
             while self._running:
-                start_time = time.time()
-                
+                started_at = time.time()
+
                 try:
                     await self._perform_health_checks()
-                except Exception as e:
-                    self.error(f"Error in monitoring loop: {e}", exc_info=True)
-                
-                # Calculate next monitoring interval
-                monitoring_duration = time.time() - start_time
-                next_interval = max(self.monitoring_interval - monitoring_duration, 1.0)
-                
-                # Wait for next monitoring cycle
+                except Exception as exc:
+                    translated = ExceptionTranslator.as_load_balancing_error(
+                        exc,
+                        strategy="health_monitor",
+                        message="Health monitoring cycle failed",
+                    )
+                    self.error("Error in health monitoring cycle: %s", translated, exc_info=True)
+
+                elapsed = time.time() - started_at
+                wait_seconds = self._next_interval(elapsed)
+
                 try:
-                    await asyncio.wait_for(asyncio.Event().wait(), timeout=next_interval)
+                    event = self._sleep_event
+                    if event is None:
+                        await asyncio.sleep(wait_seconds)
+                    else:
+                        await asyncio.wait_for(event.wait(), timeout=wait_seconds)
+                        event.clear()
                 except asyncio.TimeoutError:
-                    continue  # Normal timeout, continue monitoring
-                
+                    continue
         except asyncio.CancelledError:
             self.debug("Health monitoring loop cancelled")
-        except Exception as e:
-            self.error(f"Unexpected error in monitoring loop: {e}", exc_info=True)
-    
-    async def _perform_health_checks(self):
-        """Perform health checks for all registered nodes."""
-        if not self._gateway or not hasattr(self._gateway, '_nodes'):
-            return
-        
-        try:
-            # Get list of nodes to check
-            if hasattr(self._gateway, '_global_lock'):
-                async with self._gateway._global_lock:
-                    node_ids = list(self._gateway._nodes.keys())
-            else:
-                node_ids = list(getattr(self._gateway, '_nodes', {}).keys())
-        except Exception as e:
-            self.warning(f"Error accessing gateway nodes: {e}")
-            return
-        
+        except Exception as exc:
+            translated = ExceptionTranslator.as_load_balancing_error(
+                exc,
+                strategy="health_monitor",
+                message="Unexpected error in monitoring loop",
+            )
+            self.error("Unexpected monitor loop error: %s", translated, exc_info=True)
+
+    def _next_interval(self, monitoring_duration: float) -> float:
+        """Compute next cycle interval based on cluster health condition."""
+        base = max(self.monitoring_interval - monitoring_duration, 1.0)
+        if not self.adaptive_monitoring:
+            return base
+
+        with self._health_cache_lock:
+            statuses = list(self._health_cache.values())
+
+        if not statuses:
+            return base
+
+        problematic = sum(
+            1
+            for status in statuses
+            if status.overall_health
+            in (
+                NodeHealthLevel.UNHEALTHY,
+                NodeHealthLevel.UNREACHABLE,
+                NodeHealthLevel.QUARANTINED,
+            )
+        )
+        ratio = problematic / len(statuses)
+
+        if ratio >= 0.5:
+            return max(1.0, base * 0.5)
+        if ratio == 0:
+            return min(base * 1.5, self.monitoring_interval * 2.0)
+        return base
+
+    async def _perform_health_checks(self) -> None:
+        """Run one health-check pass over all registered gateway nodes."""
+        node_ids = await self._list_node_ids()
         if not node_ids:
             return
-        
-        # Perform checks with concurrency control
-        tasks = [self._check_single_node(node_id) for node_id in node_ids]
-        await asyncio.gather(*tasks, return_exceptions=True)
-    
+
+        results = await asyncio.gather(
+            *(self._check_single_node(node_id) for node_id in node_ids),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                self.warning("Health check task failed: %s", result)
+
+    async def _list_node_ids(self) -> List[str]:
+        gateway = self._gateway
+        if gateway is None:
+            return []
+
+        lock = getattr(gateway, "_global_lock", None)
+        nodes_attr = "_nodes"
+
+        if lock is not None:
+            try:
+                async with lock:
+                    nodes = getattr(gateway, nodes_attr, {})
+                    if isinstance(nodes, Mapping):
+                        return list(nodes.keys())
+                    return []
+            except Exception:
+                # Fall back to best-effort direct read.
+                pass
+
+        nodes = getattr(gateway, nodes_attr, {})
+        if isinstance(nodes, Mapping):
+            return list(nodes.keys())
+        return []
+
     async def _check_single_node(self, node_id: str) -> NodeHealthStatus:
-        """Perform health check for a single node with proper error handling."""
-        async with self._semaphore:  # Concurrency control
+        """Run one node check with bounded concurrency."""
+        if self._semaphore is None:
+            self._semaphore = asyncio.Semaphore(self.max_concurrent_checks)
+
+        async with self._semaphore:
             try:
                 return await self.check_node_health(node_id)
-            except Exception as e:
-                self.warning(f"Health check failed for node {node_id}: {e}")
-                return self._create_failed_health_status(node_id, str(e))
-    
+            except Exception as exc:
+                self.warning("Health check failed for node %s: %s", node_id, exc)
+                return self._create_failed_health_status(node_id, str(exc))
+
     async def check_node_health(self, node_id: str) -> NodeHealthStatus:
-        """
-        Perform comprehensive health check for a specific node.
-        
-        Args:
-            node_id: ID of the node to check
-            
-        Returns:
-            Complete health status for the node
-        """
+        """Probe and refresh cached health status for one node."""
         start_time = time.time()
-        
-        # Get existing health status or create new one
-        health_status = self._health_cache.get(node_id)
-        if not health_status:
-            health_status = NodeHealthStatus(node_id=node_id)
-            self._health_cache[node_id] = health_status
-        
+
+        with self._health_cache_lock:
+            health_status = self._health_cache.get(node_id)
+            if health_status is None:
+                health_status = NodeHealthStatus(node_id=node_id)
+                self._health_cache[node_id] = health_status
+
         try:
-            # Perform the actual health check (simplified implementation)
-            health_data = await self._execute_health_check(node_id)
-            
-            # Update health status with new data
-            health_status.is_reachable = health_data.get("is_reachable", False)
-            health_status.is_responding = health_status.is_reachable
-            health_status.is_available = health_status.is_reachable and health_data.get("cpu_usage", 100) < 95
-            
-            health_status.update_health_metrics(
-                cpu_usage=health_data.get("cpu_usage"),
-                memory_usage=health_data.get("memory_usage"),
-                gpu_usage=health_data.get("gpu_usage"),
-                response_time_ms=health_data.get("response_time_ms")
+            snapshot = await asyncio.wait_for(
+                self._health_probe.collect_snapshot(self._gateway, node_id),
+                timeout=self.health_check_timeout,
             )
-            
-            # Determine health level
-            health_status.overall_health = health_status.determine_health_level(self.thresholds)
-            
-            # Record successful check
-            health_status.consecutive_failures = 0
-            health_status.last_successful_check = datetime.now()
-            health_status.health_check_error = None
-            
-        except Exception as e:
-            # Handle health check failure
-            self._handle_health_check_failure(health_status, str(e))
-        
+
+            with self._health_cache_lock:
+                if snapshot.is_reachable:
+                    self._apply_reachable_snapshot(health_status, snapshot)
+                else:
+                    self._handle_health_check_failure(
+                        health_status,
+                        snapshot.error or "node is unreachable",
+                    )
+        except Exception as exc:
+            self._handle_health_check_failure(health_status, str(exc))
         finally:
-            # Record check duration
-            check_duration = (time.time() - start_time) * 1000  # Convert to ms
-            health_status.health_check_duration_ms = check_duration
-        
+            duration_ms = (time.time() - start_time) * 1000.0
+            with self._health_cache_lock:
+                health_status.health_check_duration_ms = duration_ms
+
         return health_status
-    
-    async def _execute_health_check(self, node_id: str) -> Dict[str, Any]:
-        """Execute the actual health check against the node."""
-        # Simulate a health check with realistic data
-        # In production, this would make actual gRPC calls to the node
-        await asyncio.sleep(0.05)  # Simulate network delay
-        
-        # Return simulated health data
-        import random
-        return {
-            "is_reachable": True,
-            "cpu_usage": random.uniform(20, 80),
-            "memory_usage": random.uniform(30, 70),
-            "gpu_usage": random.uniform(0, 90),
-            "response_time_ms": random.uniform(20, 150),
-            "queue_length": random.randint(0, 5)
-        }
-    
-    def _handle_health_check_failure(self, status: NodeHealthStatus, error_message: str):
-        """Handle health check failure and update status accordingly."""
-        status.consecutive_failures += 1
-        status.is_reachable = False
-        status.is_available = False
-        status.is_responding = False
-        status.health_check_error = error_message
-        status.overall_health = NodeHealthLevel.UNREACHABLE
-    
-    def _create_failed_health_status(self, node_id: str, error_message: str) -> NodeHealthStatus:
-        """Create health status for a failed health check."""
-        health_status = NodeHealthStatus(
-            node_id=node_id,
-            overall_health=NodeHealthLevel.UNREACHABLE,
-            is_reachable=False,
-            is_available=False,
-            is_responding=False,
-            health_check_error=error_message
+
+    def _apply_reachable_snapshot(
+        self,
+        status: NodeHealthStatus,
+        snapshot: NodeHealthSnapshot,
+    ) -> None:
+        status.is_reachable = snapshot.is_reachable
+        status.is_responding = snapshot.is_responding
+
+        status.queue_length = max(snapshot.queue_length, 0)
+        if snapshot.current_load is not None:
+            status.current_load = max(0.0, min(1.0, snapshot.current_load))
+        else:
+            status.current_load = min(
+                ((snapshot.cpu_usage + snapshot.memory_usage) / 200.0)
+                + min(status.queue_length / 20.0, 0.5),
+                1.0,
+            )
+
+        status.update_health_metrics(
+            cpu_usage=snapshot.cpu_usage,
+            memory_usage=snapshot.memory_usage,
+            gpu_usage=snapshot.gpu_usage,
+            response_time_ms=snapshot.response_time_ms,
+            error_rate=snapshot.error_rate,
         )
-        
-        # Update existing status if available
-        existing_status = self._health_cache.get(node_id)
-        if existing_status:
-            existing_status.consecutive_failures += 1
-            existing_status.is_reachable = False
-            existing_status.health_check_error = error_message
-            existing_status.overall_health = NodeHealthLevel.UNREACHABLE
-            health_status = existing_status
-        
-        self._health_cache[node_id] = health_status
-        return health_status
-    
-    # Public API methods
+
+        status.health_check_type = snapshot.health_check_type
+        status.consecutive_failures = 0
+        status.last_successful_check = datetime.now()
+        status.health_check_error = snapshot.error
+
+        status.overall_health = status.determine_health_level(self.thresholds)
+        status.is_available = bool(snapshot.is_available) and status.overall_health in (
+            NodeHealthLevel.HEALTHY,
+            NodeHealthLevel.DEGRADED,
+        )
+
+    def _handle_health_check_failure(self, status: NodeHealthStatus, error_message: str) -> None:
+        with self._health_cache_lock:
+            status.consecutive_failures += 1
+            status.is_reachable = False
+            status.is_available = False
+            status.is_responding = False
+            status.health_check_error = error_message
+            status.last_health_check = datetime.now()
+
+            status.overall_health = status.determine_health_level(self.thresholds)
+
+    def _create_failed_health_status(
+        self,
+        node_id: str,
+        error_message: str,
+    ) -> NodeHealthStatus:
+        with self._health_cache_lock:
+            status = self._health_cache.get(node_id)
+            if status is None:
+                status = NodeHealthStatus(node_id=node_id)
+                self._health_cache[node_id] = status
+
+            status.consecutive_failures += 1
+            status.is_reachable = False
+            status.is_available = False
+            status.is_responding = False
+            status.health_check_error = error_message
+            status.last_health_check = datetime.now()
+            status.overall_health = status.determine_health_level(self.thresholds)
+            return status
+
     def get_node_health(self, node_id: str) -> Optional[NodeHealthStatus]:
-        """Get cached health status for a node."""
-        return self._health_cache.get(node_id)
-    
+        """Return cached health status for a node, if available."""
+        with self._health_cache_lock:
+            return self._health_cache.get(node_id)
+
     def is_node_healthy(self, node_id: str) -> bool:
-        """Check if a node is in healthy state."""
+        """Check whether cached node status is healthy."""
         health = self.get_node_health(node_id)
         return health is not None and health.overall_health == NodeHealthLevel.HEALTHY
-    
+
     def is_node_available(self, node_id: str) -> bool:
-        """Check if a node is available for new requests."""
+        """Check whether node can receive new requests."""
         health = self.get_node_health(node_id)
         return health is not None and health.is_available
-    
+
     def get_node_stats(self, node_id: str) -> Optional[NodeStats]:
-        """Convert health status to NodeStats for compatibility."""
+        """Convert cached health information to `NodeStats`."""
         health = self.get_node_health(node_id)
-        if not health:
+        if health is None:
             return None
-        
+
         return NodeStats(
             node_id=node_id,
             cpu_usage=health.cpu_usage,
@@ -597,20 +710,35 @@ class AdvancedNodeHealthMonitor(ModernLogger):
             response_time=health.response_time_ms,
             success_rate=health.success_rate / 100.0,
             has_gpu=health.gpu_usage > 0,
-            last_updated=health.last_health_check.timestamp()
+            last_updated=health.last_health_check.timestamp(),
         )
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_optional_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    return _safe_float(value)
 
 
 # Backward compatibility alias
 NodeHealthMonitor = AdvancedNodeHealthMonitor
 
 
-# Export public classes and enums
 __all__ = [
-    'AdvancedNodeHealthMonitor',
-    'NodeHealthMonitor',  # Backward compatibility
-    'NodeHealthStatus',
-    'NodeHealthLevel',
-    'HealthCheckType',
-    'HealthThresholds'
-] 
+    "AdvancedNodeHealthMonitor",
+    "NodeHealthMonitor",
+    "NodeHealthProbe",
+    "GatewayNodeHealthProbe",
+    "NodeHealthSnapshot",
+    "NodeHealthStatus",
+    "NodeHealthLevel",
+    "HealthCheckType",
+    "HealthThresholds",
+]

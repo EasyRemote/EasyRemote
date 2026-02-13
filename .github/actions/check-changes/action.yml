@@ -1,0 +1,248 @@
+# Composite Action: 检查代码变更并决定部署策略
+# 统一处理 push / pull_request / pull_request_target / workflow_dispatch
+#
+# Note: Migrations are now handled automatically by migrations/runner.py
+# The runner detects and executes pending migrations on every deployment
+
+name: 'Check Changes'
+description: '检查 PR/Push 的文件变更，决定是否部署及部署环境'
+
+inputs:
+  github_token:
+    description: 'GitHub Token for API calls'
+    required: true
+  check_paths:
+    description: '需要检查的路径前缀 (逗号分隔，如 Backend,Frontend)'
+    required: false
+    default: 'Backend,Frontend'
+  manual_environment:
+    description: '手动触发时的环境选择'
+    required: false
+    default: ''
+  manual_migration:
+    description: '手动触发时是否运行迁移'
+    required: false
+    default: 'false'
+
+outputs:
+  should_run:
+    description: '是否应该执行后续 job'
+    value: ${{ steps.check.outputs.should_run }}
+  deploy_env:
+    description: '部署环境 (test/release)'
+    value: ${{ steps.check.outputs.deploy_env }}
+  run_migration:
+    description: '是否运行数据库迁移'
+    value: ${{ steps.check.outputs.run_migration }}
+  has_backend:
+    description: '是否有 Backend 变更'
+    value: ${{ steps.check.outputs.has_backend }}
+  has_frontend:
+    description: '是否有 Frontend 变更'
+    value: ${{ steps.check.outputs.has_frontend }}
+  has_migrations:
+    description: '是否有 migrations 变更'
+    value: ${{ steps.check.outputs.has_migrations }}
+  is_release:
+    description: '是否为正式发布 (tag 或手动)'
+    value: ${{ steps.check.outputs.is_release }}
+  trigger_type:
+    description: '触发类型 (push/pr/pr_merged/manual/tag)'
+    value: ${{ steps.check.outputs.trigger_type }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check changes and determine deployment
+      id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        CHECK_PATHS: ${{ inputs.check_paths }}
+        MANUAL_ENV: ${{ inputs.manual_environment }}
+        MANUAL_MIGRATION: ${{ inputs.manual_migration }}
+      run: |
+        set -e
+
+        # 初始化输出
+        SHOULD_RUN="false"
+        DEPLOY_ENV="test"
+        RUN_MIGRATION="false"
+        HAS_BACKEND="false"
+        HAS_FRONTEND="false"
+        HAS_MIGRATIONS="false"
+        IS_RELEASE="false"
+        TRIGGER_TYPE=""
+        CHANGED_FILES=""
+
+        EVENT="${{ github.event_name }}"
+        REF="${{ github.ref }}"
+        BASE_REF="${{ github.event.pull_request.base.ref }}"
+
+        echo "=========================================="
+        echo "📦 Event: $EVENT"
+        echo "🔀 Ref: $REF"
+        echo "🎯 Check paths: $CHECK_PATHS"
+        echo "=========================================="
+
+        # =============================================
+        # 1. 确定触发类型和基本参数
+        # =============================================
+
+        if [ "$EVENT" = "workflow_dispatch" ]; then
+          TRIGGER_TYPE="manual"
+          SHOULD_RUN="true"
+          IS_RELEASE="true"
+          DEPLOY_ENV="${MANUAL_ENV:-test}"
+          RUN_MIGRATION="$MANUAL_MIGRATION"
+          echo "✅ Manual trigger → $DEPLOY_ENV"
+
+        elif [ "$EVENT" = "push" ] && [[ "$REF" == refs/tags/v* ]]; then
+          TRIGGER_TYPE="tag"
+          SHOULD_RUN="true"
+          IS_RELEASE="true"
+          DEPLOY_ENV="release"
+          RUN_MIGRATION="true"
+          echo "✅ Tag push → release"
+
+        elif [ "$EVENT" = "push" ]; then
+          TRIGGER_TYPE="push"
+          # push 事件已经通过 workflow 的 paths 过滤
+          SHOULD_RUN="true"
+          # push 到 product 分支部署到 release，其他分支部署到 test
+          if [[ "$REF" == "refs/heads/product" ]]; then
+            DEPLOY_ENV="release"
+            echo "✅ Push to product → release"
+          else
+            DEPLOY_ENV="test"
+            echo "✅ Push to branch → test"
+          fi
+
+        elif [ "$EVENT" = "pull_request" ]; then
+          TRIGGER_TYPE="pr"
+          # PR 事件已经通过 workflow 的 paths 过滤
+          SHOULD_RUN="true"
+          DEPLOY_ENV="test"
+          echo "✅ PR opened/updated → test (验证)"
+
+        elif [ "$EVENT" = "pull_request_target" ]; then
+          TRIGGER_TYPE="pr_merged"
+
+          # =============================================
+          # 安全检查 (建议1: 安全边界)
+          # =============================================
+
+          # 检查 1: 必须是 merged 状态
+          if [ "${{ github.event.pull_request.merged }}" != "true" ]; then
+            echo "⏭️ PR closed without merge → skip"
+            SHOULD_RUN="false"
+          # 检查 2: 必须合并到 product 分支
+          elif [ "$BASE_REF" != "product" ]; then
+            echo "⚠️ PR merged to $BASE_REF (not product) → skip"
+            SHOULD_RUN="false"
+          else
+            # 获取 PR 变更文件
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+            echo "🔍 Checking PR #$PR_NUMBER files..."
+
+            CHANGED_FILES=$(gh api repos/${{ github.repository }}/pulls/$PR_NUMBER/files \
+              --jq '.[].filename' 2>/dev/null || echo "")
+
+            if [ -z "$CHANGED_FILES" ]; then
+              echo "⚠️ Could not fetch PR files → skip"
+              SHOULD_RUN="false"
+            else
+              # 检查是否有需要关注的路径变更
+              IFS=',' read -ra PATHS <<< "$CHECK_PATHS"
+              for path in "${PATHS[@]}"; do
+                if echo "$CHANGED_FILES" | grep -q "^${path}/"; then
+                  SHOULD_RUN="true"
+                  break
+                fi
+              done
+
+              if [ "$SHOULD_RUN" = "true" ]; then
+                DEPLOY_ENV="release"
+                echo "✅ PR merged with relevant changes → release"
+              else
+                echo "⏭️ PR merged but no relevant changes → skip"
+              fi
+            fi
+          fi
+
+        else
+          echo "⚠️ Unknown event: $EVENT → skip"
+          SHOULD_RUN="false"
+        fi
+
+        # =============================================
+        # 2. 分析具体变更内容 (建议3: 精确检测)
+        # =============================================
+
+        if [ "$SHOULD_RUN" = "true" ]; then
+          # 对于 push/PR 事件，从 git diff 获取变更
+          if [ -z "$CHANGED_FILES" ] && [ "$TRIGGER_TYPE" != "manual" ] && [ "$TRIGGER_TYPE" != "tag" ]; then
+            if [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+              CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} 2>/dev/null || echo "")
+            fi
+          fi
+
+          # 检测各类变更
+          if echo "$CHANGED_FILES" | grep -q "^Backend/"; then
+            HAS_BACKEND="true"
+            echo "  📦 Has Backend changes"
+          fi
+
+          if echo "$CHANGED_FILES" | grep -q "^Frontend/"; then
+            HAS_FRONTEND="true"
+            echo "  🎨 Has Frontend changes"
+          fi
+
+          if echo "$CHANGED_FILES" | grep -q "^Backend/migrations/"; then
+            HAS_MIGRATIONS="true"
+            echo "  🗄️ Has migrations changes"
+          fi
+
+          # =============================================
+          # 3. Migration Runner (自动处理)
+          # =============================================
+          #
+          # 迁移现在由 migrations/runner.py 自动处理:
+          # - 自动检测待执行的迁移
+          # - 通过 schema_migrations 表跟踪已执行的迁移
+          # - 每次部署都会运行 runner，它会自动判断需要执行什么
+          #
+          # RUN_MIGRATION 保留用于日志输出
+          RUN_MIGRATION="auto"
+          if [ "$HAS_MIGRATIONS" = "true" ]; then
+            echo "  🗄️ New migrations detected, runner will apply them"
+          else
+            echo "  🗄️ Migration runner will check for pending migrations"
+          fi
+        fi
+
+        # =============================================
+        # 4. 输出结果
+        # =============================================
+
+        echo ""
+        echo "=========================================="
+        echo "📋 Final Decision:"
+        echo "   should_run:     $SHOULD_RUN"
+        echo "   deploy_env:     $DEPLOY_ENV"
+        echo "   run_migration:  $RUN_MIGRATION"
+        echo "   has_backend:    $HAS_BACKEND"
+        echo "   has_frontend:   $HAS_FRONTEND"
+        echo "   has_migrations: $HAS_MIGRATIONS"
+        echo "   is_release:     $IS_RELEASE"
+        echo "   trigger_type:   $TRIGGER_TYPE"
+        echo "=========================================="
+
+        echo "should_run=$SHOULD_RUN" >> $GITHUB_OUTPUT
+        echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
+        echo "run_migration=$RUN_MIGRATION" >> $GITHUB_OUTPUT
+        echo "has_backend=$HAS_BACKEND" >> $GITHUB_OUTPUT
+        echo "has_frontend=$HAS_FRONTEND" >> $GITHUB_OUTPUT
+        echo "has_migrations=$HAS_MIGRATIONS" >> $GITHUB_OUTPUT
+        echo "is_release=$IS_RELEASE" >> $GITHUB_OUTPUT
+        echo "trigger_type=$TRIGGER_TYPE" >> $GITHUB_OUTPUT

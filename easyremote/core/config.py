@@ -42,19 +42,17 @@ Usage Example:
     ...     .with_env_overrides() \
     ...     .build()
 
-Author: Silan Hu
+Author: Silan Hu (silan.hu@u.nus.edu)
 Version: 2.0.0
 """
 
 import os
-import json
 import logging
 import threading
-from typing import Dict, List, Optional, Any, Union, Set, Callable
+from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
-from pathlib import Path
 
 
 # Configure module logger

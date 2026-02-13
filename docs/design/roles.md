@@ -13,10 +13,11 @@ The ComputeNode is any machine that offers its computational capabilities to the
 
 ```python
 from easyremote import ComputeNode
+from easyremote.core.data import ResourceRequirements
 
 # GPU workstation sharing its power
 node = ComputeNode(
-    vps_address="gateway.example.com:8080",
+    gateway_address="gateway.example.com:8080",
     node_id="gpu-workstation-01"
 )
 
@@ -26,7 +27,7 @@ def train_deep_learning_model(model_config, dataset):
     # This runs on the ComputeNode's hardware
     return train_model_on_gpu(model_config, dataset)
 
-@node.register(stream=True)
+@node.register
 def process_video_stream(video_data):
     """Process video frames in real-time"""
     for frame in video_data:
@@ -48,15 +49,14 @@ node.serve()  # Start serving functions
 #### High-Performance GPU Node
 ```python
 gpu_node = ComputeNode(
-    vps_address="gateway.com:8080",
-    node_id="rtx4090-machine",
-    capabilities={
-        "gpu": {"model": "RTX 4090", "memory": "24GB"},
-        "specialization": ["ai_training", "rendering", "simulation"]
-    }
+    gateway_address="gateway.com:8080",
+    node_id="rtx4090-machine"
 )
 
-@gpu_node.register(resource_requirements={"gpu_memory": "16GB"})
+@gpu_node.register(
+    resource_requirements=ResourceRequirements(gpu_required=True, min_memory_mb=16384),
+    tags={"ai_training", "rendering", "simulation"},
+)
 def train_large_model(model_architecture, training_data):
     """Train large AI models requiring significant GPU memory"""
     return train_with_cuda(model_architecture, training_data)
@@ -65,15 +65,11 @@ def train_large_model(model_architecture, training_data):
 #### CPU-Optimized Node
 ```python
 cpu_node = ComputeNode(
-    vps_address="gateway.com:8080", 
-    node_id="cpu-powerhouse",
-    capabilities={
-        "cpu": {"cores": 64, "threads": 128},
-        "specialization": ["data_processing", "compilation", "analysis"]
-    }
+    gateway_address="gateway.com:8080",
+    node_id="cpu-powerhouse"
 )
 
-@cpu_node.register(async_func=True)
+@cpu_node.register(tags={"data_processing", "compilation", "analysis"})
 async def parallel_data_processing(large_dataset):
     """Process large datasets using all CPU cores"""
     return await process_with_multiprocessing(large_dataset)
@@ -82,16 +78,11 @@ async def parallel_data_processing(large_dataset):
 #### Edge Computing Node
 ```python
 edge_node = ComputeNode(
-    vps_address="gateway.com:8080",
-    node_id="raspberry-pi-sensor",
-    capabilities={
-        "sensors": ["camera", "temperature", "motion"],
-        "location": {"lat": 37.7749, "lng": -122.4194},
-        "specialization": ["iot_data", "local_inference"]
-    }
+    gateway_address="gateway.com:8080",
+    node_id="raspberry-pi-sensor"
 )
 
-@edge_node.register
+@edge_node.register(tags={"iot_data", "local_inference"})
 def capture_sensor_data():
     """Capture real-time sensor data from edge device"""
     return {
@@ -104,15 +95,11 @@ def capture_sensor_data():
 #### Specialized Service Node
 ```python
 service_node = ComputeNode(
-    vps_address="gateway.com:8080",
-    node_id="database-service",
-    capabilities={
-        "databases": ["postgresql", "redis", "elasticsearch"],
-        "specialization": ["data_storage", "search", "analytics"]
-    }
+    gateway_address="gateway.com:8080",
+    node_id="database-service"
 )
 
-@service_node.register(auth_required=True)
+@service_node.register(tags={"data_storage", "search", "analytics"})
 def query_database(query, params):
     """Execute database queries with proper authentication"""
     return execute_secure_query(query, params)
@@ -138,7 +125,7 @@ server = Server(port=8080)
 # 4. Handles load balancing and health monitoring
 
 if __name__ == "__main__":
-    server.run()
+    server.start()
 ```
 
 **Core Responsibilities**:
@@ -241,6 +228,9 @@ Clients use remote functions as if they were local, with full type safety and ID
 
 ```python
 from easyremote import remote
+from easyremote.core.nodes.client import set_default_gateway
+
+set_default_gateway("gateway.com:8080")
 
 # Method 1: Decorator-based (recommended)
 @remote(node_id="gpu-workstation-01")
@@ -248,11 +238,18 @@ def train_deep_learning_model(model_config, dataset):
     """This function runs remotely on the GPU workstation"""
     pass  # Implementation is on the remote node
 
-# Method 2: Direct function creation
-remote_trainer = remote("gpu-workstation-01", "train_deep_learning_model")
+# Method 2: Direct wrapper creation from an existing function object
+def _train_stub(model_config, dataset):
+    pass
 
-# Method 3: Dynamic discovery
-@remote(capability="gpu_training")  # Finds any node with this capability
+remote_trainer = remote(
+    _train_stub,
+    node_id="gpu-workstation-01",
+    function_name="train_deep_learning_model",
+)
+
+# Method 3: Explicit gateway binding per function
+@remote(node_id="gpu-workstation-01", gateway_address="gateway.com:8080")
 def train_model_anywhere(model_config, dataset):
     pass
 
@@ -304,11 +301,11 @@ async def research_pipeline(experiment_config):
 #### Startup Developer
 ```python
 # Startup using shared GPU resources for development
-@remote(node_id="shared-gpu-01", auth_token="team_token")
+@remote(node_id="shared-gpu-01", timeout=120)
 def fine_tune_model(base_model, custom_data):
     pass
 
-@remote(node_id="inference-cluster", scaling="auto")
+@remote(function_name="serve_model_inference", load_balancing=True)
 def serve_model_inference(model_id, input_data):
     pass
 
@@ -426,7 +423,7 @@ class SmartLoadBalancer:
 # Team lead sets up shared GPU node
 gpu_node = ComputeNode("team-gateway:8080", "team-gpu-01")
 
-@gpu_node.register(quota_per_user="2_hours_daily")
+@gpu_node.register(max_concurrent=1, tags={"team-shared"})
 def train_team_model(user_id, model_config, dataset):
     """Shared GPU training with fair usage quotas"""
     return train_with_quota_management(user_id, model_config, dataset)
@@ -448,13 +445,13 @@ bob_result = await train_team_model("bob", bob_config, bob_data)
 # University contributes HPC cluster
 hpc_node = ComputeNode("research-gateway:8080", "stanford-hpc")
 
-@hpc_node.register(access_level="academic_verified")
+@hpc_node.register(timeout_seconds=1800, tags={"academic", "verified"})
 def run_climate_simulation(research_proposal_id, params):
     """Run climate simulations for academic research"""
     return submit_to_slurm_cluster(research_proposal_id, params)
 
 # Researchers from other institutions
-@remote(node_id="stanford-hpc", auth="academic_credentials")
+@remote(node_id="stanford-hpc", timeout=600)
 def run_climate_simulation(research_proposal_id, params):
     pass
 
@@ -467,7 +464,7 @@ mit_results = await run_climate_simulation("MIT-2024-001", climate_params)
 # Startup rents dedicated inference node
 inference_node = ComputeNode("startup-gateway:8080", "inference-01")
 
-@inference_node.register(scaling="auto", billing="per_request")
+@inference_node.register(load_balancing=True, max_concurrent=16)
 def serve_ai_api(model_version, user_input):
     """Serve AI model with auto-scaling"""
     return model_inference(model_version, user_input)
@@ -562,14 +559,14 @@ class ClientMetrics:
 class QuantumComputeNode(ComputeNode):
     """Specialized node for quantum computing tasks"""
     
-    @node.register(quantum_backend="ibm_q")
+    @node.register(tags={"quantum_backend:ibm_q"})
     def run_quantum_circuit(circuit_definition):
         return execute_on_quantum_hardware(circuit_definition)
 
 class MLOpsNode(ComputeNode):
     """Specialized node for ML operations"""
     
-    @node.register(pipeline="automated")
+    @node.register(tags={"pipeline:automated"})
     def deploy_model(model_artifact, deployment_config):
         return automated_model_deployment(model_artifact, deployment_config)
 ```
@@ -595,7 +592,7 @@ class IntelligentGateway(Server):
 #### Advanced Client Features  
 ```python
 # Future: Smart client capabilities
-@remote(optimization="auto")
+@remote(load_balancing={"requirements": {"latency": "low"}})
 def smart_function(data):
     """Function with automatic optimization"""
     pass

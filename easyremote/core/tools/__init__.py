@@ -24,14 +24,14 @@ Key Features:
    * Simple performance metrics
    * Connection testing
 
-Author: Silan Hu
+Author: Silan Hu (silan.hu@u.nus.edu)
 Version: 1.0.0 (Simplified)
 """
 
 import time
 import asyncio
 import warnings
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Any
 from datetime import datetime
 from dataclasses import dataclass
 from enum import Enum

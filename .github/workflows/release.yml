@@ -1,0 +1,799 @@
+# GEO-SCOPE Release Workflow
+# 自动构建多平台 Tauri 应用并发布到 Release 服务器
+#
+# 触发逻辑:
+#   PR merged to product + 代码变更 → 自动构建发布
+#   push tag (v*)                   → 使用 tag 版本号
+#   workflow_dispatch               → 手动指定版本
+#
+# 版本号规则:
+#   - 自动计算: {tag数量}.{开发天数}.{当天commit序号}
+#   - 手动 tag: v1.0.0, v1.0.0-beta.1, v1.0.0-rc.1
+
+name: Release
+
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [product]
+
+  push:
+    tags: ['v*']
+
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (留空则自动计算)'
+        default: ''
+      notes_zh:
+        description: '中文更新日志'
+        default: ''
+      notes_en:
+        description: '英文更新日志'
+        default: ''
+      is_critical:
+        description: '是否为关键更新'
+        type: boolean
+        default: false
+      is_prerelease:
+        description: '是否为预发布版本 (Beta)'
+        type: boolean
+        default: false
+
+env:
+  RELEASE_SERVER_URL: ${{ secrets.RELEASE_SERVER_URL || 'https://releases.geo-scope.ai' }}
+
+jobs:
+  # 检查是否需要构建
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_run }}
+      is_release: ${{ steps.check.outputs.is_release }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check changes
+        id: check
+        uses: ./.github/actions/check-changes
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          check_paths: 'Backend,Frontend'
+
+  # =============================================================================
+  # 准备阶段 - 解析版本号和创建发布
+  # =============================================================================
+  prepare:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      tag_name: ${{ steps.get_version.outputs.tag_name }}
+      is_prerelease: ${{ steps.get_version.outputs.is_prerelease }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && 'product' || github.ref }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Get version and detect prerelease
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # 手动触发：使用指定版本或自动计算
+            if [ -n "${{ github.event.inputs.version }}" ]; then
+              VERSION="${{ github.event.inputs.version }}"
+            else
+              VERSION=$(node scripts/version.js)
+            fi
+            IS_PRERELEASE="${{ github.event.inputs.is_prerelease }}"
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            # 从 tag 中提取版本号 (去掉 v 前缀)
+            VERSION="${GITHUB_REF#refs/tags/v}"
+
+            # 自动检测预发布版本 (alpha, beta, rc, dev, pre)
+            if [[ "$VERSION" =~ -(alpha|beta|rc|dev|pre) ]]; then
+              IS_PRERELEASE="true"
+              echo "🧪 Detected prerelease version from tag"
+            else
+              IS_PRERELEASE="false"
+              echo "📦 Detected stable version from tag"
+            fi
+          else
+            # 自动计算版本号: {tag数量}.{开发天数}.{当天commit序号}
+            VERSION=$(node scripts/version.js)
+            IS_PRERELEASE="false"
+            echo "🔢 Auto-calculated version"
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag_name=v$VERSION" >> $GITHUB_OUTPUT
+          echo "is_prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
+          echo "📦 Version: $VERSION (prerelease: $IS_PRERELEASE)"
+
+      - name: Get commits for changelog
+        id: get_commits
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+
+          # 使用 jq 安全地构建 JSON，避免特殊字符导致的 JSON 格式错误
+          build_commits_json() {
+            local range="$1"
+            local limit="$2"
+
+            if [ -n "$range" ]; then
+              git log $range --pretty=format:'%h%x00%s' $limit | \
+                jq -Rs 'split("\n") | map(select(length > 0) | split("\u0000") | {hash: .[0], message: .[1]})'
+            else
+              git log --pretty=format:'%h%x00%s' $limit | \
+                jq -Rs 'split("\n") | map(select(length > 0) | split("\u0000") | {hash: .[0], message: .[1]})'
+            fi
+          }
+
+          # 根据触发方式获取 commits
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            # Tag 触发：获取自上一个 tag 以来的所有 commits
+            PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+            if [ -n "$PREV_TAG" ]; then
+              COMMITS_JSON=$(build_commits_json "$PREV_TAG..HEAD" "")
+            else
+              COMMITS_JSON=$(build_commits_json "" "-10")
+            fi
+          elif [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            # Push 触发：只获取本次 push 新增的 commits (before..after)
+            echo "📍 Getting commits from ${{ github.event.before }} to ${{ github.sha }}"
+            COMMITS_JSON=$(build_commits_json "${{ github.event.before }}..${{ github.sha }}" "")
+
+            # 如果没有新 commits（可能是 force push），获取最新的一个
+            if [ "$COMMITS_JSON" = "[]" ] || [ -z "$COMMITS_JSON" ]; then
+              echo "⚠️ No new commits found, using HEAD"
+              COMMITS_JSON=$(build_commits_json "" "-1")
+            fi
+          else
+            # Fallback：手动触发或首次 push，获取最新的 commit
+            echo "📍 Manual trigger or first push, getting latest commit"
+            COMMITS_JSON=$(build_commits_json "" "-1")
+          fi
+
+          # 使用 heredoc 安全地输出多行 JSON
+          {
+            echo "commits<<COMMITS_EOF"
+            echo "$COMMITS_JSON"
+            echo "COMMITS_EOF"
+          } >> $GITHUB_OUTPUT
+          echo "📝 Found commits: $COMMITS_JSON"
+
+      - name: Generate changelog via AI Summary
+        id: ai_summary
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          TODAY=$(date -u +"%Y-%m-%d")
+
+          # 读取 commits JSON (使用 jq -c 压缩并验证 JSON 格式)
+          COMMITS='${{ steps.get_commits.outputs.commits }}'
+
+          # 验证并压缩 JSON (移除空白但保持结构)
+          if ! COMMITS=$(echo "$COMMITS" | jq -c '.' 2>/dev/null); then
+            echo "⚠️ Invalid commits JSON, using empty array"
+            COMMITS='[]'
+          fi
+
+          echo "🤖 Generating AI-powered changelog summary..."
+          echo "📦 Version: $VERSION"
+          echo "📅 Date: $TODAY"
+          echo "📝 Commits: $COMMITS"
+
+          # 调用 Summary API 生成更新日志
+          echo "🔗 Calling: ${{ env.RELEASE_SERVER_URL }}/api/summary/generate"
+          echo "🔑 API Key configured: ${{ secrets.RELEASE_API_KEY != '' }}"
+
+          # 使用 jq 安全构建请求 JSON
+          REQUEST_BODY=$(jq -n \
+            --arg version "$VERSION" \
+            --argjson commits "$COMMITS" \
+            --arg date "$TODAY" \
+            --arg author "silan.tech" \
+            '{version: $version, commits: $commits, date: $date, author_username: $author, save_to_db: true}')
+
+          HTTP_RESPONSE=$(curl -s -L --post302 --post301 -w "\n%{http_code}" -X POST "${{ env.RELEASE_SERVER_URL }}/api/summary/generate" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: ${{ secrets.RELEASE_API_KEY }}" \
+            --connect-timeout 30 \
+            --max-time 120 \
+            -d "$REQUEST_BODY" 2>&1)
+
+          HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
+          SUMMARY_RESPONSE=$(echo "$HTTP_RESPONSE" | sed '$d')
+
+          echo "📡 HTTP Status: $HTTP_CODE"
+
+          if [ -z "$SUMMARY_RESPONSE" ]; then
+            echo "⚠️ Empty response from API"
+            SUMMARY_RESPONSE='{"success": false, "error": "empty response"}'
+          fi
+
+          echo "Summary API response: $SUMMARY_RESPONSE"
+
+          # 检查是否成功
+          SUCCESS=$(echo "$SUMMARY_RESPONSE" | jq -r '.success // false')
+          if [ "$SUCCESS" = "true" ]; then
+            echo "✅ AI changelog generated and saved to database"
+            NOTES_EN=$(echo "$SUMMARY_RESPONSE" | jq -r '.notes.en // "Release update"')
+            NOTES_ZH=$(echo "$SUMMARY_RESPONSE" | jq -r '.notes.zh // "版本更新"')
+            echo "notes_en=$NOTES_EN" >> $GITHUB_OUTPUT
+            echo "notes_zh=$NOTES_ZH" >> $GITHUB_OUTPUT
+            echo "ai_generated=true" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ AI summary failed, using default notes"
+            echo "notes_en=Release $VERSION" >> $GITHUB_OUTPUT
+            echo "notes_zh=发布版本 $VERSION" >> $GITHUB_OUTPUT
+            echo "ai_generated=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create release on server (fallback)
+        if: steps.ai_summary.outputs.ai_generated != 'true'
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          IS_PRERELEASE="${{ steps.get_version.outputs.is_prerelease }}"
+
+          # 获取更新日志
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            NOTES_ZH="${{ github.event.inputs.notes_zh }}"
+            NOTES_EN="${{ github.event.inputs.notes_en }}"
+            IS_CRITICAL="${{ github.event.inputs.is_critical }}"
+          else
+            # 使用 AI 生成的内容或默认值
+            NOTES_EN="${{ steps.ai_summary.outputs.notes_en }}"
+            NOTES_ZH="${{ steps.ai_summary.outputs.notes_zh }}"
+            IS_CRITICAL="false"
+          fi
+
+          # 使用新的多语言 JSON 格式
+          NOTES_JSON=$(jq -n --arg zh "$NOTES_ZH" --arg en "$NOTES_EN" '{"zh": $zh, "en": $en}')
+
+          # 调用 Release API 创建版本 (如果不存在)
+          curl -s -X POST "${{ env.RELEASE_SERVER_URL }}/api/releases" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.RELEASE_API_KEY }}" \
+            -d "{
+              \"version\": \"$VERSION\",
+              \"notes\": $NOTES_JSON,
+              \"is_critical\": $IS_CRITICAL,
+              \"is_prerelease\": $IS_PRERELEASE,
+              \"author\": {
+                \"name\": \"GitHub Actions\",
+                \"url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+              }
+            }" || echo "Release may already exist, continuing..."
+
+  # =============================================================================
+  # 构建阶段 - 多平台并行构建
+  # =============================================================================
+  build:
+    needs: [check, prepare]
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # =============================================================================
+          # macOS 构建暂时禁用 - Apple 公证服务问题
+          # TODO: 解决公证超时问题后重新启用
+          # =============================================================================
+          # # macOS Apple Silicon (使用 .app.tar.gz 用于更新器签名)
+          # - platform: macos-latest
+          #   target: aarch64-apple-darwin
+          #   os_name: darwin
+          #   arch: aarch64
+          #   ext: app.tar.gz
+          #   bundle_dir: macos
+
+          # # macOS Intel (使用 .app.tar.gz 用于更新器签名)
+          # - platform: macos-15-intel
+          #   target: x86_64-apple-darwin
+          #   os_name: darwin
+          #   arch: x86_64
+          #   ext: app.tar.gz
+          #   bundle_dir: macos
+
+          # Windows x64
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            os_name: windows
+            arch: x86_64
+            ext: msi
+            bundle_dir: msi
+
+          # Linux x64
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            os_name: linux
+            arch: x86_64
+            ext: AppImage
+            bundle_dir: appimage
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: Frontend/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: matrix.os_name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev
+
+      - name: Install frontend dependencies
+        working-directory: Frontend
+        run: npm ci
+
+      - name: Create frontend environment file
+        working-directory: Frontend
+        shell: bash
+        run: |
+          cat > .env.local << 'EOF'
+          VITE_APP_MODE=release
+          VITE_APP_VERSION=${{ needs.prepare.outputs.version }}
+          VITE_API_URL_DEV=http://localhost:8000
+          VITE_API_URL_PROD=https://geo-scope.ai
+          BACKEND_DIRECTORY=/api
+          VITE_RELEASE_URL_DEV=http://localhost:8001
+          VITE_RELEASE_URL_PROD=https://releases.geo-scope.ai
+          RELEASE_DIRECTORY=/api
+          EOF
+          echo "📝 Created .env.local with VITE_APP_MODE=release"
+
+      # =============================================================================
+      # macOS 代码签名设置
+      # =============================================================================
+      - name: Import macOS signing certificate
+        if: matrix.os_name == 'darwin'
+        id: macos_cert
+        timeout-minutes: 5
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          # macOS 构建必须有证书，否则直接失败
+          if [ -z "$MACOS_CERTIFICATE" ]; then
+            echo "❌ MACOS_CERTIFICATE is required for macOS builds"
+            echo "configured=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          echo "🔐 Importing macOS signing certificate..."
+
+          # 解码证书
+          echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
+
+          # 创建临时钥匙串
+          KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          # 保存钥匙串密码供后续步骤使用
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> $GITHUB_ENV
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # 设置钥匙串不自动锁定 (防止构建过程中锁定导致卡住)
+          security set-keychain-settings -t 3600 -u "$KEYCHAIN_PATH"
+
+          # 导入证书到钥匙串
+          security import certificate.p12 \
+            -k "$KEYCHAIN_PATH" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+
+          # 设置分区列表以允许 codesign 访问 (无需交互)
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # 添加到搜索列表
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+          # 验证证书导入
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+          # 清理证书文件
+          rm -f certificate.p12
+
+          echo "configured=true" >> $GITHUB_OUTPUT
+          echo "✅ Certificate imported successfully"
+
+      # 调试：检查签名 identity 是否可用
+      - name: Debug signing identities (macOS)
+        if: matrix.os_name == 'darwin'
+        run: |
+          echo "== Keychains in search list =="
+          security list-keychains -d user
+
+          echo ""
+          echo "== Code signing identities (default search list) =="
+          security find-identity -v -p codesigning || true
+
+          echo ""
+          echo "== Code signing identities (in build keychain) =="
+          if [ -n "$KEYCHAIN_PATH" ]; then
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true
+          fi
+
+          echo ""
+          echo "== Expected APPLE_SIGNING_IDENTITY =="
+          echo "${{ secrets.APPLE_SIGNING_IDENTITY }}"
+
+      - name: Update version in tauri.conf.json
+        working-directory: Frontend
+        shell: bash
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          echo "📝 Updating tauri.conf.json version to $VERSION"
+
+          # 使用 node 更新 JSON (跨平台兼容)
+          node -e "
+            const fs = require('fs');
+            const config = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+            config.version = '$VERSION';
+            fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(config, null, 2));
+            console.log('✅ Version updated to:', config.version);
+          "
+
+      # 在 macOS 构建前确保钥匙串可访问
+      - name: Prepare keychain for signing
+        if: matrix.os_name == 'darwin'
+        run: |
+          if [ -n "$KEYCHAIN_PATH" ]; then
+            echo "🔓 Ensuring keychain is unlocked and accessible..."
+            security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" 2>/dev/null || true
+            security set-keychain-settings -t 7200 -u "$KEYCHAIN_PATH" 2>/dev/null || true
+            security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"') 2>/dev/null || true
+            echo "✅ Keychain prepared"
+          fi
+
+      - name: Build Tauri app
+        working-directory: Frontend
+        shell: bash
+        timeout-minutes: 30
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # macOS 代码签名配置 (Tauri 会自动使用这些环境变量)
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # 检查签名密钥是否已配置
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "✅ TAURI_SIGNING_PRIVATE_KEY is set (length: ${#TAURI_SIGNING_PRIVATE_KEY})"
+          else
+            echo "❌ TAURI_SIGNING_PRIVATE_KEY is NOT set - signatures will not be generated!"
+          fi
+
+          # macOS 签名检查和钥匙串解锁
+          if [ "${{ matrix.os_name }}" = "darwin" ]; then
+            # 确保钥匙串在构建前解锁 (防止长时间构建后被锁定)
+            if [ -n "$KEYCHAIN_PATH" ] && [ -n "$KEYCHAIN_PASSWORD" ]; then
+              echo "🔓 Unlocking keychain before build..."
+              security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+              # 延长锁定超时
+              security set-keychain-settings -t 3600 -u "$KEYCHAIN_PATH"
+            fi
+
+            if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+              echo "✅ APPLE_SIGNING_IDENTITY is set: $APPLE_SIGNING_IDENTITY"
+            else
+              echo "⚠️ APPLE_SIGNING_IDENTITY not set, looking for available identities..."
+              security find-identity -v -p codesigning || true
+            fi
+          fi
+
+          # 格式化构建日期为 YYYY-MM-DD
+          export BUILD_DATE=$(date -u +"%Y-%m-%d")
+          echo "📅 Build date: $BUILD_DATE"
+          npm run tauri build -- --target ${{ matrix.target }}
+
+      # 验证 macOS 签名是否成功
+      - name: Verify macOS code signature
+        if: matrix.os_name == 'darwin'
+        run: |
+          APP_PATH=$(find Frontend/src-tauri/target/${{ matrix.target }}/release/bundle/macos -name "*.app" -type d | head -1)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ No .app bundle found"
+            exit 1
+          fi
+
+          echo "📦 Verifying signature for: $APP_PATH"
+
+          # 检查签名
+          echo "== codesign --verify =="
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH" 2>&1 || {
+            echo "❌ Code signature verification failed!"
+            echo ""
+            echo "== codesign -dvv (signature details) =="
+            codesign -dvv "$APP_PATH" 2>&1 || true
+            exit 1
+          }
+
+          echo ""
+          echo "== Signature details =="
+          codesign -dvv "$APP_PATH" 2>&1 || true
+
+          echo ""
+          echo "✅ Code signature verified successfully"
+
+      # =============================================================================
+      # macOS 公证 (Notarization)
+      # =============================================================================
+      - name: Notarize macOS app
+        if: matrix.os_name == 'darwin'
+        timeout-minutes: 35
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # 检查公证所需的环境变量
+          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_ID_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
+            echo "⚠️ Notarization credentials not configured, skipping..."
+            exit 0
+          fi
+
+          echo "🔏 Starting notarization process..."
+
+          # 查找 .app 文件
+          APP_PATH=$(find Frontend/src-tauri/target/${{ matrix.target }}/release/bundle/macos -name "*.app" -type d | head -1)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ No .app bundle found"
+            exit 1
+          fi
+
+          echo "📦 Found app: $APP_PATH"
+
+          # 创建 ZIP 用于公证
+          ZIP_PATH="${APP_PATH}.zip"
+          ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
+
+          echo "📤 Submitting for notarization..."
+
+          # 使用 notarytool 提交公证，捕获输出以获取 submission ID
+          NOTARY_OUTPUT=$(mktemp)
+          if ! xcrun notarytool submit "$ZIP_PATH" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait \
+            --timeout 15m 2>&1 | tee "$NOTARY_OUTPUT"; then
+
+            echo "❌ Notarization failed. Attempting to fetch detailed log..."
+
+            # 尝试从输出中提取 submission ID
+            SUBMISSION_ID=$(grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "$NOTARY_OUTPUT" | head -1)
+
+            if [ -n "$SUBMISSION_ID" ]; then
+              echo "📋 Fetching log for submission: $SUBMISSION_ID"
+              xcrun notarytool log "$SUBMISSION_ID" \
+                --apple-id "$APPLE_ID" \
+                --password "$APPLE_ID_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" || true
+            fi
+
+            rm -f "$NOTARY_OUTPUT" "$ZIP_PATH"
+            exit 1
+          fi
+          rm -f "$NOTARY_OUTPUT"
+
+          echo "📎 Stapling notarization ticket..."
+
+          # 将公证票据附加到应用
+          xcrun stapler staple "$APP_PATH"
+
+          # 验证公证
+          spctl --assess --type execute --verbose "$APP_PATH" || echo "⚠️ Gatekeeper check (informational)"
+
+          # 清理临时 ZIP
+          rm -f "$ZIP_PATH"
+
+          echo "✅ Notarization completed successfully"
+
+      - name: Find build artifacts
+        id: artifacts
+        shell: bash
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          BUNDLE_DIR="Frontend/src-tauri/target/${{ matrix.target }}/release/bundle/${{ matrix.bundle_dir }}"
+
+          echo "📂 Looking for artifacts in: $BUNDLE_DIR"
+          ls -la "$BUNDLE_DIR" || echo "Directory not found"
+
+          # 查找构建产物 (使用 matrix.ext 扩展名)
+          FILE=$(find "$BUNDLE_DIR" -name "*.${{ matrix.ext }}" | head -1)
+          SIG_FILE="${FILE}.sig"
+
+          if [ -z "$FILE" ]; then
+            echo "❌ No build artifact found with extension .${{ matrix.ext }}"
+            exit 1
+          fi
+
+          FILENAME=$(basename "$FILE")
+          FILESIZE=$(stat -f%z "$FILE" 2>/dev/null || stat -c%s "$FILE")
+          # 跨平台 SHA256 计算 (macOS 用 shasum, Linux/Windows Git Bash 用 sha256sum)
+          SHA256=$(shasum -a 256 "$FILE" 2>/dev/null | cut -d' ' -f1 || sha256sum "$FILE" | cut -d' ' -f1)
+
+          # 读取签名 (签名是多行文本，需要特殊处理)
+          if [ -f "$SIG_FILE" ]; then
+            SIGNATURE=$(cat "$SIG_FILE")
+            echo "🔐 Signature file found at $SIG_FILE"
+          else
+            SIGNATURE=""
+            echo "⚠️ No signature file found at $SIG_FILE"
+          fi
+
+          echo "file=$FILE" >> $GITHUB_OUTPUT
+          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
+          echo "filesize=$FILESIZE" >> $GITHUB_OUTPUT
+          echo "sha256=$SHA256" >> $GITHUB_OUTPUT
+
+          # 多行签名需要使用 heredoc 语法
+          {
+            echo "signature<<SIGNATURE_EOF"
+            echo "$SIGNATURE"
+            echo "SIGNATURE_EOF"
+          } >> $GITHUB_OUTPUT
+
+          echo "📦 Found: $FILENAME ($FILESIZE bytes)"
+          echo "🔐 SHA256: $SHA256"
+          echo "🔏 Signature length: ${#SIGNATURE}"
+
+      - name: Upload to Release Server
+        shell: bash
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          FILE="${{ steps.artifacts.outputs.file }}"
+          FILENAME="${{ steps.artifacts.outputs.filename }}"
+
+          # 重命名文件为标准格式
+          NEW_FILENAME="GEO-SCOPE_${VERSION}_${{ matrix.arch }}.${{ matrix.ext }}"
+
+          # 上传文件到 Release 服务器
+          echo "📤 Uploading $NEW_FILENAME..."
+
+          UPLOAD_RESPONSE=$(curl -s -X POST \
+            "${{ env.RELEASE_SERVER_URL }}/api/uploads/${{ matrix.os_name }}/${{ matrix.arch }}/$NEW_FILENAME" \
+            -H "Authorization: Bearer ${{ secrets.RELEASE_API_KEY }}" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary "@$FILE")
+
+          echo "Upload response: $UPLOAD_RESPONSE"
+
+          # 提取上传后的 URL
+          DOWNLOAD_URL=$(echo "$UPLOAD_RESPONSE" | jq -r '.url // empty')
+          if [ -z "$DOWNLOAD_URL" ]; then
+            DOWNLOAD_URL="${{ env.RELEASE_SERVER_URL }}/packages/${{ matrix.os_name }}/${{ matrix.arch }}/$NEW_FILENAME"
+          fi
+
+          echo "download_url=$DOWNLOAD_URL" >> $GITHUB_ENV
+
+      - name: Register build with Release Server
+        shell: bash
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+
+          # 使用 heredoc 安全读取多行签名 (避免引号问题)
+          SIGNATURE=$(cat <<'SIGNATURE_HEREDOC'
+          ${{ steps.artifacts.outputs.signature }}
+          SIGNATURE_HEREDOC
+          )
+          # 移除 heredoc 引入的首尾空白但保留签名内部换行
+          SIGNATURE=$(echo "$SIGNATURE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+          # 使用 jq 安全地构建 JSON (处理特殊字符和多行签名)
+          JSON_PAYLOAD=$(jq -n \
+            --arg target "${{ matrix.os_name }}" \
+            --arg arch "${{ matrix.arch }}" \
+            --arg url "${{ env.download_url }}" \
+            --arg signature "$SIGNATURE" \
+            --argjson size "${{ steps.artifacts.outputs.filesize }}" \
+            --arg sha256 "${{ steps.artifacts.outputs.sha256 }}" \
+            '{target: $target, arch: $arch, url: $url, signature: $signature, size: $size, sha256: $sha256}')
+
+          echo "📤 Registering build with signature length: ${#SIGNATURE}"
+
+          # 注册构建信息
+          curl -s -X POST \
+            "${{ env.RELEASE_SERVER_URL }}/api/releases/$VERSION/builds" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.RELEASE_API_KEY }}" \
+            -d "$JSON_PAYLOAD"
+
+          echo "✅ Build registered for ${{ matrix.os_name }}/${{ matrix.arch }}"
+
+      - name: Upload artifact for GitHub Release
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEO-SCOPE-${{ matrix.os_name }}-${{ matrix.arch }}
+          path: ${{ steps.artifacts.outputs.file }}
+          retention-days: 7
+
+  # =============================================================================
+  # 发布阶段 - 创建 GitHub Release (仅 tag 触发)
+  # =============================================================================
+  github-release:
+    needs: [check, prepare, build]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: GEO-SCOPE v${{ needs.prepare.outputs.version }}${{ needs.prepare.outputs.is_prerelease == 'true' && ' (Beta)' || '' }}
+          tag_name: ${{ needs.prepare.outputs.tag_name }}
+          draft: false
+          prerelease: ${{ needs.prepare.outputs.is_prerelease == 'true' }}
+          generate_release_notes: true
+          files: |
+            artifacts/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # =============================================================================
+  # 通知阶段
+  # =============================================================================
+  notify:
+    needs: [check, prepare, build]
+    runs-on: ubuntu-latest
+    if: always() && needs.check.outputs.should_build == 'true'
+
+    steps:
+      - name: Check build status
+        run: |
+          if [ "${{ needs.build.result }}" = "success" ]; then
+            echo "✅ All builds completed successfully!"
+            echo "📦 Version: ${{ needs.prepare.outputs.version }}"
+            echo "🔗 Release Server: ${{ env.RELEASE_SERVER_URL }}"
+          else
+            echo "❌ Some builds failed!"
+            exit 1
+          fi

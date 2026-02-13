@@ -18,7 +18,7 @@ Features:
 - Enterprise security and compliance
 - Horizontal scalability and clustering
 
-Author: Silan Hu
+Author: Silan Hu (silan.hu@u.nus.edu)
 Version: 2.0.0
 """
 
@@ -49,4 +49,3 @@ __all__ = [
     "Client",
     "DistributedComputeServer"
 ]
-

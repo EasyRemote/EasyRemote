@@ -61,24 +61,22 @@ Usage Example:
     >>> stats = await collector.get_comprehensive_analysis("worker-1")
     >>> print(f"Node efficiency: {stats.efficiency_score:.2f}")
 
-Author: Silan Hu
+Author: Silan Hu (silan.hu@u.nus.edu)
 Version: 2.0.0
 """
 
-import time
 import asyncio
 import logging
 import statistics
-from typing import Dict, List, Optional, Any, Set, Tuple, Callable, Union
+from typing import Dict, List, Optional, Any, Set, Tuple
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 import uuid
-import math
 
 from ..utils.logger import ModernLogger
-from ..utils.exceptions import EasyRemoteError
+from ..utils.concurrency import LoopBoundAsyncLock
 
 
 # Configure module logger
@@ -461,7 +459,7 @@ class AdvancedPerformanceCollector(ModernLogger):
         
         # Analysis cache
         self._analysis_cache: Dict[str, Tuple[Any, datetime]] = {}
-        self._cache_lock = asyncio.Lock()
+        self._cache_lock = LoopBoundAsyncLock(name="performance-cache-lock")
         
         # Performance monitoring
         self._collection_stats = {
@@ -748,7 +746,6 @@ class AdvancedPerformanceCollector(ModernLogger):
         # Node analysis
         active_nodes = set(m.node_id for m in metrics)
         node_request_counts = defaultdict(int)
-        node_performance_scores = {}
         
         for metric in metrics:
             node_request_counts[metric.node_id] += 1
@@ -816,11 +813,36 @@ class AdvancedPerformanceCollector(ModernLogger):
             for key in keys_to_remove:
                 del self._analysis_cache[key]
     
-    async def _trigger_real_time_analysis(self, metrics: RequestExecutionMetrics):
+    async def _trigger_real_time_analysis(self, metrics: RequestExecutionMetrics) -> None:
         """Trigger real-time analysis for immediate insights."""
-        # Placeholder for real-time analysis logic
-        # Could include anomaly detection, threshold alerts, etc.
-        pass
+        # Lightweight real-time signals without adding heavy computation.
+        if not metrics.success:
+            self.warning(
+                "Real-time alert: execution failed (node=%s, function=%s, error=%s)",
+                metrics.node_id,
+                metrics.function_name,
+                metrics.error_type or "unknown",
+            )
+            return
+
+        if metrics.execution_time_ms >= 5000.0:
+            self.warning(
+                "Real-time alert: slow execution detected "
+                "(node=%s, function=%s, execution_time_ms=%.2f)",
+                metrics.node_id,
+                metrics.function_name,
+                metrics.execution_time_ms,
+            )
+
+        efficiency = metrics.calculate_efficiency_score()
+        if efficiency < 0.25:
+            self.warning(
+                "Real-time alert: low efficiency detected "
+                "(node=%s, function=%s, efficiency=%.3f)",
+                metrics.node_id,
+                metrics.function_name,
+                efficiency,
+            )
     
     async def _cleanup_loop(self):
         """Background cleanup task."""

@@ -10,6 +10,13 @@ EasyRemote让您能够以最简单的方式构建分布式计算网络。只需�
 pip install easyremote
 ```
 
+如果是仓库本地开发/测试，使用 uv：
+
+```bash
+uv sync
+uv run pytest -q
+```
+
 ## 🎯 基本概念
 
 EasyRemote基于三个核心组件：
@@ -86,6 +93,7 @@ print(f"AI结果: {result2}")  # 输出: AI处理结果: Hello World
 - 🚀 [高级场景](../tutorials/advanced-scenarios.md)
 - 📚 [API参考](api-reference.md)
 - 💡 [更多示例](examples.md)
+- 🧪 Gallery 冒烟测试：`uv run python gallery/run_smoke_tests.py`
 
 ## 💡 提示
 
