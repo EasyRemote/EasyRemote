@@ -1,0 +1,98 @@
+name: Publish easyremote to PyPI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "easyremote/_version.py"
+      - "pyproject.toml"
+      - "setup.py"
+      - "MANIFEST.in"
+      - "uv.lock"
+      - ".github/workflows/publish-easyremote.yml"
+  workflow_dispatch:
+    inputs:
+      force_publish:
+        description: "Publish even if this version already exists on PyPI"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+concurrency:
+  group: publish-easyremote-main
+  cancel-in-progress: false
+
+jobs:
+  quality-and-build:
+    name: Quality gate and build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      package_version: ${{ steps.version.outputs.package_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check easyremote tests gallery examples --output-format=full
+
+      - name: Test
+        run: uv run pytest -q
+
+      - name: Read package version
+        id: version
+        run: |
+          VERSION="$(uv run python -c 'from easyremote._version import __version__; print(__version__)')"
+          echo "package_version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Package version: $VERSION"
+
+      - name: Build distribution artifacts
+        run: uv build
+
+      - name: Validate distribution artifacts
+        run: uvx --from twine twine check dist/*
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: easyremote-dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: quality-and-build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: pypi
+      url: https://pypi.org/p/easyremote
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: easyremote-dist
+          path: dist/
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true
