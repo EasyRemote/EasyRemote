@@ -7,5 +7,4 @@ Single source of truth for EasyRemote package version.
 Author: Silan Hu (silan.hu@u.nus.edu)
 """
 
-__version__ = "0.1.4"
-
+__version__ = "2.0"
