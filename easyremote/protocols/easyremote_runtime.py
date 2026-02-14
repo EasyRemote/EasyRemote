@@ -13,7 +13,7 @@ Author: Silan Hu (silan.hu@u.nus.edu)
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from .models import FunctionDescriptor, FunctionInvocation
 from .runtime import ProtocolRuntime
@@ -249,4 +249,3 @@ class EasyRemoteClientRuntime(ProtocolRuntime):
 __all__ = [
     "EasyRemoteClientRuntime",
 ]
-
