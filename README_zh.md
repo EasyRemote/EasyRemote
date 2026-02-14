@@ -1,4 +1,4 @@
-# EasyRemote：构建下一代算力互联网络 —— 易联网（EasyNet）
+# EasyRemote：AI 原生分布式计算框架 —— 构建易联网（EasyNet）
 
 <div align="center">
 
@@ -10,7 +10,7 @@
 
 > **"Torchrun for the World"**：让任意终端用户一行命令就能调动全球算力资源，执行本地代码。
 
-**🌐 Building the Next-Generation Computing Internet - EasyNet**
+**AI 原生分布式计算 | 构建下一代算力互联网络 - EasyNet**
 
 [English](README.md) | 中文
 
@@ -83,6 +83,81 @@ result = Client("your-gateway:8080").execute("ai_inference", "Hello AI")
 | **算力成本** | $200+/百万次 | $200+/百万次 | **$5网关费用** |
 | **硬件限制** | 云端规格 | 云端规格 | **你的GPU/CPU** |
 | **启动延迟** | 100-1000ms | 100-1000ms | **0ms (始终在线)** |
+| **AI Agent 集成** | 需自定义 API 封装 | 需自定义 API 封装 | **原生 MCP/A2A 协议** |
+
+---
+
+## 🤖 AI 原生场景：EasyRemote 解决什么问题？
+
+EasyRemote 为 AI 时代而生。除了通用分布式计算，它直接解决 AI 团队面临的核心痛点：
+
+- **GPU 闲置浪费**：团队 GPU 80% 时间空闲，而云端推理每百万次调用 $200+
+- **数据不能出域**：医疗、金融、政务数据必须留在本地，但 AI 模型在云端
+- **Agent 集成割裂**：让 AI Agent 调用真实工具，每个服务都要写定制胶水代码
+- **冷启动延迟**：云函数 100-1000ms 的唤醒时间，严重影响实时 AI 体验
+
+### 已可落地
+
+| 编号 | 场景 | 目标用户 | 解决什么问题 |
+|---|------|---------|-------------|
+| K1 | **私有 AI 推理中台**（Team GPU Pool） | AI 团队 / 研发组 | 共享团队 GPU 进行模型推理+负载均衡；消除冗余云端支出 |
+| K2 | **Agent 工具网关**（企业内部 Tool Mesh） | Agent 平台团队 | 统一的 MCP/A2A 工具目录，让 Claude、GPT 及自定义 Agent 发现和调用企业函数 |
+| K3 | **A2A 运维处置网络**（Incident Copilot） | 平台运维 / SRE | 通过 Agent 间任务链自动化事件响应；减少人工交接 |
+| K4 | **Demo 即服务**（Demo-API） | 产品 / 售前 / 创业团队 | 3 步将 AI Demo 发布为可调用 API；快速原型用于融资演示和 POC |
+| K5 | **组织内函数市场**（Function Marketplace） | 中台团队 | 可复用的 AI 函数注册中心，支持能力发现和自动负载均衡 |
+| K6 | **本地数据不出域的 AI 处理** | 医疗 / 金融 / 政企 | 在 HIPAA/GDPR 合规设备上本地运行 AI 推理；数据永不离开你的网络 |
+| K9 | **远程设备能力注入** | ToC Agent 应用 / 边缘平台 | 运行时动态注入拍照/媒体/传感器技能到用户设备，无需重启 |
+
+### 路线图
+
+| 编号 | 场景 | 依赖条件 |
+|---|------|---------|
+| K7 | **长任务多 Agent 协作工厂** | 需要 A2A 状态机增强以支持长生命周期任务 |
+| K8 | **MCP 资源知识网络** | 需要 MCP resources/prompts 扩展以实现完整知识图谱集成 |
+
+### AI Agent 协议支持
+
+EasyRemote 原生支持 AI Agent 已经通用的协议 — **MCP** 与 **A2A**：
+
+**MCP（Model Context Protocol）**— AI Agent（Claude 等）发现并调用你的函数作为工具：
+
+```python
+# 算力节点照常注册函数
+@node.register(description="使用本地 LLM 总结文本")
+def summarize(text: str) -> str:
+    return local_llm.summarize(text)
+
+# Agent 通过 MCP 发现：POST /mcp {"method": "tools/list"}
+# Agent 通过 MCP 调用：POST /mcp {"method": "tools/call", "params": {"name": "summarize", ...}}
+```
+
+已支持：`initialize`、`tools/list`、`tools/call`、`ping`、批量请求、通知、JSON-RPC 2.0
+
+**A2A（Agent-to-Agent 协议）**— Agent 间通过标准化任务执行协作：
+
+```python
+# Agent 发现能力：POST /a2a {"method": "agent.capabilities"}
+# Agent 执行任务：POST /a2a {"method": "task.execute", "params": {"task": {...}}}
+# Agent 异步通知：POST /a2a {"method": "task.send", "params": {...}}
+```
+
+已支持：`agent.capabilities`、`task.execute`、`task.send`、`ping`、task ID 兼容回退、批量请求
+
+**EasyRemoteClientRuntime** — Agent 侧代理，将 MCP/A2A 请求桥接到 EasyRemote 分布式网关：
+
+```python
+from easyremote.protocols import EasyRemoteClientRuntime
+runtime = EasyRemoteClientRuntime(gateway="your-gateway:8080")
+# 将网关内真实函数暴露为 MCP tools / A2A capabilities
+# 支持 node_id 直连、load_balancing 负载均衡、streaming 流式调用
+```
+
+### 两条开发者路线
+
+| 路线 | 面向 | 方式 |
+|------|-----|------|
+| **路线 A：Agent（MCP/A2A）** | AI Agent 平台 | `AI Agent --MCP/A2A JSON-RPC--> 协议网关 --gRPC--> 算力节点` |
+| **路线 B：人类（Decorator）** | Python 工程师 | `@node.register` 暴露函数，`@remote` 远程调用，透明远程执行 |
 
 ---
 
@@ -249,13 +324,14 @@ $ easynet "训练一个医学影像AI，数据在我本地，要求准确率95%+
 
 ### **网络拓扑**
 ```
-🌍 全球客户端
-    ↓
-☁️ 轻量网关集群 (仅路由，不计算)
-    ↓
-💻 个人算力节点 (实际执行)
-    ↓
-🔗 点对点协作网络
+🤖 AI Agent（MCP/A2A）    🌍 人类客户端（Decorator/@remote）
+         \                      /
+          v                    v
+   ☁️ 轻量网关集群（路由 + 协议适配，不参与计算）
+                    ↓
+        💻 个人算力节点（实际 GPU/CPU 执行）
+                    ↓
+           🔗 点对点协作网络
 ```
 
 ### **核心技术栈**

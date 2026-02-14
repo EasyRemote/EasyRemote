@@ -1,4 +1,4 @@
-# EasyRemote: Building the Next-Generation Computing Internet - EasyNet
+# EasyRemote: AI-Native Distributed Computing Framework — Building EasyNet
 
 <div align="center">
 
@@ -10,7 +10,7 @@
 
 > **"Torchrun for the World"**: Enabling any terminal user to mobilize global computing resources with a single command to execute local code.
 
-**🌐 Building the Next-Generation Computing Internet - EasyNet**
+**AI-Native Distributed Computing | Building the Next-Generation Computing Internet - EasyNet**
 
 English | [中文](README_zh.md)
 
@@ -76,13 +76,88 @@ result = Client("your-gateway:8080").execute("ai_inference", "Hello AI")
 
 ### **🆚 Comparison with Traditional Cloud Services**
 
-| Feature                        | AWS Lambda                                | Google Cloud             | **EasyNet Node**        |
-| ------------------------------ | ----------------------------------------- | ------------------------ | ----------------------------- |
-| **Computing Location**   | Cloud servers                             | Cloud servers            | **Your device**         |
-| **Data Privacy**         | Upload to cloud                           | Upload to cloud          | **Never leaves local**  |
-| **Computing Cost**       | $200+/million calls | $200+/million calls | **$5 gateway fee** |                               |
-| **Hardware Limitations** | Cloud specs                               | Cloud specs              | **Your GPU/CPU**        |
-| **Startup Latency**      | 100-1000ms                                | 100-1000ms               | **0ms (always online)** |
+| Feature                        | AWS Lambda                                | Google Cloud             | **EasyNet Node**                  |
+| ------------------------------ | ----------------------------------------- | ------------------------ | ---------------------------------------- |
+| **Computing Location**   | Cloud servers                             | Cloud servers            | **Your device**                    |
+| **Data Privacy**         | Upload to cloud                           | Upload to cloud          | **Never leaves local**             |
+| **Computing Cost**       | $200+/million calls                       | $200+/million calls      | **$5 gateway fee**                 |
+| **Hardware Limitations** | Cloud specs                               | Cloud specs              | **Your GPU/CPU**                   |
+| **Startup Latency**      | 100-1000ms                                | 100-1000ms               | **0ms (always online)**            |
+| **AI Agent Integration** | Custom API wrappers                       | Custom API wrappers      | **Native MCP/A2A protocols**       |
+
+---
+
+## 🤖 AI-Native Scenarios: What Problems Does EasyRemote Solve?
+
+EasyRemote is purpose-built for the AI era. Beyond general distributed computing, it directly addresses the pain points AI teams face today:
+
+- **GPU Isolation**: Team GPUs sit idle 80% of the time, yet cloud inference costs $200+/million calls
+- **Data Can't Leave**: Healthcare, finance, and government data must stay on-premise, but AI models live in the cloud
+- **Agent Integration Is Fragmented**: Connecting AI agents to real tools requires custom glue code for every service
+- **Cold Starts Kill UX**: Cloud functions take 100-1000ms to wake up, destroying real-time AI experiences
+
+### Deployable Now
+
+| # | Scenario | Who It's For | What It Solves |
+|---|----------|-------------|----------------|
+| K1 | **Private AI Inference Hub** (Team GPU Pool) | AI teams / R&D groups | Share team GPUs for model inference with load balancing; eliminate redundant cloud spend |
+| K2 | **Agent Tool Gateway** (Enterprise Tool Mesh) | Agent platform teams | Unified MCP/A2A tool catalog so Claude, GPT, and custom agents can discover and call enterprise functions |
+| K3 | **A2A Operations Network** (Incident Copilot) | Platform SRE / Ops | Automated incident response via agent-to-agent task chains; reduce manual handoffs |
+| K4 | **Demo-as-Service** (Demo-API) | Product / Pre-sales / Startups | Publish AI demos as callable APIs in 3 steps; rapid prototyping for investor demos and POCs |
+| K5 | **Function Marketplace** (Org-Internal) | Platform / Middle-office teams | Reusable AI function registry with capability discovery and automatic load balancing |
+| K6 | **Local Data Residency AI** | Healthcare / Finance / Government | Run AI inference locally on HIPAA/GDPR-compliant devices; data never leaves your network |
+| K9 | **Runtime Device Capability Injection** | ToC Agent apps / Edge platforms | Dynamically inject camera/media/sensor skills onto user devices at runtime without restart |
+
+### Roadmap
+
+| # | Scenario | What's Needed |
+|---|----------|--------------|
+| K7 | **Multi-Agent Collaboration Factory** | A2A state machine enhancements for long-running task lifecycles |
+| K8 | **MCP Resource Knowledge Network** | MCP resources/prompts extensions for full knowledge graph integration |
+
+### Protocol Support for AI Agents
+
+EasyRemote speaks the languages AI agents already understand — **MCP** and **A2A**:
+
+**MCP (Model Context Protocol)** — AI agents (Claude, etc.) discover and invoke your functions as tools:
+
+```python
+# Your compute node registers functions as usual
+@node.register(description="Summarize text using local LLM")
+def summarize(text: str) -> str:
+    return local_llm.summarize(text)
+
+# Agents discover via MCP:  POST /mcp {"method": "tools/list"}
+# Agents invoke via MCP:    POST /mcp {"method": "tools/call", "params": {"name": "summarize", ...}}
+```
+
+Supported: `initialize`, `tools/list`, `tools/call`, `ping`, batch requests, notifications, JSON-RPC 2.0
+
+**A2A (Agent-to-Agent Protocol)** — Agents coordinate through standardized task execution:
+
+```python
+# Agent discovers:  POST /a2a {"method": "agent.capabilities"}
+# Agent executes:   POST /a2a {"method": "task.execute", "params": {"task": {...}}}
+# Agent notifies:   POST /a2a {"method": "task.send", "params": {...}}
+```
+
+Supported: `agent.capabilities`, `task.execute`, `task.send`, `ping`, task ID fallback, batch requests
+
+**EasyRemoteClientRuntime** — Agent-side proxy that bridges MCP/A2A to EasyRemote's distributed gateway:
+
+```python
+from easyremote.protocols import EasyRemoteClientRuntime
+runtime = EasyRemoteClientRuntime(gateway="your-gateway:8080")
+# Exposes real gateway functions as MCP tools / A2A capabilities
+# Supports node_id targeting, load_balancing, and streaming
+```
+
+### Two Developer Routes
+
+| Route | For | How |
+|-------|-----|-----|
+| **Route A: Agent (MCP/A2A)** | AI agent platforms | `AI Agent --MCP/A2A JSON-RPC--> Protocol Gateway --gRPC--> Compute Nodes` |
+| **Route B: Human (Decorator)** | Python engineers | `@node.register` to expose, `@remote` to call, transparent remote execution |
 
 ---
 
@@ -266,13 +341,14 @@ $ easynet "Train a medical imaging AI with my local data, 95%+ accuracy required
 ### **Network Topology**
 
 ```
-🌍 Global clients
-    ↓
-☁️ Lightweight gateway cluster (routing only, no computing)
-    ↓
-💻 Personal computing nodes (actual execution)
-    ↓
-🔗 Peer-to-peer collaboration network
+🤖 AI Agents (MCP/A2A)    🌍 Human Clients (Decorator/@remote)
+         \                      /
+          v                    v
+   ☁️ Lightweight gateway cluster (routing + protocol adaptation, no computing)
+                    ↓
+        💻 Personal computing nodes (actual GPU/CPU execution)
+                    ↓
+           🔗 Peer-to-peer collaboration network
 ```
 
 ### **Core Technology Stack**
