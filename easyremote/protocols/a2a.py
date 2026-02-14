@@ -114,12 +114,12 @@ class A2AProtocolAdapter(JsonRpcProtocolAdapter):
                 return None if is_notification else response
 
             if method in self.TASK_METHODS:
-                invocation = self._parse_invocation(params)
-                result = await runtime.execute_invocation(invocation)
                 stream_requested = bool(params.get("stream"))
                 task_payload = params.get("task")
                 if isinstance(task_payload, Mapping):
                     stream_requested = bool(task_payload.get("stream", stream_requested))
+                invocation = self._parse_invocation(params, stream_requested=stream_requested)
+                result = await runtime.execute_invocation(invocation)
 
                 if stream_requested:
                     output: Any = {
@@ -173,7 +173,12 @@ class A2AProtocolAdapter(JsonRpcProtocolAdapter):
                 method=method or None,
             )
 
-    def _parse_invocation(self, params: Mapping[str, Any]) -> FunctionInvocation:
+    def _parse_invocation(
+        self,
+        params: Mapping[str, Any],
+        *,
+        stream_requested: bool = False,
+    ) -> FunctionInvocation:
         task_payload = params.get("task")
         task_data: Dict[str, Any]
         if isinstance(task_payload, Mapping):
@@ -202,4 +207,5 @@ class A2AProtocolAdapter(JsonRpcProtocolAdapter):
             arguments=arguments,
             node_id=node_id,
             load_balancing=load_balancing,
+            stream=bool(stream_requested),
         )

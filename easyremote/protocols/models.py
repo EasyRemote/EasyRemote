@@ -57,6 +57,7 @@ class FunctionInvocation:
     kwargs: Dict[str, Any] = field(default_factory=dict)
     node_id: Optional[str] = None
     load_balancing: Union[bool, str, Dict[str, Any]] = False
+    stream: bool = False
 
     @staticmethod
     def _normalize_arguments_envelope(
@@ -90,6 +91,7 @@ class FunctionInvocation:
         arguments: Any = None,
         node_id: Optional[str] = None,
         load_balancing: Union[bool, str, Dict[str, Any]] = False,
+        stream: bool = False,
     ) -> "FunctionInvocation":
         """
         Build invocation from flexible argument payload.
@@ -128,4 +130,5 @@ class FunctionInvocation:
             kwargs=kwargs,
             node_id=node_id,
             load_balancing=cls._normalize_load_balancing(load_balancing),
+            stream=bool(stream),
         )

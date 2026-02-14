@@ -15,6 +15,7 @@
 
 - `agent_route/mcp_gateway_demo.py`
 - `agent_route/a2a_gateway_demo.py`
+- `agent_route/easyremote_gateway_proxy_demo.py`（用 MCP/A2A 代理真实 EasyRemote 网关）
 - `agent_route/protocol_service_quickstart.py`
 - `agent_route/skill_pipeline_quickstart.py`
 - `agent_route/user_remote_agent_service_quickstart.py`
@@ -43,6 +44,7 @@
 
 - MCP Demo: `uv run python examples/agent_route/mcp_gateway_demo.py`
 - A2A Demo: `uv run python examples/agent_route/a2a_gateway_demo.py`
+- MCP/A2A 代理真实网关：`uv run python examples/agent_route/easyremote_gateway_proxy_demo.py`
 - 协议服务快速封装（装饰器 + OOP 模版）：`uv run python examples/agent_route/protocol_service_quickstart.py`
 - Skill 化远程能力导出与跨设备管道调用：`uv run python examples/agent_route/skill_pipeline_quickstart.py`
 - 用户侧远程 Agent（运行时安装技能 + 语言偏好）：`uv run python examples/agent_route/user_remote_agent_service_quickstart.py`

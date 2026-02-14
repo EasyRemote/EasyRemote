@@ -16,7 +16,8 @@ examples/
 ├── README.md
 ├── agent_route/
 │   ├── mcp_gateway_demo.py
-│   └── a2a_gateway_demo.py
+│   ├── a2a_gateway_demo.py
+│   └── easyremote_gateway_proxy_demo.py
 └── decorator_route/
     ├── server.py
     ├── compute_node.py
@@ -47,6 +48,15 @@ examples/
 - 批量请求（含通知）
 - 参数错误时的标准错误对象
 
+### MCP/A2A 代理真实网关
+
+文件：`examples/agent_route/easyremote_gateway_proxy_demo.py`
+
+演示内容：
+- 通过 `EasyRemoteClientRuntime` 把 EasyRemote 网关里的真实函数暴露成 MCP tools / A2A capabilities
+- 用 `tools/list` / `agent.capabilities` 做在线能力发现
+- （可选）用 `tools/call` / `task.execute` 直连指定 `node_id` 执行（适用于 CMP 能力管理端点）
+
 ## 2. 人类编码路线（Decorator）
 
 文件：
@@ -74,6 +84,7 @@ examples/
 4. `uv run python examples/decorator_route/client.py`
 5. `uv run python examples/agent_route/mcp_gateway_demo.py`
 6. `uv run python examples/agent_route/a2a_gateway_demo.py`
+7. `uv run python examples/agent_route/easyremote_gateway_proxy_demo.py`
 
 ## 5. 当前支持 vs 未来路线
 

@@ -47,7 +47,9 @@ def main() -> None:
 
     # Optional fallback: map to pre-approved local actions (disabled by default).
     if os.getenv("LOAD_SANDBOX_ACTIONS", "0").strip().lower() in {"1", "true", "yes", "on"}:
-        host.load_sandbox(Path(__file__).parent / "sandbox")
+        # Best-effort: if sandbox folder is missing, keep node alive and let the
+        # agent inspect `device.get_capability_host_status` for diagnostics.
+        host.try_load_sandbox(Path(__file__).parent / "sandbox")
     # Auto-register install/list skill management endpoints
     host.register_skill_endpoints(source="server-agent")
     node.serve()

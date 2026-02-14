@@ -36,6 +36,13 @@ agentbot 先远程调用用户设备上的安装入口函数，把新能力作�
 - 禁用自动同意（`EASYREMOTE_AUTO_CONSENT=0`），由用户软件/UI 显式确认。
 - 为 skill payload 加签或校验来源，并对 runtime 模块设置更严格的大小/数量限制与隔离执行策略。
 
+## 诊断与回退（sandbox 缺失）
+
+用户节点可选加载本地 sandbox actions（`LOAD_SANDBOX_ACTIONS=1`），但 sandbox 目录可能不存在。
+此时节点会通过 CMP 状态端点返回诊断信息，agent 可据此决定是否重新下发能力（例如改走 runtime code transfer）。
+
+- 状态端点：`device.get_capability_host_status`
+
 ## 摄像头实拍参数
 
 - `PHOTO_SOURCE`: 例如 `front-camera`、`rear-camera`、`camera://0`、`camera://1`、`auto`

@@ -103,6 +103,44 @@ async def main():
 asyncio.run(main())
 ```
 
+### 2.3 Proxy an EasyRemote gateway (agent-side)
+
+Use `EasyRemoteClientRuntime` to expose *real* gateway functions as MCP tools.
+
+```python
+import asyncio
+
+from easyremote import EasyRemoteClientRuntime
+from easyremote.mcp import MCPGateway
+
+
+async def main():
+    runtime = EasyRemoteClientRuntime("127.0.0.1:8080")
+    gateway = MCPGateway(runtime=runtime)
+
+    tools = await gateway.handle_request(
+        {"jsonrpc": "2.0", "id": "list-1", "method": "tools/list"}
+    )
+    print(tools)
+
+    # Call a specific node function (example: CMP install endpoint).
+    # await gateway.handle_request(
+    #     {
+    #         "jsonrpc": "2.0",
+    #         "id": "call-1",
+    #         "method": "tools/call",
+    #         "params": {
+    #             "name": "device.list_node_functions",
+    #             "node_id": "user-device-demo-user",
+    #             "arguments": {},
+    #         },
+    #     }
+    # )
+
+
+asyncio.run(main())
+```
+
 ## 3. Not implemented yet (roadmap)
 
 - MCP `resources/*` methods.

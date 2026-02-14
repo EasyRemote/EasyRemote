@@ -437,10 +437,71 @@ print(f"执行次数: {node_stats['executions']}")
 print(f"平均耗时: {node_stats['avg_duration']}")
 ```
 
+## 🧩 动态技能/能力管理（CMP）
+
+EasyRemote 支持在用户设备节点上运行时安装/卸载技能，并把能力注册为可远程调用的函数（能力 CRUD 的基础设施层）。
+
+### 用户设备节点：注册管理端点
+
+```python
+from easyremote import ComputeNode, UserDeviceCapabilityHost
+
+node = ComputeNode("127.0.0.1:8080", node_id="user-device-alice")
+host = UserDeviceCapabilityHost(
+    node,
+    prefer_transferred_code=True,
+    allow_transferred_code=True,
+)
+host.register_skill_endpoints()  # 注册 CMP 端点
+node.serve()
+```
+
+默认会注册这些保留函数名（CMP）：
+- `device.install_remote_skill`
+- `device.uninstall_remote_skill`
+- `device.list_installed_skills`
+- `device.list_node_functions`
+- `device.get_capability_host_status`（推荐，用于诊断与编排决策）
+
+### Agent 侧：增删改查（install/uninstall/list/status）
+
+```python
+from easyremote import Client
+
+client = Client("127.0.0.1:8080")
+node_id = "user-device-alice"
+
+status = client.execute_on_node(node_id, "device.get_capability_host_status")
+skills = client.execute_on_node(node_id, "device.list_installed_skills")
+funcs = client.execute_on_node(node_id, "device.list_node_functions")
+
+# 安装/更新（replace_existing_skill=True 时同名 skill 会先卸载旧版本再安装新版本）
+client.execute_on_node(
+    node_id,
+    "device.install_remote_skill",
+    skill_payload={"schema": "...", "version": "...", "capabilities": []},
+    replace_existing_skill=True,
+)
+
+# 卸载并注销其注册的函数
+client.execute_on_node(
+    node_id,
+    "device.uninstall_remote_skill",
+    skill_name="camera-skill",
+    unregister_functions=True,
+)
+```
+
+### sandbox 缺失的反馈（给 agent）
+
+如果用户节点尝试加载本地 sandbox actions（例如 `LOAD_SANDBOX_ACTIONS=1`），但 sandbox 目录不存在：
+- 节点进程不应直接崩溃（建议用 `host.try_load_sandbox(...)`）
+- agent 可通过 `device.get_capability_host_status` 读取 `sandbox.loaded=false` 与 `sandbox.error_type=NotADirectoryError`，再决定是否重新下发（例如改用 runtime code transfer 的 skill）。
+
 ## 🔗 相关资源
 
 - 📖 [快速开始指南](quick-start.md)
 - 🎓 [使用教程](../tutorials/basic-usage.md)
 - 💡 [示例代码](examples.md)
 - 🏗️ [架构文档](../architecture/overview.md)
-- 🐛 [故障排除](../troubleshooting.md) 
+- 🐛 [故障排除](../troubleshooting.md)

@@ -9,7 +9,8 @@ examples/
 ├── README.md
 ├── agent_route/
 │   ├── mcp_gateway_demo.py
-│   └── a2a_gateway_demo.py
+│   ├── a2a_gateway_demo.py
+│   └── easyremote_gateway_proxy_demo.py
 └── decorator_route/
     ├── server.py
     ├── compute_node.py
@@ -20,6 +21,7 @@ examples/
 
 - `examples/agent_route/mcp_gateway_demo.py`
 - `examples/agent_route/a2a_gateway_demo.py`
+- `examples/agent_route/easyremote_gateway_proxy_demo.py` (proxy a real EasyRemote gateway)
 
 ## Route B: Human coding with decorators
 
@@ -35,6 +37,7 @@ examples/
 4. `uv run python examples/decorator_route/client.py`
 5. `uv run python examples/agent_route/mcp_gateway_demo.py`
 6. `uv run python examples/agent_route/a2a_gateway_demo.py`
+7. `uv run python examples/agent_route/easyremote_gateway_proxy_demo.py`
 
 ## Current vs future
 

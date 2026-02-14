@@ -143,6 +143,15 @@ class UserDeviceCapabilityHost:
         self._actions: Dict[str, DeviceAction] = {}
         self._installed: Dict[str, InstalledDeviceSkill] = {}
         self._sandbox_modules: List[ModuleType] = []
+        self._sandbox_status: Dict[str, Any] = {
+            "attempted": False,
+            "path": None,
+            "loaded": False,
+            "actions_registered": 0,
+            "error": None,
+            "error_type": None,
+            "attempted_at": None,
+        }
 
     def _load_runtime_modules(self, payload_obj: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
         """
@@ -312,6 +321,35 @@ class UserDeviceCapabilityHost:
             for name, action in sorted(self._actions.items())
         }
 
+    def get_status(
+        self,
+        *,
+        include_actions: bool = False,
+        include_installed_skills: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Return host state for agent-side diagnostics and orchestration decisions.
+        """
+        node_id = getattr(self.node, "node_id", None)
+        status: Dict[str, Any] = {
+            "node_id": str(node_id) if node_id is not None else None,
+            "flags": {
+                "auto_refresh_registration": bool(self.auto_refresh_registration),
+                "prefer_transferred_code": bool(self.prefer_transferred_code),
+                "allow_transferred_code": bool(self.allow_transferred_code),
+                "auto_consent": bool(self.auto_consent),
+            },
+            "action_count": len(self._actions),
+            "installed_skill_count": len(self._installed),
+            "sandbox": dict(self._sandbox_status),
+            "sandbox_module_count": len(self._sandbox_modules),
+        }
+        if include_actions:
+            status["actions"] = self.list_actions()
+        if include_installed_skills:
+            status["installed_skills"] = self.list_installed_skills()
+        return status
+
     def load_sandbox(self, path: Union[str, Path]) -> int:
         """
         Scan a directory for ``*.py`` modules containing ``@device_action``
@@ -352,6 +390,34 @@ class UserDeviceCapabilityHost:
                 count += 1
         return count
 
+    def try_load_sandbox(self, path: Union[str, Path]) -> Dict[str, Any]:
+        """
+        Best-effort sandbox loader that records status instead of raising.
+
+        This is useful for user-device nodes: if sandbox actions are missing,
+        we keep the node online and expose diagnostics to the agent (CMP).
+        """
+        sandbox_dir = Path(path)
+        status: Dict[str, Any] = {
+            "attempted": True,
+            "path": str(sandbox_dir),
+            "loaded": False,
+            "actions_registered": 0,
+            "error": None,
+            "error_type": None,
+            "attempted_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            count = self.load_sandbox(sandbox_dir)
+            status["loaded"] = True
+            status["actions_registered"] = int(count)
+        except Exception as exc:
+            status["error"] = str(exc)
+            status["error_type"] = type(exc).__name__
+
+        self._sandbox_status = dict(status)
+        return dict(status)
+
     def _resolve_action(self, capability_alias: str, capability_spec: Mapping[str, Any]) -> DeviceAction:
         metadata = capability_spec.get("metadata")
         action_name: Optional[str] = None
@@ -390,6 +456,7 @@ class UserDeviceCapabilityHost:
         source: str = "remote-agent",
         metadata: Optional[Mapping[str, Any]] = None,
         gateway_address: Optional[str] = None,
+        replace_existing_skill: bool = True,
     ) -> str:
         """
         Install one remote skill and register mapped local functions to compute node.
@@ -417,6 +484,14 @@ class UserDeviceCapabilityHost:
         target_name = str(skill_name or skill.name).strip()
         if not target_name:
             raise ValueError("skill_name cannot be empty")
+
+        if replace_existing_skill and target_name in self._installed:
+            # Update semantics: remove previous functions then install new payload.
+            self.uninstall_skill(
+                target_name,
+                unregister_functions=True,
+                refresh=False,
+            )
 
         registered_functions = getattr(self.node, "registered_functions", {})
         existing_names = set(getattr(registered_functions, "keys", lambda: [])())
@@ -517,6 +592,7 @@ class UserDeviceCapabilityHost:
             if binding_mode == "code_transfer":
                 tag_values.add("code-transfer")
 
+            registered_now = False
             if function_name not in existing_names:
                 if binding_mode == "code_transfer":
                     description = "Transferred runtime code from remote agent"
@@ -534,6 +610,7 @@ class UserDeviceCapabilityHost:
                     description=description,
                 )
                 existing_names.add(function_name)
+                registered_now = True
 
             installed_capabilities[alias] = {
                 "function_name": function_name,
@@ -543,6 +620,7 @@ class UserDeviceCapabilityHost:
                 "stream": bool(spec.get("stream", False)),
                 "media_type": spec.get("media_type", "application/json"),
                 "metadata": dict(metadata_obj) if isinstance(metadata_obj, Mapping) else {},
+                "registered": registered_now,
             }
 
         self._installed[target_name] = InstalledDeviceSkill(
@@ -567,8 +645,14 @@ class UserDeviceCapabilityHost:
         *,
         install_name: str = "device.install_remote_skill",
         list_name: str = "device.list_installed_skills",
+        uninstall_name: str = "device.uninstall_remote_skill",
+        functions_name: str = "device.list_node_functions",
+        status_name: str = "device.get_capability_host_status",
         install_tags: Optional[Set[str]] = None,
         list_tags: Optional[Set[str]] = None,
+        uninstall_tags: Optional[Set[str]] = None,
+        functions_tags: Optional[Set[str]] = None,
+        status_tags: Optional[Set[str]] = None,
         source: str = "remote-agent",
     ) -> None:
         """
@@ -583,11 +667,17 @@ class UserDeviceCapabilityHost:
 
         def _install_remote_skill(
             skill_payload: Dict[str, Any],
+            replace_existing_skill: bool = True,
         ) -> Dict[str, Any]:
-            name = host.install_skill(skill_payload, source=source)
+            name = host.install_skill(
+                skill_payload,
+                source=source,
+                replace_existing_skill=bool(replace_existing_skill),
+            )
             result: Dict[str, Any] = {
                 "installed_skill": name,
                 "installed_skills": host.list_installed_skills(),
+                "capability_host_status": host.get_status(),
             }
             if node_id_attr is not None:
                 result["node_id"] = node_id_attr
@@ -599,6 +689,70 @@ class UserDeviceCapabilityHost:
         def _list_installed_skills() -> Dict[str, Any]:
             return host.list_installed_skills()
 
+        def _uninstall_remote_skill(
+            skill_name: str,
+            unregister_functions: bool = True,
+        ) -> Dict[str, Any]:
+            removed = host.uninstall_skill(
+                skill_name,
+                unregister_functions=bool(unregister_functions),
+                refresh=True,
+            )
+            result: Dict[str, Any] = {
+                "skill_name": str(skill_name).strip(),
+                "uninstalled": bool(removed),
+                "installed_skills": host.list_installed_skills(),
+                "capability_host_status": host.get_status(),
+            }
+            if node_id_attr is not None:
+                result["node_id"] = node_id_attr
+            registered = getattr(node, "registered_functions", None)
+            if registered is not None:
+                result["node_functions"] = sorted(registered.keys())
+            return result
+
+        def _list_node_functions() -> Dict[str, Any]:
+            result: Dict[str, Any] = {}
+            if node_id_attr is not None:
+                result["node_id"] = node_id_attr
+            result["capability_host_status"] = host.get_status()
+
+            registered = getattr(node, "registered_functions", None)
+            if registered is None:
+                result["functions"] = []
+                result["function_count"] = 0
+                return result
+
+            items: List[Dict[str, Any]] = []
+            for fn_name, registration in sorted(registered.items(), key=lambda kv: str(kv[0])):
+                entry: Dict[str, Any] = {"name": str(fn_name)}
+                info = getattr(registration, "function_info", None)
+                if info is not None:
+                    entry["tags"] = sorted(getattr(info, "tags", set()) or set())
+                    get_context_data = getattr(info, "get_context_data", None)
+                    if callable(get_context_data):
+                        entry["description"] = str(get_context_data("description", "") or "")
+                        entry["version"] = str(get_context_data("version", "") or "")
+                        entry["timeout_seconds"] = get_context_data("timeout_seconds")
+                        entry["priority"] = get_context_data("priority")
+                        entry["execution_mode"] = str(get_context_data("execution_mode", "") or "")
+                    entry["is_async"] = bool(getattr(info, "is_async", False))
+                    entry["is_generator"] = bool(getattr(info, "is_generator", False))
+                items.append(entry)
+
+            result["functions"] = items
+            result["function_count"] = len(items)
+            return result
+
+        def _get_capability_host_status(
+            include_actions: bool = False,
+            include_installed_skills: bool = False,
+        ) -> Dict[str, Any]:
+            return host.get_status(
+                include_actions=bool(include_actions),
+                include_installed_skills=bool(include_installed_skills),
+            )
+
         node.register(
             _install_remote_skill,
             name=install_name,
@@ -609,9 +763,56 @@ class UserDeviceCapabilityHost:
             name=list_name,
             tags=list_tags or {"device", "skill"},
         )
+        node.register(
+            _uninstall_remote_skill,
+            name=uninstall_name,
+            tags=uninstall_tags or {"device", "skill", "installer"},
+        )
+        node.register(
+            _list_node_functions,
+            name=functions_name,
+            tags=functions_tags or {"device", "skill"},
+        )
+        node.register(
+            _get_capability_host_status,
+            name=status_name,
+            tags=status_tags or {"device", "skill"},
+        )
 
-    def uninstall_skill(self, skill_name: str) -> bool:
-        return self._installed.pop(str(skill_name).strip(), None) is not None
+    def uninstall_skill(
+        self,
+        skill_name: str,
+        *,
+        unregister_functions: bool = True,
+        refresh: bool = True,
+    ) -> bool:
+        normalized = str(skill_name).strip()
+        if not normalized:
+            raise ValueError("skill_name cannot be empty")
+
+        record = self._installed.get(normalized)
+        if record is None:
+            return False
+
+        if unregister_functions:
+            unregister = getattr(self.node, "unregister", None)
+            if unregister is None or not callable(unregister):
+                raise NotImplementedError(
+                    "node does not support unregister(); cannot uninstall skill functions safely"
+                )
+            for spec in record.capabilities.values():
+                function_name = str(spec.get("function_name", "")).strip()
+                if not function_name:
+                    continue
+                if not bool(spec.get("registered", False)):
+                    # We skipped registering this function (already existed), so do not delete it.
+                    continue
+                unregister(function_name)
+
+        self._installed.pop(normalized, None)
+        if refresh:
+            self._try_refresh_registration()
+        return True
 
     def list_installed_skills(self) -> Dict[str, Dict[str, Any]]:
         return {

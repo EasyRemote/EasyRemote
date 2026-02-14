@@ -151,6 +151,7 @@ class MCPProtocolAdapter(JsonRpcProtocolAdapter):
                     arguments=params.get("arguments"),
                     node_id=params.get("node_id"),
                     load_balancing=params.get("load_balancing", False),
+                    stream=bool(params.get("stream")),
                 )
                 result = await runtime.execute_invocation(invocation)
                 content = await self._normalize_call_result(

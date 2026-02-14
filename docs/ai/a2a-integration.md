@@ -116,6 +116,47 @@ async def main():
 asyncio.run(main())
 ```
 
+### 2.3 Proxy an EasyRemote gateway (agent-side)
+
+Use `EasyRemoteClientRuntime` to expose *real* gateway functions as A2A
+capabilities and execute them via `task.execute`.
+
+```python
+import asyncio
+
+from easyremote import EasyRemoteClientRuntime
+from easyremote.a2a import A2AGateway
+
+
+async def main():
+    runtime = EasyRemoteClientRuntime("127.0.0.1:8080")
+    gateway = A2AGateway(runtime=runtime)
+
+    capabilities = await gateway.handle_request(
+        {"jsonrpc": "2.0", "id": "cap-1", "method": "agent.capabilities"}
+    )
+    print(capabilities)
+
+    # Execute a function on a specific node.
+    # await gateway.handle_request(
+    #     {
+    #         "jsonrpc": "2.0",
+    #         "id": "task-1",
+    #         "method": "task.execute",
+    #         "params": {
+    #             "task": {
+    #                 "function": "device.list_installed_skills",
+    #                 "node_id": "user-device-demo-user",
+    #                 "input": {},
+    #             }
+    #         },
+    #     }
+    # )
+
+
+asyncio.run(main())
+```
+
 ## 3. Not implemented yet (roadmap)
 
 - Rich task lifecycle states (`queued/running/partial/cancelled`).

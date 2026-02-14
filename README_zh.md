@@ -110,6 +110,8 @@ result = Client("your-gateway:8080").execute("ai_inference", "Hello AI")
 ### 🏗️ 协议深入
 - **[MCP 已实现范围](docs/ai/mcp-integration.md)** - 当前协议行为与边界
 - **[A2A 已实现范围](docs/ai/a2a-integration.md)** - 当前协议行为与边界
+- **Agent 侧网关代理 Runtime** - `EasyRemoteClientRuntime`（见 MCP/A2A 文档 2.3 节）
+- **[能力管理协议（CMP）](docs/CAPABILITY_MANAGEMENT_PROTOCOL.md)** - 用户节点技能/能力增删改查（安装/卸载/查询）
 
 ### 🔬 研究资料
 - **[技术白皮书](docs/zh/research/whitepaper.md)** - EasyNet理论基础 | [English](docs/en/research/whitepaper.md)

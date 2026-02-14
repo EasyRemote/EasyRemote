@@ -53,6 +53,24 @@ Author: Silan Hu (silan.hu@u.nus.edu)
 - `tests/test_protocol_adapters.py`
 - 示例：`examples/agent_route/a2a_gateway_demo.py`
 
+#### A3. Agent 侧代理网关（MCP/A2A -> EasyRemote Gateway）
+
+目标用户：希望用 MCP/A2A JSON-RPC 作为“Agent 友好接口”，但底层执行仍走 EasyRemote 的分布式网关。
+
+已支持能力：
+- 通过 `EasyRemoteClientRuntime` 将网关内的真实函数暴露为 MCP tools / A2A capabilities
+- 支持 `node_id` 直连指定节点
+- 支持 `load_balancing`（走网关负载均衡）
+- 支持 `stream`（走网关 StreamCall，返回 chunks）
+
+对应实现：
+- `easyremote/protocols/easyremote_runtime.py`（`EasyRemoteClientRuntime`）
+- `docs/ai/mcp-integration.md` / `docs/ai/a2a-integration.md`（2.3 节）
+
+典型用途：
+- 配合用户设备内置 CMP 管理端点（`device.install_remote_skill` / `device.uninstall_remote_skill` / `device.list_installed_skills` / `device.list_node_functions`），实现能力的增删改查与热插拔。
+- CMP 说明：`docs/CAPABILITY_MANAGEMENT_PROTOCOL.md`
+
 ### 路线 B：人类编码使用 Decorator
 
 #### B1. 远程函数暴露与调用

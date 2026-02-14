@@ -39,6 +39,7 @@ _EXPORT_MAP: Dict[str, Tuple[str, str]] = {
     "ProtocolService": ("easyremote.protocols", "ProtocolService"),
     "ProtocolServiceTemplate": ("easyremote.protocols", "ProtocolServiceTemplate"),
     "agent_capability": ("easyremote.protocols", "agent_capability"),
+    "EasyRemoteClientRuntime": ("easyremote.protocols", "EasyRemoteClientRuntime"),
     "MCPService": ("easyremote.mcp", "MCPService"),
     "A2AService": ("easyremote.a2a", "A2AService"),
     "MediaFrame": ("easyremote.skills", "MediaFrame"),

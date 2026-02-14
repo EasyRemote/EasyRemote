@@ -71,15 +71,18 @@ def take_photo(
 
         cv2.imwrite(str(out), frame)
         mode = "camera"
+        reason = None
     else:
         out.write_bytes(base64.b64decode(_FALLBACK_JPEG_BASE64))
         mode = "placeholder"
+        reason = "camera_open_failed_or_opencv_missing"
     return {
         "action": "take_photo",
         "saved_to": str(out),
         "source": source,
         "resolution": resolution,
         "capture_mode": mode,
+        "capture_reason": reason,
         "captured_at": int(time.time()),
         "status": "ok",
     }
@@ -134,10 +137,12 @@ def record_video(
         writer.release()
         cap.release()
         mode = "camera"
+        reason = None
     except Exception:
         out.write_bytes(b"EASYREMOTE_PLACEHOLDER_VIDEO")
         written = 0
         mode = "placeholder"
+        reason = "camera_open_failed_or_opencv_missing"
     return {
         "action": "record_video",
         "saved_to": str(out),
@@ -146,6 +151,7 @@ def record_video(
         "duration_seconds": duration_seconds,
         "fps": fps,
         "capture_mode": mode,
+        "capture_reason": reason,
         "frames_written": written,
         "captured_at": int(time.time()),
         "status": "ok",
@@ -176,3 +182,4 @@ def list_devices(scan_max_index: int = 4) -> Dict[str, Any]:
         "available": available,
         "checked_indices": list(range(scan_max_index + 1)),
     }
+

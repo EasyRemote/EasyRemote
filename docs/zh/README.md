@@ -39,5 +39,7 @@ docs/zh/
 - 文档中“当前支持”仅记录代码已实现能力。
 - 文档中“未来支持”统一标记为 Roadmap，不与现状混写。
 - 核心协议能力请结合测试文件 `tests/test_protocol_adapters.py` 一起阅读。
+- Agent 侧网关代理 Runtime（MCP/A2A -> EasyRemote Gateway）：`EasyRemoteClientRuntime`（见 `docs/ai/mcp-integration.md` / `docs/ai/a2a-integration.md` 的 2.3 节）
+- 运行时能力增删改查（CMP）请看 `docs/CAPABILITY_MANAGEMENT_PROTOCOL.md`。
 - 业务场景栏目请看 `gallery/README.md` 与 `gallery/killer_apps.md`。
 - 快速上手项目请看 `gallery/projects/README.md`。

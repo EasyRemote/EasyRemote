@@ -32,6 +32,8 @@ docs/en/
 
 - MCP implemented scope: `docs/ai/mcp-integration.md`
 - A2A implemented scope: `docs/ai/a2a-integration.md`
+- Agent-side gateway proxy runtime: `EasyRemoteClientRuntime` (see MCP/A2A guides section 2.3)
+- Capability Management Protocol (CMP): `docs/CAPABILITY_MANAGEMENT_PROTOCOL.md`
 - Protocol conformance tests: `tests/test_protocol_adapters.py`
 - Killer-app catalog: `gallery/README.md` and `gallery/killer_apps.md`
 - Quickstart projects: `gallery/projects/README.md`

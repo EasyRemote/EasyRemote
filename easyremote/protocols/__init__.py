@@ -19,6 +19,7 @@ from .models import FunctionDescriptor, FunctionInvocation, ProtocolName
 from .runtime import ProtocolRuntime
 from .mcp import MCPProtocolAdapter
 from .a2a import A2AProtocolAdapter
+from .easyremote_runtime import EasyRemoteClientRuntime
 from .service import (
     A2AService,
     MCPService,
@@ -41,6 +42,7 @@ __all__ = [
     "FunctionInvocation",
     "MCPProtocolAdapter",
     "A2AProtocolAdapter",
+    "EasyRemoteClientRuntime",
     "ServiceRuntime",
     "ProtocolService",
     "ProtocolServiceTemplate",

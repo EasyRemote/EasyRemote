@@ -874,7 +874,8 @@ class DistributedComputeNode(ModernLogger):
                 version: str = "1.0.0",
                 enable_caching: bool = True,
                 cache_ttl_seconds: Optional[float] = None,
-                execution_mode: ExecutionMode = ExecutionMode.NORMAL) -> Union[Callable, Callable[[Callable], Callable]]:
+                execution_mode: ExecutionMode = ExecutionMode.NORMAL,
+                replace: bool = False) -> Union[Callable, Callable[[Callable], Callable]]:
         """
         Register a function for remote execution with comprehensive configuration.
         
@@ -963,7 +964,7 @@ class DistributedComputeNode(ModernLogger):
             function_info.set_context_data("execution_mode", execution_mode.value)
             
             # Validate function registration
-            self._validate_function_registration(function_info)
+            self._validate_function_registration(function_info, replace=replace)
             
             # Create function registration
             registration = FunctionRegistration(
@@ -976,6 +977,10 @@ class DistributedComputeNode(ModernLogger):
             
             # Register function
             with self._function_lock:
+                if replace and func_name in self._registered_functions:
+                    # Replacement should not keep stale caches/stats.
+                    self._function_execution_cache.pop(func_name, None)
+                    self._execution_statistics.pop(func_name, None)
                 self._registered_functions[func_name] = registration
             
             # Initialize execution statistics
@@ -1000,7 +1005,34 @@ class DistributedComputeNode(ModernLogger):
         else:
             return decorator(func)
     
-    def _validate_function_registration(self, function_info: FunctionInfo):
+    def unregister(self, function_name: str) -> bool:
+        """
+        Unregister a function so it is no longer callable via the gateway.
+
+        Notes:
+        - Active executions keep their callable reference; unregistering only
+          affects new calls.
+        - Callers should refresh gateway registration after unregistering.
+        """
+        normalized = str(function_name).strip()
+        if not normalized:
+            raise ValueError("function_name cannot be empty")
+
+        with self._function_lock:
+            existed = normalized in self._registered_functions
+            if not existed:
+                return False
+            self._registered_functions.pop(normalized, None)
+            self._function_execution_cache.pop(normalized, None)
+            self._execution_statistics.pop(normalized, None)
+        return True
+
+    def _validate_function_registration(
+        self,
+        function_info: FunctionInfo,
+        *,
+        replace: bool = False,
+    ):
         """
         Validate function registration parameters.
         
@@ -1014,7 +1046,7 @@ class DistributedComputeNode(ModernLogger):
             raise ValueError("Function name cannot be empty")
         
         with self._function_lock:
-            if function_info.name in self._registered_functions:
+            if not replace and function_info.name in self._registered_functions:
                 raise ValueError(f"Function '{function_info.name}' is already registered")
         
         if function_info.max_concurrent_calls < 1:

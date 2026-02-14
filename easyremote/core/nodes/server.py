@@ -1257,7 +1257,7 @@ class DistributedComputingGateway(
                     response.accepted = True
                     return response
                 else:
-                    self.warning(f"💔 [HEARTBEAT] REJECTED - Unknown node: {node_id}")
+                    self.warning(f"[HEARTBEAT] REJECTED - Unknown node: {node_id}")
                     
                     # Return rejected response
                     response = service_pb2.HeartbeatResponse()
@@ -1265,7 +1265,7 @@ class DistributedComputingGateway(
                     return response
                     
         except Exception as e:
-            self.error(f"💥 [HEARTBEAT] Error processing heartbeat from {request.node_id}: {e}", exc_info=True)
+            self.error(f"[HEARTBEAT] Error processing heartbeat from {request.node_id}: {e}", exc_info=True)
             
             # Return rejected response
             response = service_pb2.HeartbeatResponse()
@@ -1291,15 +1291,15 @@ class DistributedComputingGateway(
         
         try:
             # 📥 Enhanced request logging
-            self.info(f"📥 [ROUTE] RECEIVED request from client! call_id={call_id}, function='{function_name}'")
+            self.info(f"[ROUTE] RECEIVED request from client! call_id={call_id}, function='{function_name}'")
             
             # Deserialize arguments
             try:
                 args, kwargs = self._serializer.deserialize_args(request.args, request.kwargs)
-                self.info(f"🔧 [ROUTE] Arguments deserialized: args={len(args)}, kwargs={len(kwargs)}")
+                self.info(f"[ROUTE] Arguments deserialized: args={len(args)}, kwargs={len(kwargs)}")
             except Exception as e:
                 error_msg = f"Failed to deserialize arguments: {e}"
-                self.error(f"❌ [ROUTE] {error_msg}")
+                self.error(f"[ROUTE] {error_msg}")
                 
                 response = service_pb2.LoadBalancedCallResponse()
                 response.has_error = True
@@ -1328,7 +1328,7 @@ class DistributedComputingGateway(
             )
             
             # 🔄 Notify client that request is being processed
-            self.info(f"🔄 [ROUTE] Processing request {call_id} - looking for available nodes...")
+            self.info(f"[ROUTE] Processing request {call_id} - looking for available nodes...")
             
             # Use load balancer to select node and execute function
             try:
@@ -1362,10 +1362,10 @@ class DistributedComputingGateway(
                 # Serialize result
                 try:
                     serialized_result = self._serializer.serialize_result(result)
-                    self.info(f"📦 [ROUTE] Result serialized for call {call_id}")
+                    self.info(f"[ROUTE] Result serialized for call {call_id}")
                 except Exception as e:
                     error_msg = f"Failed to serialize result: {e}"
-                    self.error(f"❌ [ROUTE] {error_msg}")
+                    self.error(f"[ROUTE] {error_msg}")
                     
                     response = service_pb2.LoadBalancedCallResponse()
                     response.has_error = True
@@ -1386,14 +1386,14 @@ class DistributedComputingGateway(
                 if self.metrics:
                     self.metrics.update_request_stats(True, execution_time_ms)
                 
-                self.info(f"✅ [ROUTE] SUCCESS! Completed call {call_id} for '{function_name}' "
+                self.info(f"[ROUTE] SUCCESS! Completed call {call_id} for '{function_name}' "
                          f"in {execution_time_ms:.2f}ms - sending result back to client")
                 
                 return response
                 
             except NoAvailableNodesError as e:
                 error_msg = f"No available nodes for function '{function_name}': {e}"
-                self.warning(f"⚠️ [ROUTE] {error_msg}")
+                self.warning(f"[ROUTE] {error_msg}")
                 
                 response = service_pb2.LoadBalancedCallResponse()
                 response.has_error = True
@@ -1402,7 +1402,7 @@ class DistributedComputingGateway(
                 
             except Exception as e:
                 error_msg = f"Function execution failed: {e}"
-                self.error(f"💥 [ROUTE] Load balanced execution failed for call {call_id}: {e}", exc_info=True)
+                self.error(f"[ROUTE] Load balanced execution failed for call {call_id}: {e}", exc_info=True)
                 
                 response = service_pb2.LoadBalancedCallResponse()
                 response.has_error = True
@@ -1411,7 +1411,7 @@ class DistributedComputingGateway(
         
         except Exception as e:
             error_msg = f"Load balanced call processing failed: {e}"
-            self.error(f"💥 [ROUTE] Critical error in CallWithLoadBalancing for call {call_id}: {e}", exc_info=True)
+            self.error(f"[ROUTE] Critical error in CallWithLoadBalancing for call {call_id}: {e}", exc_info=True)
             
             # Update metrics for failed request
             if self.metrics:
@@ -1928,12 +1928,12 @@ class DistributedComputingGateway(
                             exec_result = control_message.exec_res
                             call_id = exec_result.call_id
                             
-                            self.info(f"📥 [RECV] ✅ RECEIVED execution result from node '{node_id}' for call {call_id}")
+                            self.info(f"[RECV] ✅ RECEIVED execution result from node '{node_id}' for call {call_id}")
                             
                             if exec_result.has_error:
-                                self.error(f"💥 [RECV] ❌ Node '{node_id}' reported ERROR for call {call_id}: {exec_result.error_message}")
+                                self.error(f"[RECV] ❌ Node '{node_id}' reported ERROR for call {call_id}: {exec_result.error_message}")
                             else:
-                                self.info(f"🎉 [RECV] ✅ Node '{node_id}' completed call {call_id} successfully!")
+                                self.info(f"[RECV] ✅ Node '{node_id}' completed call {call_id} successfully!")
                             
                             # Process execution result
                             async with self._global_lock:
@@ -1949,16 +1949,16 @@ class DistributedComputingGateway(
                                                 message=exec_result.error_message,
                                             )
                                             future_or_context.set_exception(error)
-                                            self.error(f"💥 [RECV] Setting exception for call {call_id}")
+                                            self.error(f"[RECV] Setting exception for call {call_id}")
                                         else:
                                             # Deserialize result
                                             try:
-                                                self.info(f"🔄 [RECV] Deserializing result from node '{node_id}'...")
+                                                self.info(f"[RECV] Deserializing result from node '{node_id}'...")
                                                 result = self._serializer.deserialize_result(exec_result.result)
                                                 future_or_context.set_result(result)
-                                                self.info(f"✅ [RECV] Result deserialized and delivered for call {call_id}")
+                                                self.info(f"[RECV] Result deserialized and delivered for call {call_id}")
                                             except Exception as e:
-                                                self.error(f"💥 [RECV] Failed to deserialize result: {e}")
+                                                self.error(f"[RECV] Failed to deserialize result: {e}")
                                                 future_or_context.set_exception(
                                                     ExceptionTranslator.as_serialization_error(
                                                         e,
@@ -1969,7 +1969,7 @@ class DistributedComputingGateway(
                                         
                                         # Clean up
                                         del self._pending_function_calls[call_id]
-                                        self.info(f"🧹 [RECV] Cleaned up call {call_id} from pending calls")
+                                        self.info(f"[RECV] Cleaned up call {call_id} from pending calls")
                                     
                                     elif isinstance(future_or_context, dict):
                                         # Stream result - add to queue
@@ -1977,7 +1977,7 @@ class DistributedComputingGateway(
                                             await future_or_context['response_queue'].put(exec_result)
                                             self.info(f" [RECV] Added stream result to queue for call {call_id}")
                                 else:
-                                    self.warning(f"⚠️ [RECV] Received result for unknown call {call_id} from node '{node_id}'")
+                                    self.warning(f"[RECV] Received result for unknown call {call_id} from node '{node_id}'")
                             
                             # Update metrics
                             if self.metrics:
@@ -2018,16 +2018,16 @@ class DistributedComputingGateway(
                                 # Check what type of message it is
                                 if outgoing_message.HasField('exec_req'):
                                     exec_req = outgoing_message.exec_req
-                                    self.info(f" [CONTROL]  TRANSMITTING function call to node '{node_id}':")
-                                    self.info(f"   📋 Function: '{exec_req.function_name}'")
-                                    self.info(f"   🆔 Call ID: {exec_req.call_id}")
-                                    self.info(f"   📦 Args size: {len(exec_req.args)} bytes")
-                                    self.info(f"   📦 Kwargs size: {len(exec_req.kwargs)} bytes")
+                                    self.info(f"[CONTROL]  TRANSMITTING function call to node '{node_id}':")
+                                    self.info(f"   Function: '{exec_req.function_name}'")
+                                    self.info(f"   Call ID: {exec_req.call_id}")
+                                    self.info(f"   Args size: {len(exec_req.args)} bytes")
+                                    self.info(f"   Kwargs size: {len(exec_req.kwargs)} bytes")
                                 else:
                                     self.info(f"📨 [CONTROL] Sending control message to node '{node_id}' (non-execution)")
                                 
                                 await outgoing_queue.put(outgoing_message)
-                                self.info(f"✅ [CONTROL] 📡 MESSAGE TRANSMITTED to node '{node_id}' - node should receive it now!")
+                                self.info(f"[CONTROL] MESSAGE TRANSMITTED to node '{node_id}' - node should receive it now!")
                                 
                             except asyncio.TimeoutError:
                                 # No execution requests, continue monitoring
@@ -2040,10 +2040,10 @@ class DistributedComputingGateway(
                         await asyncio.sleep(0.05)  # 50ms sleep
                         
                     except asyncio.CancelledError:
-                        self.info(f"🛑 [CONTROL] Message monitor stopped for node '{node_id}'")
+                        self.info(f"[CONTROL] Message monitor stopped for node '{node_id}'")
                         break
                     except Exception as e:
-                        self.error(f"💥 [CONTROL] Error in message monitor for node '{node_id}': {e}")
+                        self.error(f"[CONTROL] Error in message monitor for node '{node_id}': {e}")
                         break
             
             # Start background tasks
@@ -2130,12 +2130,27 @@ class DistributedComputingGateway(
         """
         Execute a protocol-normalized invocation.
         """
+        if invocation.stream:
+            if invocation.load_balancing:
+                return self.stream_function_with_load_balancing(
+                    invocation.function_name,
+                    invocation.load_balancing,
+                    *invocation.args,
+                    **invocation.kwargs,
+                )
+            return self.stream_function(
+                invocation.node_id,
+                invocation.function_name,
+                *invocation.args,
+                **invocation.kwargs,
+            )
+
         if invocation.load_balancing:
             return await self.execute_function_with_load_balancing(
                 invocation.function_name,
                 invocation.load_balancing,
                 *invocation.args,
-                **invocation.kwargs
+                **invocation.kwargs,
             )
 
         return await self.execute_function(
@@ -2278,14 +2293,14 @@ class DistributedComputingGateway(
         # Generate unique call ID
         call_id = str(uuid.uuid4())
         
-        self.info(f" [SEND] SENDING function call to node '{node_id}': function='{function_name}', call_id={call_id}")
-        self.info(f"📦 [SEND] Function arguments: args={len(args)} items, kwargs={len(kwargs)} items")
+        self.info(f"[SEND] SENDING function call to node '{node_id}': function='{function_name}', call_id={call_id}")
+        self.info(f"[SEND] Function arguments: args={len(args)} items, kwargs={len(kwargs)} items")
         
         try:
             # Serialize arguments
-            self.info("🔄 [SEND] Serializing arguments for transmission...")
+            self.info("[SEND] Serializing arguments for transmission...")
             serialized_args, serialized_kwargs = self._serializer.serialize_args(*args, **kwargs)
-            self.info("✅ [SEND] Arguments serialized successfully")
+            self.info("[SEND] Arguments serialized successfully")
             
             # Create execution request
             exec_request = service_pb2.ExecutionRequest()
@@ -2298,7 +2313,7 @@ class DistributedComputingGateway(
             control_msg = service_pb2.ControlMessage()
             control_msg.exec_req.CopyFrom(exec_request)
             
-            self.info(f"📋 [SEND] Created execution request message for node '{node_id}'")
+            self.info(f"[SEND] Created execution request message for node '{node_id}'")
             
             # Create future to wait for result
             result_future = create_loop_future()
@@ -2306,18 +2321,18 @@ class DistributedComputingGateway(
             # Store the future for result processing
             async with self._global_lock:
                 self._pending_function_calls[call_id] = result_future
-                self.info(f"💾 [SEND] Registered call {call_id} for result tracking")
+                self.info(f"[SEND] Registered call {call_id} for result tracking")
                 
                 # Send execution request to node
                 if node_id in self._node_communication_queues:
                     queue_size_before = self._node_communication_queues[node_id].qsize()
                     await self._node_communication_queues[node_id].put(control_msg)
                     queue_size_after = self._node_communication_queues[node_id].qsize()
-                    self.info(f" [SEND] ✅ MESSAGE SENT to node '{node_id}' communication queue!")
-                    self.info(f"📊 [SEND] Queue status: before={queue_size_before}, after={queue_size_after}")
+                    self.info(f" [SEND] MESSAGE SENT to node '{node_id}' communication queue!")
+                    self.info(f"[SEND] Queue status: before={queue_size_before}, after={queue_size_after}")
                     self.info(f" [SEND] Node '{node_id}' should now receive and process function '{function_name}'")
                 else:
-                    self.error(f"❌ [SEND] FAILED! No communication channel available for node '{node_id}'")
+                    self.error(f"[SEND] FAILED! No communication channel available for node '{node_id}'")
                     raise RemoteExecutionError(
                         function_name=function_name,
                         node_id=node_id,
@@ -2338,8 +2353,8 @@ class DistributedComputingGateway(
                         if func_info:
                             func_info.update_call_statistics(1.0)  # Placeholder execution time
                 
-                self.info(f"🎉 [RECV] ✅ SUCCESS! Received result from node '{node_id}' for call {call_id}")
-                self.info(f"📥 [RECV] Function '{function_name}' executed successfully on node '{node_id}'")
+                self.info(f"[RECV] SUCCESS! Received result from node '{node_id}' for call {call_id}")
+                self.info(f"[RECV] Function '{function_name}' executed successfully on node '{node_id}'")
                 return result
                 
             except asyncio.TimeoutError:
@@ -2347,7 +2362,7 @@ class DistributedComputingGateway(
                 async with self._global_lock:
                     self._pending_function_calls.pop(call_id, None)
                 
-                self.error(f"⏰ [WAIT] ❌ TIMEOUT! No response from node '{node_id}' for function '{function_name}' (call {call_id})")
+                self.error(f"[WAIT] TIMEOUT! No response from node '{node_id}' for function '{function_name}' (call {call_id})")
                 raise TimeoutError(
                     message=f"Function '{function_name}' execution timed out on node '{node_id}'",
                     timeout_seconds=300.0,
@@ -2363,7 +2378,7 @@ class DistributedComputingGateway(
                 if node_id in self._nodes:
                     self._nodes[node_id].increment_error_count()
             
-            self.error(f"💥 [SEND] ❌ ERROR sending function '{function_name}' to node '{node_id}' (call {call_id}): {e}")
+            self.error(f"[SEND] ERROR sending function '{function_name}' to node '{node_id}' (call {call_id}): {e}")
             raise ExceptionTranslator.as_remote_execution_error(
                 e,
                 function_name=function_name,

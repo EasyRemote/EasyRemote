@@ -27,6 +27,9 @@ class FakeNode:
         self.registered_functions[name] = func
         return func
 
+    def unregister(self, name: str) -> bool:
+        return self.registered_functions.pop(name, None) is not None
+
     def refresh_gateway_registration_now(self, timeout_seconds: float = 8.0) -> bool:
         self.refresh_calls += 1
         return True
@@ -218,3 +221,89 @@ def test_user_device_host_can_prefer_transferred_code_over_device_actions():
     installed = host.list_installed_skills()["dynamic-code-skill"]
     assert installed["capabilities"]["say_hi"]["binding_mode"] == "code_transfer"
     assert installed["capabilities"]["say_hi"]["action_name"] is None
+
+
+def test_user_device_host_uninstall_skill_unregisters_functions():
+    node = FakeNode()
+    host = UserDeviceCapabilityHost(node, auto_refresh_registration=True)
+
+    host.register_action(
+        "camera.take_photo",
+        lambda: {"path": "/tmp/photo.jpg"},
+    )
+
+    builder = RemoteSkill(name="camera-skill", namespace="device")
+
+    @builder.remote(
+        name="take_photo",
+        function_name="camera.take_photo",
+        metadata={"device_action": "camera.take_photo"},
+    )
+    def take_photo():
+        return {}
+
+    host.install_skill(builder.export_pipeline(as_json=False))
+    assert "device.camera.take_photo" in node.registered_functions
+
+    removed = host.uninstall_skill("camera-skill", unregister_functions=True)
+    assert removed is True
+    assert "device.camera.take_photo" not in node.registered_functions
+
+
+def test_user_device_host_reinstall_skill_updates_registered_handler():
+    node = FakeNode()
+    host = UserDeviceCapabilityHost(node, auto_refresh_registration=False)
+
+    host.register_action(
+        "camera.take_photo",
+        lambda: {"path": "old.jpg"},
+    )
+
+    builder = RemoteSkill(name="camera-skill", namespace="device")
+
+    @builder.remote(
+        name="take_photo",
+        function_name="camera.take_photo",
+        metadata={"device_action": "camera.take_photo"},
+    )
+    def take_photo():
+        return {}
+
+    host.install_skill(builder.export_pipeline(as_json=False))
+    assert node.registered_functions["device.camera.take_photo"]() == {"path": "old.jpg"}
+
+    # Update local action handler and reinstall the same skill name to refresh binding.
+    host.register_action(
+        "camera.take_photo",
+        lambda: {"path": "new.jpg"},
+    )
+    host.install_skill(builder.export_pipeline(as_json=False), replace_existing_skill=True)
+    assert node.registered_functions["device.camera.take_photo"]() == {"path": "new.jpg"}
+
+
+def test_user_device_host_try_load_sandbox_records_missing_dir(tmp_path):
+    node = FakeNode()
+    host = UserDeviceCapabilityHost(node)
+
+    sandbox_dir = tmp_path / "missing-sandbox"
+    status = host.try_load_sandbox(sandbox_dir)
+    assert status["attempted"] is True
+    assert status["path"] == str(sandbox_dir)
+    assert status["loaded"] is False
+    assert status["error_type"] == "NotADirectoryError"
+
+    host_status = host.get_status()
+    assert host_status["sandbox"]["attempted"] is True
+    assert host_status["sandbox"]["loaded"] is False
+
+
+def test_user_device_host_registers_status_endpoint():
+    node = FakeNode()
+    host = UserDeviceCapabilityHost(node)
+
+    host.register_skill_endpoints()
+    assert "device.get_capability_host_status" in node.registered_functions
+
+    result = node.registered_functions["device.get_capability_host_status"]()
+    assert "sandbox" in result
+    assert "flags" in result
