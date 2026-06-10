@@ -1,11 +1,10 @@
-"""ComputeNode: manifest materialization, rejections, lifecycle."""
+"""ComputeNode: device-ability packaging, deploy announcements, lifecycle."""
 
+import io
 import json
-import sys
 from collections.abc import Iterator
 
 import pytest
-import tomllib
 
 from easyremote._host.forward import main as forward_main
 from easyremote.context import Context
@@ -15,65 +14,104 @@ from easyremote.node import ComputeNode
 
 @pytest.fixture()
 def node(tmp_path):
-    return ComputeNode(agents_root=tmp_path / "agents")
+    deploys = []
+    node = ComputeNode(abilities_dir=tmp_path / "abilities", cli_runner=deploys.append)
+    node.deploys = deploys
+    return node
 
 
 def read_manifest(info):
-    return tomllib.loads(info.manifest_path.read_text())
+    return json.loads((info.package_dir / "ability.json").read_text())
 
 
-def test_register_writes_pinned_manifest_shape(node):
+def test_register_writes_scaffold_shaped_ability_json(node, monkeypatch):
+    monkeypatch.setenv("EASYREMOTE_FORWARDER", "python")  # deterministic command
+
     @node.register
     def ai_inference(prompt: str, max_tokens: int = 64) -> str:
         """Generate a completion on this device."""
         return prompt
 
     manifest = read_manifest(ai_inference.info)
-    assert manifest["schema_version"] == "1"
-    assert manifest["name"] == "ai_inference"
+    assert manifest["name"] == "er.ai_inference"
+    assert manifest["tool_name"] == "er.ai_inference"
     assert manifest["description"] == "Generate a completion on this device."
-    assert manifest["exec"]["kind"] == "shell"
+    assert manifest["category"] == "easyremote"
 
-    argv = manifest["exec"]["argv"]
-    assert argv[0] == sys.executable
-    assert argv[1:3] == ["-m", "easyremote._host.forward"]
-    assert argv[4] == "ai_inference"
-    assert argv[5:] == ["{{ prompt }}", "{{ max_tokens }}"]
-
+    # stdin contract: no argv templates, no required-all rewriting —
+    # optionals keep their true schema semantics.
     schema = manifest["input_schema"]
-    # Executor constraint: every parameter required; default advertised.
-    assert schema["required"] == ["prompt", "max_tokens"]
+    assert schema["required"] == ["prompt"]
     assert schema["properties"]["max_tokens"]["default"] == 64
     assert manifest["output_schema"] == {"type": "string"}
-    assert ai_inference.info.manifest_path.name == "ai_inference.ability.toml"
-    assert ai_inference.info.manifest_path.parent.name == "abilities"
+
+    command = manifest["command"]
+    assert "-m easyremote._host.forward" in command
+    assert command.endswith("er.ai_inference")
+    assert "{{" not in command  # the argv-template era is over
 
 
-def test_qualified_name_uses_namespace(node):
+def test_device_ontology_naming_unpaired(node, monkeypatch):
+    import easyremote.config as config
+
+    monkeypatch.setattr(config, "_settings", None)
+    monkeypatch.setenv("EASYNET_CREDENTIALS", "/nonexistent/credentials.json")
+
     @node.register
     def fn(a: int) -> int:
         return a
 
     assert fn.qualified_name == "er.fn"
-    assert node.abilities[0].qualified_name == "er.fn"
+    assert fn.info.package_dir.name == "er.fn"
+    assert fn.info.ura is None  # unpaired: absent, never invented
 
 
-def test_decorator_with_options_and_timeout(node):
-    @node.register(name="custom", description="d", timeout=2.5)
+def test_device_ontology_naming_paired(tmp_path, monkeypatch):
+    import easyremote.config as config
+
+    monkeypatch.setattr(config, "_settings", None)
+    credentials = tmp_path / "credentials.json"
+    credentials.write_text(
+        json.dumps({"realm": "acme", "node_id": "dev-a", "hub_endpoint": "h:443"})
+    )
+    monkeypatch.setenv("EASYNET_CREDENTIALS", str(credentials))
+    node = ComputeNode(abilities_dir=tmp_path / "abilities", cli_runner=lambda _: None)
+
+    @node.register
     def fn(a: int) -> int:
         return a
 
-    manifest = read_manifest(fn.info)
-    assert manifest["name"] == "custom"
-    assert manifest["timeout_seconds"] == 3  # ceil(2.5)
+    # The canonical device-ability shape (RFC-001; `easynet ability
+    # invoke` documents the same form).
+    assert fn.info.ura == "easynet:///r/acme/ability/device.dev-a.er.fn"
 
 
-def test_registered_function_still_callable_locally(node):
+def test_nothing_deploys_before_start(node):
     @node.register
-    def double(x: int) -> int:
-        return x * 2
+    def fn(a: int) -> int:
+        return a
 
-    assert double(21) == 42
+    assert node.deploys == []
+
+
+def test_start_deploys_each_package_to_local_node(short_tmp):
+    deploys = []
+    node = ComputeNode(abilities_dir=short_tmp / "abilities", cli_runner=deploys.append)
+
+    @node.register
+    def fn(a: int) -> int:
+        return a
+
+    with node:
+        assert deploys == [
+            ["ability", "deploy", str(fn.info.package_dir), "--node", "local"]
+        ]
+
+        @node.register
+        def late(b: int) -> int:
+            return b
+
+        assert len(deploys) == 2  # post-start registration publishes immediately
 
 
 def test_stream_function_rejected_with_enabler_pointer(node):
@@ -108,82 +146,34 @@ def test_duplicate_and_invalid_names_rejected(node):
 
 def test_invalid_namespace_rejected(tmp_path):
     with pytest.raises(InvalidArgument, match="namespace"):
-        ComputeNode(namespace="er.bad", agents_root=tmp_path)
+        ComputeNode(namespace="er.bad", abilities_dir=tmp_path)
 
 
-# -- daemon-managed root mode (agents.json + refresh) --------------------------
+def test_registered_function_still_callable_locally(node):
+    @node.register
+    def double(x: int) -> int:
+        return x * 2
+
+    assert double(21) == 42
 
 
-def daemon_managed_node(tmp_path, monkeypatch, registered=True):
-    import easyremote.config as config
-
-    monkeypatch.setattr(config, "agents_root", lambda: tmp_path / "agents")
-    if registered:
-        agent_root = tmp_path / "managed-root"
-        (tmp_path / "agents.json").write_text(
-            json.dumps({"agents": {"er": {"root_path": str(agent_root)}}})
-        )
-    cli_calls = []
-    node = ComputeNode(cli_runner=cli_calls.append)
-    return node, cli_calls, tmp_path / "managed-root"
+def test_gateway_param_accepted_classic_shape(tmp_path):
+    # Classic FaaS shape: ComputeNode("hub:8443"). Unpaired test env →
+    # no credentials to validate against, so it is simply carried.
+    node = ComputeNode("hub.example:8443", abilities_dir=tmp_path / "a")
+    assert node.namespace == "er"
 
 
-def test_registered_agent_root_is_read_back_not_assumed(tmp_path, monkeypatch):
-    node, _, agent_root = daemon_managed_node(tmp_path, monkeypatch)
+def test_end_to_end_through_real_socket(short_tmp, capsys, monkeypatch):
+    node = ComputeNode(abilities_dir=short_tmp / "abilities", cli_runner=lambda _: None)
 
     @node.register
-    def fn(a: int) -> int:
-        return a
-
-    assert fn.info.manifest_path == agent_root / "abilities" / "fn.ability.toml"
-
-
-def test_unregistered_agent_is_actionable(tmp_path, monkeypatch):
-    node, _, _ = daemon_managed_node(tmp_path, monkeypatch, registered=False)
-    with pytest.raises(Unavailable) as exc_info:
-        node.register(lambda a: a, name="fn", schema={"type": "object"})
-    assert exc_info.value.reason == "agent_not_registered"
-    assert "easynet agent add" in str(exc_info.value)
-
-
-def test_start_and_post_start_register_announce_via_refresh(
-    tmp_path, monkeypatch, short_tmp
-):
-    import easyremote.config as config
-
-    monkeypatch.setattr(config, "agents_root", lambda: tmp_path / "agents")
-    agent_root = short_tmp / "managed"  # short: the host socket binds here
-    (tmp_path / "agents.json").write_text(
-        json.dumps({"agents": {"er": {"root_path": str(agent_root)}}})
-    )
-    cli_calls = []
-    node = ComputeNode(cli_runner=cli_calls.append)
-
-    node.register(lambda a: a, name="before", schema={"type": "object"})
-    assert cli_calls == []  # nothing announced before start
+    def greet(who: str, excited: bool = False) -> dict:
+        return {"hello": who, "excited": excited}
 
     with node:
-        assert cli_calls == [["agent", "refresh", "--agent", "er"]]
-        node.register(lambda a: a, name="after", schema={"type": "object"})
-        assert len(cli_calls) == 2  # post-start registration re-announces
-
-
-def test_explicit_root_mode_never_touches_cli(tmp_path):
-    cli_calls = []
-    node = ComputeNode(agents_root=tmp_path / "agents", cli_runner=cli_calls.append)
-    node.register(lambda a: a, name="fn", schema={"type": "object"})
-    assert cli_calls == []
-
-
-def test_end_to_end_through_real_socket(short_tmp, capsys):
-    node = ComputeNode(agents_root=short_tmp / "agents")
-
-    @node.register
-    def greet(who: str) -> dict:
-        return {"hello": who}
-
-    with node:
-        code = forward_main([str(node.host_socket), "greet", "world"])
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"who": "world"})))
+        code = forward_main([str(node.host_socket), "er.greet"])
     out, err = capsys.readouterr()
     assert code == 0, err
-    assert json.loads(out) == {"hello": "world"}
+    assert json.loads(out) == {"hello": "world", "excited": False}

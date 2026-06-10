@@ -1,29 +1,27 @@
-"""ComputeNode: register local functions as agent-owned abilities (SPEC §5.4).
+"""ComputeNode: publish local functions as device-owned abilities.
 
-Materialization, verified against EasyNet-Cli sources:
+Ontology, corrected: **a node is a device, not an agent.** Registered
+functions become device-owned abilities —
 
-- One manifest per function at
-  ``~/.easynet/agents/<namespace>/abilities/<fn>.ability.toml``
-  (``config::agents_root()`` + ``runtime::directory`` contract; the
-  daemon publishes it as ``<namespace>.<fn>``).
-- Exec binding: ``[exec] kind = "shell"`` with an argv that runs the
-  :mod:`easyremote._host.forward` shim and one ``{{ param }}``
-  template slot per parameter (``template.rs`` substitution model).
-- The function itself stays resident in this process —
-  :class:`~easyremote._host.HostServer` keeps models warm; the daemon
-  only ever spawns the thin forwarder.
+    easynet:///r/<realm>/ability/device.<node-id>.<namespace>.<fn>
 
-Executor-model constraints (all converge on the daemon host-attach
-enabler, SPEC §9 PR-1) — rejected loudly, never degraded silently:
+— deployed through ``easynet ability deploy --node local`` with the
+scaffold-authoritative ``ability.json`` (verified via
+``easynet ability new``). The runtime invokes the ability's ``command``
+with the args JSON on **stdin** and reads the result from **stdout**;
+our command is the :mod:`easyremote._host.forward` shim, which relays
+to the warm host where the function (and its model) stays resident.
 
-- generator/stream functions: the shell executor captures stdout
-  whole; there is no frame path.
-- Context-taking functions: neither caller identity nor invocation id
-  traverses argv, and fabricating them would corrupt the receipt
-  chain.
-- omitted optional parameters: a missing template name is a hard
-  render error, so generated manifests mark every parameter required
-  and advertise defaults; callers fill them client-side.
+The stdin/stdout contract is strictly better than the agent-side
+argv-template path: optional parameters stay optional, JSON types
+arrive intact, and no required-all schema rewriting exists.
+
+Still rejected loudly — a one-shot stdin/stdout exchange cannot carry
+them (both resolved by the daemon host-attach enabler, SPEC §9 PR-1):
+
+- generator/stream functions (no frame path),
+- Context-taking functions (caller/invocation_id are not in the
+  stdin payload, and fabricating them would corrupt the receipt chain).
 """
 
 from __future__ import annotations
@@ -32,30 +30,27 @@ import dataclasses
 import functools
 import inspect
 import json
-import math
 import re
 import subprocess
 import sys
 import threading
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import _toml, config
 from ._host import HostServer
 from ._host.server import HostedFunction
+from ._version import __version__
 from .context import Context
 from .errors import InvalidArgument, Unavailable
 from .schema import PARAMETER_ORDER_KEY, derive
 
 __all__ = ["AbilityInfo", "ComputeNode", "RegisteredFunction"]
 
-_MANIFEST_SCHEMA_VERSION = "1"
+_EASYREMOTE_DIR = Path.home() / ".easynet" / "easyremote"
 
-# Manifest file stems are the authoritative verb portion of the
-# ability name; dots are structural (namespace separators) and
-# therefore forbidden inside a single name.
 _NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
 _HOST_ATTACH_HINT = (
@@ -66,16 +61,17 @@ _HOST_ATTACH_HINT = (
 
 @dataclass(frozen=True)
 class AbilityInfo:
-    """One registered capability, as materialized on disk.
+    """One registered capability, as packaged on disk.
 
-    The ability URA and MCP tool projection are deliberately absent:
-    credentials field names and projection naming are unverified until
-    P0 — absent beats invented.
+    ``ura`` is the canonical device-ability URA when this machine is
+    paired (RFC-001 shape, mirrored from `easynet ability invoke`'s own
+    documentation); None in unpaired/test environments.
     """
 
     name: str
     qualified_name: str
-    manifest_path: Path
+    package_dir: Path
+    ura: str | None
 
 
 class RegisteredFunction:
@@ -99,31 +95,23 @@ class RegisteredFunction:
 
 
 class ComputeNode:
-    """A device-side capability publisher.
+    """A device contributing capabilities to the network.
 
-    The node never talks to the hub itself — its local easynet-daemon
-    owns identity, transport, and federation. The node's job is:
-    derive schemas, materialize manifests, keep functions warm, and
-    announce changes (``easynet agent refresh`` — the daemon's hot
-    registrar, P0-verified to require no restart).
+    ``gateway`` is accepted for the classic FaaS shape — but transport
+    truth lives with the local easynet-daemon, whose hub binding comes
+    from pairing. When both are known and disagree, you get a warning,
+    not silent re-routing: changing hubs is `easynet pair`'s job.
 
-    Two root modes:
-
-    - **daemon-managed** (production, default): ``namespace`` must name
-      an agent already registered with the daemon; the agent root is
-      read back from ``agents.json`` — never assumed. Agent *identity*
-      creation stays with `easynet agent add` (the current AgentType
-      set is AI-CLI wrappers only; a manifest-only type is a pending
-      Cli enhancement).
-    - **explicit root** (tests / externally managed trees): pass
-      ``agents_root`` and no CLI is ever touched.
+    ``cli_runner``/``abilities_dir`` are injectable seams (tests);
+    production code never passes them.
     """
 
     def __init__(
         self,
+        gateway: str | None = None,
         *,
         namespace: str = "er",
-        agents_root: Path | None = None,
+        abilities_dir: Path | None = None,
         cli_runner: Callable[[list[str]], None] | None = None,
     ) -> None:
         if not _NAME_PATTERN.match(namespace):
@@ -131,44 +119,14 @@ class ComputeNode:
                 f"namespace {namespace!r} must match {_NAME_PATTERN.pattern}",
                 reason="invalid_namespace",
             )
+        self._gateway = gateway
         self._namespace = namespace
-        self._explicit_root = agents_root
+        self._abilities_dir = abilities_dir or (_EASYREMOTE_DIR / "abilities")
         self._run_cli = cli_runner or _run_easynet
-        self._agent_root: Path | None = None
-        self._host: HostServer | None = None
+        self._host = HostServer(self._abilities_dir.parent / "host.sock")
         self._abilities: dict[str, AbilityInfo] = {}
         self._started = False
-
-    def _materialized(self) -> tuple[Path, HostServer]:
-        """Resolve the agent root and host lazily, on first use."""
-        if self._agent_root is None:
-            if self._explicit_root is not None:
-                self._agent_root = self._explicit_root / self._namespace
-            else:
-                self._agent_root = self._registered_agent_root()
-            self._host = HostServer(self._agent_root / ".easyremote" / "host.sock")
-        assert self._host is not None
-        return self._agent_root, self._host
-
-    def _registered_agent_root(self) -> Path:
-        registry_path = config.agents_root().parent / "agents.json"
-        try:
-            agents = json.loads(registry_path.read_text(encoding="utf-8")).get(
-                "agents", {}
-            )
-        except (FileNotFoundError, json.JSONDecodeError):
-            agents = {}
-        entry = agents.get(self._namespace)
-        if entry is None or not entry.get("root_path"):
-            raise Unavailable(
-                f"agent '{self._namespace}' is not registered with the daemon —"
-                f" register it once with `easynet agent add --type claude-code"
-                f" {self._namespace}` (a manifest-only agent type is a pending"
-                " EasyNet-Cli enhancement), or pass agents_root= for an"
-                " externally managed tree",
-                reason="agent_not_registered",
-            )
-        return Path(entry["root_path"])
+        self._gateway_checked = False
 
     # -- registration ------------------------------------------------------
 
@@ -178,32 +136,27 @@ class ComputeNode:
         *,
         name: str | None = None,
         description: str | None = None,
-        timeout: float | None = None,
         schema: dict[str, Any] | None = None,
     ) -> Any:
-        """Project a function into a capability (decorator, both forms)."""
+        """Project a function into a device capability (decorator, both forms)."""
         if fn is None:
             return functools.partial(
-                self.register,
-                name=name,
-                description=description,
-                timeout=timeout,
-                schema=schema,
+                self.register, name=name, description=description, schema=schema
             )
 
         signature = derive(fn, context_type=Context)
         if signature.takes_context:
             raise Unavailable(
-                f"'{getattr(fn, '__name__', fn)}' takes a Context — the shell"
-                " executor cannot deliver caller identity or invocation ids to"
-                " a warm host" + _HOST_ATTACH_HINT,
+                f"'{getattr(fn, '__name__', fn)}' takes a Context — the device"
+                " ability stdin payload carries args only, not caller identity"
+                " or invocation ids" + _HOST_ATTACH_HINT,
                 reason="context_requires_host_attach",
             )
         if signature.is_stream:
             raise Unavailable(
-                f"'{getattr(fn, '__name__', fn)}' is a generator — the shell"
-                " executor captures stdout whole, so frames cannot stream"
-                + _HOST_ATTACH_HINT,
+                f"'{getattr(fn, '__name__', fn)}' is a generator — the device"
+                " ability exchange is one stdin/stdout round trip; frames"
+                " cannot stream" + _HOST_ATTACH_HINT,
                 reason="stream_requires_host_attach",
             )
 
@@ -227,24 +180,24 @@ class ComputeNode:
             )
             signature = dataclasses.replace(signature, input_schema=input_schema)
 
-        _, host = self._materialized()
-        manifest_path = self._write_manifest(
-            ability_name,
+        qualified = f"{self._namespace}.{ability_name}"
+        package_dir = self._write_package(
+            qualified,
             description or _first_doc_line(fn) or f"{ability_name} (easyremote)",
-            timeout,
             signature.input_schema,
             signature.output_schema,
         )
-        hosted = HostedFunction(name=ability_name, fn=fn, signature=signature)
-        host.add(hosted)
+        hosted = HostedFunction(name=qualified, fn=fn, signature=signature)
+        self._host.add(hosted)
         info = AbilityInfo(
             name=ability_name,
-            qualified_name=f"{self._namespace}.{ability_name}",
-            manifest_path=manifest_path,
+            qualified_name=qualified,
+            package_dir=package_dir,
+            ura=self._device_ability_ura(ability_name),
         )
         self._abilities[ability_name] = info
         if self._started:
-            self._refresh()  # post-start registration: announce immediately
+            self._deploy(info)  # post-start registration: publish immediately
         return RegisteredFunction(hosted, info)
 
     # -- lifecycle -----------------------------------------------------------
@@ -260,26 +213,15 @@ class ComputeNode:
             self.stop()
 
     def start(self) -> None:
-        _, host = self._materialized()
-        host.start()
+        self._check_gateway()
+        self._host.start()
         self._started = True
-        self._refresh()
+        for info in self._abilities.values():
+            self._deploy(info)
 
     def stop(self) -> None:
-        if self._host is not None:
-            self._host.stop()
+        self._host.stop()
         self._started = False
-
-    def _refresh(self) -> None:
-        """Announce manifest changes to the live daemon.
-
-        ``easynet agent refresh --agent <ns>`` drives the daemon's hot
-        registrar (P0-verified: no restart needed). Explicit-root mode
-        is daemon-less by definition, so there is nothing to announce.
-        """
-        if self._explicit_root is not None:
-            return
-        self._run_cli(["agent", "refresh", "--agent", self._namespace])
 
     def __enter__(self) -> ComputeNode:
         self.start()
@@ -300,54 +242,84 @@ class ComputeNode:
 
     @property
     def host_socket(self) -> Path:
-        _, host = self._materialized()
-        return host.socket_path
+        return self._host.socket_path
 
     # -- internals ---------------------------------------------------------------
 
-    def _write_manifest(
+    def _deploy(self, info: AbilityInfo) -> None:
+        """Publish onto this device's own ability registry."""
+        self._run_cli(["ability", "deploy", str(info.package_dir), "--node", "local"])
+
+    def _write_package(
         self,
-        ability_name: str,
+        qualified: str,
         description: str,
-        timeout: float | None,
         input_schema: dict[str, Any],
         output_schema: dict[str, Any] | None,
     ) -> Path:
-        agent_root, host = self._materialized()
-        order: list[str] = input_schema[PARAMETER_ORDER_KEY]
-        manifest_input = dict(input_schema)
-        # Executor constraint: a missing template name is a render
-        # error, so the published contract requires every parameter.
-        # Property-level "default" values tell callers what to fill.
-        if order:
-            manifest_input["required"] = list(order)
-
+        # Field set mirrors the `easynet ability new` scaffold. Schemas
+        # keep their true semantics: the stdin contract has no
+        # missing-template failure mode, so optionals stay optional.
         manifest: dict[str, Any] = {
-            "schema_version": _MANIFEST_SCHEMA_VERSION,
-            "name": ability_name,
+            "category": "easyremote",
+            "command": (
+                f"{sys.executable} -m easyremote._host.forward"
+                f" {self._host.socket_path} {qualified}"
+            ),
             "description": description,
+            "destructive_hint": False,
+            "idempotent_hint": False,
+            "input_schema": input_schema,
+            "instructions": description,
+            "name": qualified,
+            "open_world_hint": False,
+            "prerequisites": [],
+            "read_only_hint": False,
+            "tags": ["easyremote"],
+            "tool_name": qualified,
+            "version": __version__,
         }
-        if timeout is not None:
-            manifest["timeout_seconds"] = max(1, math.ceil(timeout))
-        manifest["input_schema"] = manifest_input
         if output_schema is not None:
             manifest["output_schema"] = output_schema
-        manifest["exec"] = {
-            "kind": "shell",
-            "argv": [
-                sys.executable,
-                "-m",
-                "easyremote._host.forward",
-                str(host.socket_path),
-                ability_name,
-                *(f"{{{{ {param} }}}}" for param in order),
-            ],
-        }
 
-        path = agent_root / "abilities" / f"{ability_name}.ability.toml"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_toml.dumps(manifest), encoding="utf-8")
-        return path
+        package_dir = self._abilities_dir / qualified
+        package_dir.mkdir(parents=True, exist_ok=True)
+        (package_dir / "ability.json").write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        return package_dir
+
+    def _device_ability_ura(self, ability_name: str) -> str | None:
+        try:
+            from .identity import LocalIdentity, device_ability_ura
+
+            identity = LocalIdentity.load()
+        except Exception:
+            return None  # unpaired / test environment: absent beats invented
+        return device_ability_ura(
+            identity.realm, identity.node_id, self._namespace, ability_name
+        )
+
+    def _check_gateway(self) -> None:
+        """Soft-validate the classic gateway address against pairing truth."""
+        if self._gateway is None or self._gateway_checked:
+            return
+        self._gateway_checked = True
+        try:
+            from .identity import LocalIdentity
+
+            paired = LocalIdentity.load().hub_endpoint
+        except Exception:
+            return  # doctor reports unpaired machines with the fix command
+        if paired and self._gateway.split("://")[-1] not in paired:
+            warnings.warn(
+                f"ComputeNode(gateway={self._gateway!r}) differs from the paired"
+                f" hub ({paired}) — the daemon routes via pairing; re-point it"
+                " with `easynet pair`",
+                UserWarning,
+                stacklevel=3,
+            )
 
 
 def _first_doc_line(fn: Callable[..., Any]) -> str:
@@ -362,7 +334,7 @@ def _run_easynet(args: list[str]) -> None:
     except FileNotFoundError:
         raise Unavailable(
             "`easynet` CLI not found on PATH — install the EasyNet CLI to"
-            " announce abilities to the daemon",
+            " publish abilities to the daemon",
             reason="easynet_cli_missing",
         ) from None
     except subprocess.CalledProcessError as exc:

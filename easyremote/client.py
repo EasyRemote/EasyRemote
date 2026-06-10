@@ -139,12 +139,15 @@ class Client:
 
     def __init__(
         self,
+        gateway: str | None = None,
         *,
         timeout: float = 30.0,
         namespace: str = "er",
         transport: Transport | None = None,
         identity: LocalIdentity | None = None,
     ) -> None:
+        self._gateway = gateway
+        self._gateway_checked = False
         self._timeout = timeout
         self._namespace = namespace
         self._transport_override = transport
@@ -324,7 +327,9 @@ class Client:
         ability = function if "." in function else f"{self._namespace}.{function}"
         if node is None:
             return identity.device_ura, ability
-        return f"easynet:///r/{identity.realm}/device/{node}", ability
+        from .identity import device_ura
+
+        return device_ura(identity.realm, node), ability
 
     def _named_arguments(
         self, ability: str, args: tuple[Any, ...], kwargs: dict[str, Any]
@@ -366,7 +371,26 @@ class Client:
         with self._lock:
             if self._identity is None:
                 self._identity = LocalIdentity.load()
+                self._check_gateway(self._identity)
             return self._identity
+
+    def _check_gateway(self, identity: LocalIdentity) -> None:
+        """Classic FaaS shape: Client("hub:8443"). Transport truth lives
+        with the paired daemon; a mismatch warns instead of re-routing."""
+        if self._gateway is None or self._gateway_checked:
+            return
+        self._gateway_checked = True
+        paired = identity.hub_endpoint
+        if paired and self._gateway.split("://")[-1] not in paired:
+            import warnings
+
+            warnings.warn(
+                f"Client(gateway={self._gateway!r}) differs from the paired hub"
+                f" ({paired}) — the daemon routes via pairing; re-point it with"
+                " `easynet pair`",
+                UserWarning,
+                stacklevel=4,
+            )
 
     def _connected(self) -> Transport:
         if self._transport_override is not None:

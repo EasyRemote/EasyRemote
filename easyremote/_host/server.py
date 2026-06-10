@@ -2,15 +2,14 @@
 
 Wire protocol (one JSON line each way, UTF-8):
 
-    → {"fn": "<name>", "values": ["<rendered argv value>", ...]}
+    → {"fn": "<name>", "args": {...}}
     ← {"ok": true, "result": <json>}
     ← {"ok": false, "error": {"kind": "...", "reason": "...", "message": "..."}}
 
-``values`` arrive exactly as the daemon's shell executor rendered them
-(``template.rs`` model: strings bare, everything else JSON-encoded),
-positionally matching the function's parameter order. Re-typing uses
-the registered function's derived schema — the host is the only place
-that knows it.
+``args`` is the device-ability stdin payload verbatim — real JSON
+types, so functions receive their keyword arguments without any
+re-typing. ``bytes`` parameters are the one schema-driven exception:
+they travel as base64 strings (contentEncoding) and are decoded here.
 """
 
 from __future__ import annotations
@@ -27,53 +26,43 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import InternalError, InvalidArgument, RemoteError
-from ..schema import PARAMETER_ORDER_KEY, DerivedSignature
+from ..schema import DerivedSignature
 
 __all__ = ["HostServer", "HostedFunction"]
 
 
 @dataclass(frozen=True)
 class HostedFunction:
-    """One resident function plus the schema that types its wire values."""
+    """One resident function plus its derived schema (for bytes params)."""
 
     name: str
     fn: Callable[..., Any]
     signature: DerivedSignature
 
-    def call_with_rendered(self, values: list[str]) -> Any:
-        order: list[str] = self.signature.input_schema[PARAMETER_ORDER_KEY]
-        if len(values) != len(order):
+    def call(self, args: dict[str, Any]) -> Any:
+        kwargs = dict(args)
+        properties = self.signature.input_schema.get("properties", {})
+        for param, value in kwargs.items():
+            prop = properties.get(param, {})
+            if prop.get("contentEncoding") == "base64" and isinstance(value, str):
+                kwargs[param] = base64.b64decode(value)
+        try:
+            result = self.fn(**kwargs)
+        except TypeError as exc:
+            # Unexpected/missing keywords surface as caller errors, not
+            # function bugs — the daemon validates against input_schema,
+            # but ad-hoc callers can bypass it.
             raise InvalidArgument(
-                f"'{self.name}' expects {len(order)} values, got {len(values)}",
-                reason="arity_mismatch",
-            )
-        properties = self.signature.input_schema["properties"]
-        kwargs = {
-            param: _decode_rendered(value, properties.get(param, {}))
-            for param, value in zip(order, values, strict=True)
-        }
-        result = self.fn(**kwargs)
+                f"'{self.name}' rejected its arguments: {exc}",
+                reason="argument_mismatch",
+            ) from None
         if inspect.iscoroutine(result):
-            return asyncio.run(result)
+            result = asyncio.run(result)
+        if isinstance(result, bytes):
+            # Multimodal returns travel as base64 strings (the schema
+            # already advertises contentEncoding for bytes outputs).
+            return base64.b64encode(result).decode("ascii")
         return result
-
-
-def _decode_rendered(value: str, prop_schema: dict[str, Any]) -> Any:
-    """Invert the shell executor's rendering using the parameter schema.
-
-    template.rs renders strings bare and everything else as JSON text;
-    the schema decides which way to read each value back.
-    """
-    if prop_schema.get("contentEncoding") == "base64":
-        return base64.b64decode(value)
-    if prop_schema.get("type") == "string":
-        return value
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        # Permissive ({}) or anyOf schemas may legitimately carry bare
-        # strings — the only non-JSON rendering the executor produces.
-        return value
 
 
 class HostServer:
@@ -111,7 +100,7 @@ class HostServer:
         if len(str(self._socket_path).encode()) > 100:
             raise InvalidArgument(
                 f"host socket path is too long for AF_UNIX: {self._socket_path}"
-                " — use a shorter agents_root",
+                " — use a shorter abilities_dir",
                 reason="socket_path_too_long",
             )
         self._socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -172,13 +161,17 @@ class HostServer:
         try:
             request = json.loads(line)
             name = request["fn"]
-            values = request["values"]
+            args = request.get("args") or {}
+            if not isinstance(args, dict):
+                raise InvalidArgument(
+                    "args must be a JSON object", reason="bad_request"
+                )
             hosted = self._functions.get(name)
             if hosted is None:
                 raise InvalidArgument(
                     f"no function '{name}' on this node", reason="not_found"
                 )
-            return {"ok": True, "result": hosted.call_with_rendered(values)}
+            return {"ok": True, "result": hosted.call(args)}
         except RemoteError as exc:
             return _error_response(exc.kind, exc.reason, str(exc))
         except (KeyError, json.JSONDecodeError, TypeError) as exc:

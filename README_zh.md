@@ -76,7 +76,6 @@ pip install easyremote
 
 # 一次性前置（类比 ssh-keygen 的一次性成本，换来签名调用与回执链）
 easynet pair                                  # 设备配对，签发身份
-easynet agent add --type claude-code er      # 注册能力的归属 agent
 easyremote doctor                            # 逐项体检：库 / daemon / 身份 / 注册
 ```
 
@@ -119,10 +118,10 @@ v2 是基于 EasyNet 栈（[EasyNet-Axon](https://github.com/EasyRemote/EasyNet-
 
 | 能力 | 状态 |
 |---|---|
-| 注册 → 热加载 → 调用闭环（warm 宿主） | ✅ 真 daemon 实测全通 |
+| 注册 → 部署 → 调用闭环（device ability，warm 宿主） | ⏳ facade 已验证契约正确；阻塞于上游 daemon 部署→路由脱节（最小复现：`ability deploy --node local` 报 activated，但 `ability show`/invoke 返回 not-found/ROUTE_NEGATIVE） |
 | 三层客户端 / `@remote` stub / async 镜像 | ✅ |
 | Pipeline → EAL → mission.run | ✅ |
-| Gateway（hub + 自签 TLS 引导） | ✅ |
+| Server（hub + 自签 TLS 引导） | ✅ |
 | `easyremote doctor` | ✅ |
 | 流式 / 服务端 Context 组合 / <50ms warm 延迟 | ⏳ 待 daemon host-attach 协议（EasyNet-Cli 侧） |
 | 回执链密码学验证 | ⏳ 待完整回执获取路径（RFC-007/008） |

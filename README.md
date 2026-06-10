@@ -77,7 +77,6 @@ pip install easyremote
 # One-time prerequisites (an ssh-keygen-style cost, buying you
 # signed invocations and receipt chains)
 easynet pair                                  # pair this device, issue identity
-easynet agent add --type claude-code er      # register the owning agent
 easyremote doctor                            # check library / daemon / identity / agent
 ```
 
@@ -120,10 +119,10 @@ v2 is a clean reimplementation on the EasyNet stack ([EasyNet-Axon](https://gith
 
 | Capability | Status |
 |---|---|
-| register → hot-load → invoke closed loop (warm host) | ✅ verified against a live daemon |
+| register → deploy → invoke closed loop (device abilities, warm host) | ⏳ facade verified contract-correct; blocked by an upstream daemon deploy→routing desync (minimal repro: `easynet ability deploy --node local` reports activated, yet `ability show`/invoke return not-found/ROUTE_NEGATIVE) |
 | Three-layer client / `@remote` stubs / async mirror | ✅ |
 | Pipeline → EAL → mission.run | ✅ |
-| Gateway (hub + self-signed TLS bootstrap) | ✅ |
+| Server (hub + self-signed TLS bootstrap) | ✅ |
 | `easyremote doctor` | ✅ |
 | Streaming / server-side Context composition / <50ms warm latency | ⏳ pending the daemon host-attach protocol (EasyNet-Cli side) |
 | Cryptographic receipt-chain verification | ⏳ pending the full-receipt fetch path (RFC-007/008) |

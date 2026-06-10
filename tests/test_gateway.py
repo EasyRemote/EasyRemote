@@ -5,7 +5,7 @@ import importlib.util
 import pytest
 
 from easyremote.errors import InvalidArgument, Unavailable
-from easyremote.gateway import Gateway, TLSConfig
+from easyremote.gateway import Gateway, Server, TLSConfig
 
 HAS_CRYPTOGRAPHY = importlib.util.find_spec("cryptography") is not None
 
@@ -31,7 +31,7 @@ def make_gateway(tmp_path, tls, **kwargs):
         started.append(config)
         return FakeDaemon()
 
-    gateway = Gateway(
+    gateway = Server(
         8443, realm="acme", tls=tls, home=tmp_path, daemon_starter=starter, **kwargs
     )
     return gateway, started
@@ -99,14 +99,14 @@ def test_pairing_guidance_mentions_endpoint_and_fingerprint(tmp_path):
 
 def test_missing_tls_files_rejected(tmp_path):
     with pytest.raises(InvalidArgument, match="not found"):
-        Gateway(
+        Server(
             tls=TLSConfig(tmp_path / "no.pem", tmp_path / "no.key"), home=tmp_path
         ).start()
 
 
 def test_acme_is_an_honest_open_question(tmp_path):
     with pytest.raises(Unavailable) as exc_info:
-        Gateway(tls="acme", home=tmp_path)
+        Server(tls="acme", home=tmp_path)
     assert exc_info.value.reason == "acme_pending"
 
 
@@ -130,3 +130,7 @@ def test_self_signed_provisioning_round_trip(tmp_path):
     assert (key.stat().st_mode & 0o777) == 0o600
     assert len(gateway.fingerprint.split(":")) == 32
     assert started  # daemon started after provisioning
+
+
+def test_server_is_the_primary_name_gateway_the_alias():
+    assert Gateway is Server
