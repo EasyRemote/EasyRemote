@@ -138,3 +138,24 @@ Author: Silan Hu (silan.hu@u.nus.edu)
 
 项目模板：
 - `gallery/projects/06_runtime_device_capability_injection`
+
+## K10 Claude Code 远程机器人指挥（Commander Skill + MCP）
+
+业务价值：把 commander 决策能力封装成 Claude Code 可安装 Skill，通过 MCP 统一调用链直接远程部署和操控用户侧 client-sandbox 机器人。
+
+落地路径：
+- Agent 路线：`RobotCommanderSkill` 封装 `initialize` / `tools/list` / `tools/call`，自动执行安装、部署、控制、遥测拉取。
+- Human 路线：client-sandbox 节点通过 `UserDeviceCapabilityHost` 接收 runtime skill payload，按需注入机器人动作能力。
+
+当前可交付：
+- Commander 端最少代码完成完整生命周期（解析节点 -> 安装 skill -> deploy -> execute -> telemetry）。
+- 基于 `user:<id>` capability 的用户节点定向。
+- 同时支持 transferred runtime code 与 sandbox 本地动作回退。
+
+下一步增强：
+- payload 签名与来源证明。
+- 分级授权（按 capability/action 粒度审批）。
+- 多机器人编组与策略调度。
+
+项目模板：
+- `gallery/projects/07_claude_code_robot_commander_mcp`

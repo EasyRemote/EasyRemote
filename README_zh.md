@@ -1,4 +1,4 @@
-# EasyRemote：AI 原生分布式计算框架 —— 构建易联网（EasyNet）
+# 你写的是一个函数，世界向你要的却是一个服务
 
 <div align="center">
 
@@ -8,9 +8,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python Version](https://img.shields.io/pypi/pyversions/easyremote)]()
 
-> **"Torchrun for the World"**：让任意终端用户一行命令就能调动全球算力资源，执行本地代码。
+> **EasyRemote turns a local function into a globally callable capability.**
 
-**AI 原生分布式计算 | 构建下一代算力互联网络 - EasyNet**
+**EasyNet 原生 · 签名调用 · 可验证执行**
 
 [English](README.md) | 中文
 
@@ -18,400 +18,115 @@
 
 ---
 
-## 🧠 从私有函数到全局算力调度引擎
+你本地有个能力——一个模型、一段 pipeline、一个查库函数。同事想用，agent 想调，别的项目想接。今天的答案是同一套仪式：打包、容器、部署、鉴权、维护。**分享的最小单位是"一次部署"——所以绝大多数能力，从来没被分享过。**
 
-**EasyRemote不仅是一个私有函数即服务平台（Private FaaS），它是我们对未来计算形态的回答：**
+为什么非部署不可？因为你的机器藏在 NAT 后面，世界够不着它。一块 4090 在你桌底吃灰，不是它不够强——放在十年前它是超算——是它没有任何安全地被调用的方式。上传，是过去唯一的出路。
 
-> 当前云计算模式以平台为中心，数据和代码必须"上云"交换资源，而我们认为——  
-> **下一代算力网络应以终端为中心、以语言为接口、以函数为单元、以信任为边界**。
-
-我们称之为：**"易联网（EasyNet）"**。
-
-###  核心理念：代码即资源，设备即节点，执行即协作
-
-EasyRemote是易联网的第一阶段实现，它允许你：
-
-* **🧠 使用熟悉的Python函数结构定义任务逻辑**
-* **🔒 在任意设备部署算力节点，保持隐私、性能与控制**  
-* **🌐 通过轻量VPS网关，将本地函数转为全球可访问的任务接口**
-* ** 最终像使用`torchrun`一样简单地启动任务，自动调度至最合适的资源执行**
-
-### 💡 我们的范式转移
-
-| 传统云计算模式 | **易联网模式** |
-|------------|-------------|
-| 以平台为中心 | **以终端为中心** |
-| 代码必须上云 | **代码在你的设备** |
-| 付费使用算力 | **贡献获得算力** |
-| 供应商锁定 | **去中心化协作** |
-| 冷启动延迟 | **始终温热** |
-
----
-
-## 🔭 当前实现：私有函数即服务
-
-### **快速体验：12行代码加入易联网**
+EasyRemote 把分享的最小单位降到一个函数：
 
 ```python
-# 1. 启动网关节点 (任意VPS)
-from easyremote import Server
-Server(port=8080).start()
-
-# 2. 贡献算力节点 (你的设备)
 from easyremote import ComputeNode
-node = ComputeNode("your-gateway:8080")
+
+node = ComputeNode()
 
 @node.register
-def ai_inference(prompt):
-    return your_local_model.generate(prompt)  # 运行在你的GPU上
+def ai_inference(prompt: str) -> str:
+    return model.generate(prompt)   # 跑在你的 GPU 上，模型常驻内存
 
 node.serve()
+```
 
-# 3. 全球调用算力 (任何地方)
+注册之后，这个函数成为一个 **capability**。capability 不是修辞，它有最小定义——**可调用、可发现、可组合**，三者同时成立：
+
+```python
+# 同事：像调本地函数
 from easyremote import Client
-result = Client("your-gateway:8080").execute("ai_inference", "Hello AI")
+Client().execute("ai_inference", prompt="hello")
+
+# Agent：自动投影为 MCP tool，Claude 直接发现、直接调用
+#   claude mcp add easynet -- easynet mcp_server
+
+# 系统：作为 Pipeline 的一步，和别人的函数编排成任务链
+from easyremote import Pipeline
+pipe = Pipeline("nightly")
+fetch = pipe.step("teamA.fetch_sales", quarter="Q2")
+pipe.step("er.summarize", rows=fetch.output)
 ```
 
-**🎉 你的设备已加入易联网！**
+这不是三个使用场景——**这是 capability 这个抽象的全部语义**。代码和模型留在你的机器上，世界拿到的是调用权，不是副本。
 
-### **🆚 与传统云服务对比**
+Git 把分享代码的单位从项目降到一次 commit。Docker 把部署软件的单位从一台机器降到一个镜像。**EasyRemote 把共享服务的单位，从一次 deployment 降到一个函数。**
 
-| 特性 | AWS Lambda | Google Cloud | **EasyNet节点** |
-|------|------------|--------------|----------------|
-| **计算位置** | 云端服务器 | 云端服务器 | **你的设备** |
-| **数据隐私** | 上传到云端 | 上传到云端 | **永不离开本地** |
-| **算力成本** | $200+/百万次 | $200+/百万次 | **$5网关费用** |
-| **硬件限制** | 云端规格 | 云端规格 | **你的GPU/CPU** |
-| **启动延迟** | 100-1000ms | 100-1000ms | **0ms (始终在线)** |
-| **AI Agent 集成** | 需自定义 API 封装 | 需自定义 API 封装 | **原生 MCP/A2A 协议** |
+**第一个直接的推论：团队 GPU 池。** 当函数留在设备上执行，算力共享是副产品：办公室、家里、宿舍的显卡组成一个推理集群——节点只向外拨号，NAT 不是障碍；模型常驻显存，没有冷启动；网关是一台 $5 的 VPS。
+
+**你大概会问：把自己的机器开放出去，不危险吗？** 这正是过去没人敢做这件事的原因。EasyRemote 构建在 EasyNet 栈上：每次调用是签名的调用对象——谁调的、调谁、动什么对象、跟在哪条因果链后——每次执行留下可验证的回执。**这一层没有开关、没有配置，你几乎不会意识到它存在**，但它是你敢把机器开放给团队的全部原因。
+
+**而它真正不可替代的时刻，是 agent 要操作真实世界资源的那天。** agent 的能力每三个月上一个台阶，问责方式却从未变过：一次 tool call 发出去，剩下全凭它自己汇报。让它查天气无所谓；让它动数据库、下采购单、操作设备——"它做了什么"不能再是自述。签名调用 + 回执链给出的授权语义是：**这个 agent、以我的授权、在这条任务链里、可以调这个能力、动这个对象**。
+
+Ray、Modal、RunPod 把远程执行做**易**，MCP 把工具做**通**；没有人把本地能力做成**可组合、可问责**的服务单元。我们做的是它们之间缺的那一层。
+
+**云计算让代码迁移到计算资源。EasyRemote 让计算资源留在原地，同时获得全球可调用性。**
 
 ---
 
-## 🤖 AI 原生场景：EasyRemote 解决什么问题？
-
-EasyRemote 为 AI 时代而生。除了通用分布式计算，它直接解决 AI 团队面临的核心痛点：
-
-- **GPU 闲置浪费**：团队 GPU 80% 时间空闲，而云端推理每百万次调用 $200+
-- **数据不能出域**：医疗、金融、政务数据必须留在本地，但 AI 模型在云端
-- **Agent 集成割裂**：让 AI Agent 调用真实工具，每个服务都要写定制胶水代码
-- **冷启动延迟**：云函数 100-1000ms 的唤醒时间，严重影响实时 AI 体验
-
-### 已可落地
-
-| 编号 | 场景 | 目标用户 | 解决什么问题 |
-|---|------|---------|-------------|
-| K1 | **私有 AI 推理中台**（Team GPU Pool） | AI 团队 / 研发组 | 共享团队 GPU 进行模型推理+负载均衡；消除冗余云端支出 |
-| K2 | **Agent 工具网关**（企业内部 Tool Mesh） | Agent 平台团队 | 统一的 MCP/A2A 工具目录，让 Claude、GPT 及自定义 Agent 发现和调用企业函数 |
-| K3 | **A2A 运维处置网络**（Incident Copilot） | 平台运维 / SRE | 通过 Agent 间任务链自动化事件响应；减少人工交接 |
-| K4 | **Demo 即服务**（Demo-API） | 产品 / 售前 / 创业团队 | 3 步将 AI Demo 发布为可调用 API；快速原型用于融资演示和 POC |
-| K5 | **组织内函数市场**（Function Marketplace） | 中台团队 | 可复用的 AI 函数注册中心，支持能力发现和自动负载均衡 |
-| K6 | **本地数据不出域的 AI 处理** | 医疗 / 金融 / 政企 | 在 HIPAA/GDPR 合规设备上本地运行 AI 推理；数据永不离开你的网络 |
-| K9 | **远程设备能力注入** | ToC Agent 应用 / 边缘平台 | 运行时动态注入拍照/媒体/传感器技能到用户设备，无需重启 |
-
-### 路线图
-
-| 编号 | 场景 | 依赖条件 |
-|---|------|---------|
-| K7 | **长任务多 Agent 协作工厂** | 需要 A2A 状态机增强以支持长生命周期任务 |
-| K8 | **MCP 资源知识网络** | 需要 MCP resources/prompts 扩展以实现完整知识图谱集成 |
-
-### AI Agent 协议支持
-
-EasyRemote 原生支持 AI Agent 已经通用的协议 — **MCP** 与 **A2A**：
-
-**MCP（Model Context Protocol）**— AI Agent（Claude 等）发现并调用你的函数作为工具：
-
-```python
-# 算力节点照常注册函数
-@node.register(description="使用本地 LLM 总结文本")
-def summarize(text: str) -> str:
-    return local_llm.summarize(text)
-
-# Agent 通过 MCP 发现：POST /mcp {"method": "tools/list"}
-# Agent 通过 MCP 调用：POST /mcp {"method": "tools/call", "params": {"name": "summarize", ...}}
-```
-
-已支持：`initialize`、`tools/list`、`tools/call`、`ping`、批量请求、通知、JSON-RPC 2.0
-
-**A2A（Agent-to-Agent 协议）**— Agent 间通过标准化任务执行协作：
-
-```python
-# Agent 发现能力：POST /a2a {"method": "agent.capabilities"}
-# Agent 执行任务：POST /a2a {"method": "task.execute", "params": {"task": {...}}}
-# Agent 异步通知：POST /a2a {"method": "task.send", "params": {...}}
-```
-
-已支持：`agent.capabilities`、`task.execute`、`task.send`、`ping`、task ID 兼容回退、批量请求
-
-**EasyRemoteClientRuntime** — Agent 侧代理，将 MCP/A2A 请求桥接到 EasyRemote 分布式网关：
-
-```python
-from easyremote.protocols import EasyRemoteClientRuntime
-runtime = EasyRemoteClientRuntime(gateway="your-gateway:8080")
-# 将网关内真实函数暴露为 MCP tools / A2A capabilities
-# 支持 node_id 直连、load_balancing 负载均衡、streaming 流式调用
-```
-
-### 两条开发者路线
-
-| 路线 | 面向 | 方式 |
-|------|-----|------|
-| **路线 A：Agent（MCP/A2A）** | AI Agent 平台 | `AI Agent --MCP/A2A JSON-RPC--> 协议网关 --gRPC--> 算力节点` |
-| **路线 B：人类（Decorator）** | Python 工程师 | `@node.register` 暴露函数，`@remote` 远程调用，透明远程执行 |
-
----
-
-## 📚 完整文档指南
-
-### 🌐 多语言文档
-
-#### 🇨🇳 中文文档 
-- **[📖 中文文档中心](docs/zh/README.md)** - 完整的中文文档导航
-
-#### 🇺🇸 English Documentation
-- **[📖 English Documentation Center](docs/en/README.md)** - Complete English documentation
-
-###  快速开始
-- **[5分钟快速开始](docs/zh/user-guide/quick-start.md)** - 最快上手方式  | [English](docs/en/user-guide/quick-start.md)
-- **[安装指南](docs/zh/user-guide/installation.md)** - 详细安装说明 | [English](docs/en/user-guide/installation.md)
-
-### 📖 用户指南
-- **[API参考文档](docs/zh/user-guide/api-reference.md)** - 完整 API 说明
-- **[核心示例](docs/zh/user-guide/examples.md)** - 当前可运行示例（Agent 路线 + Decorator 路线）
-- **[业务落地与路线分层](docs/zh/CORE_USE_CASES_AND_ROUTES.md)** - 当前支持与未来路线（MCP/A2A 与 Decorator 分层）
-- **[Killer Apps Gallery](gallery/README.md)** - 现实业务杀手应用栏目（专门罗列）
-- **[Gallery 项目模板](gallery/projects/README.md)** - 从清理示例重建的快速上手项目
-
-### 🏗️ 协议深入
-- **[MCP 已实现范围](docs/ai/mcp-integration.md)** - 当前协议行为与边界
-- **[A2A 已实现范围](docs/ai/a2a-integration.md)** - 当前协议行为与边界
-- **Agent 侧网关代理 Runtime** - `EasyRemoteClientRuntime`（见 MCP/A2A 文档 2.3 节）
-- **[能力管理协议（CMP）](docs/CAPABILITY_MANAGEMENT_PROTOCOL.md)** - 用户节点技能/能力增删改查（安装/卸载/查询）
-
-### 🔬 研究资料
-- **[技术白皮书](docs/zh/research/whitepaper.md)** - EasyNet理论基础 | [English](docs/en/research/whitepaper.md)
-- **[研究提案](docs/zh/research/research-proposal.md)** - 学术研究计划 | [English](docs/en/research/research-proposal.md)
-- **[项目介绍](docs/zh/research/pitch.md)** - 商业计划概述 | [English](docs/en/research/pitch.md)
-
----
-
-## 🌟 易联网的三大突破
-
-### **1. 🔒 隐私优先架构**
-```python
-@node.register
-def medical_diagnosis(scan_data):
-    # 医疗数据永远不离开你的HIPAA合规设备
-    # 但诊断服务可被全球安全访问
-    return your_private_ai_model.diagnose(scan_data)
-```
-
-### **2. 💰 经济模型重构**
-- **传统云服务**：按使用付费，规模越大成本越高
-- **易联网模式**：贡献算力获得积分，使用积分调用他人算力
-- **网关成本**：$5/月 vs 传统云$200+/百万调用
-
-### **3.  消费级设备参与全球AI**
-```python
-# 你的游戏电脑可以为全球提供AI推理服务
-@node.register
-def image_generation(prompt):
-    return your_stable_diffusion.generate(prompt)
-
-# 你的MacBook可以参与分布式训练
-@node.register  
-def gradient_computation(batch_data):
-    return your_local_model.compute_gradients(batch_data)
-```
-
----
-
-##  三范式跳跃：通过范式革命重塑计算未来
-
-> **"计算演进不是线性发展，而是范式跳跃"**
-
-### ** 范式一：FDCN (函数驱动计算网络)**
-**核心变革**: 从本地调用 → 跨节点函数调用  
-**技术表现**: `@remote` 装饰器实现透明分布式执行  
-**范式类比**: RPC → gRPC → **EasyRemote** (函数调用的空间解耦)
-
-```python
-# 传统本地调用
-def ai_inference(data): return model.predict(data)
-
-# EasyRemote: 跨全球网络的函数调用
-@node.register  
-def ai_inference(data): return model.predict(data)
-result = client.execute("global_node.ai_inference", data)
-```
-
-**突破指标**: 
-- API简洁度: 25+行 → **12行** (-52%)
-- 启动延迟: 100-1000ms → **0ms** (-100%)
-- 隐私保护: 数据上云 → **永不离开本地**
-
-### **🧩 范式二：智能链接调度 (Intelligence-Linked Scheduling)**
-**核心变革**: 从显式调度 → 自适应智能调度  
-**技术表现**: 意图驱动的多目标优化调度  
-**范式类比**: Kubernetes → Ray → **EasyRemote ComputePool**
-
-```python
-# 传统显式调度
-client.execute("specific_node.specific_function", data)
-
-# EasyRemote: 智能意图调度
-result = await compute_pool.execute_optimized(
-    task_intent="image_classification",
-    requirements=TaskRequirements(accuracy=">95%", cost="<$5")
-)
-# 系统自动：任务分析 → 资源匹配 → 最优调度
-```
-
-**突破指标**:
-- 调度效率: 人工配置 → **毫秒级自动决策**
-- 资源利用率: 60% → **85%** (+42%)
-- 认知负荷: 复杂配置 → **意图表达**
-
-### **🌟 范式三：意图图执行 (Intent-Graph Execution)**
-**核心变革**: 从调用函数 → 表达意图  
-**技术表现**: 自然语言驱动的专家协作网络  
-**范式类比**: LangChain → AutoGPT → **EasyRemote Intent Engine**
-
-```python
-# 传统函数调用思维
-await compute_pool.execute_optimized(function="train_classifier", ...)
-
-# EasyRemote: 自然语言意图表达
-result = await easynet.fulfill_intent(
-    "训练一个医学影像AI，准确率超过90%，成本控制在10美元以内"
-)
-# 系统自动：意图理解 → 任务分解 → 专家发现 → 协作执行
-```
-
-**突破指标**:
-- 用户门槛: Python开发者 → **普通用户** (1000万+用户规模)
-- 交互方式: 代码调用 → **自然语言**
-- 协作深度: 工具调用 → **智能体协作网络**
-
-### **🔄 范式螺旋：纵向演化路线图**
-```
-┌────────────────────────────────────────────────────────────┐
-│                 全球算力操作系统                             │ ← 范式3：意图调度层
-│    "训练医学AI" → 自动协调全球专家节点                       │   (Intent-Graph)
-└────────────────────────────────────────────────────────────┘
-                            ▲
-┌────────────────────────────────────────────────────────────┐
-│                算力共享平台                                 │ ← 范式2：自治编排层  
-│    智能任务调度 + 多目标优化 + 资源池管理                      │   (Intelligence-Linked)
-└────────────────────────────────────────────────────────────┘
-                            ▲
-┌────────────────────────────────────────────────────────────┐
-│               私有函数网络                                   │ ← 范式1：函数远程层
-│    @remote 装饰器 + 跨节点调用 + 负载均衡                      │   (Function-Driven)  
-└────────────────────────────────────────────────────────────┘
-```
-
-**终极愿景**: 像使用`torchrun`一样简单调动全球算力
-```bash
-$ easynet "训练一个医学影像AI，数据在我本地，要求准确率95%+"
-🤖 理解您的需求，正在协调全球医学AI专家节点...
-✅ 找到stanford-medical-ai等3个专家节点，开始协作训练...
-```
-
----
-
-## 🔬 技术架构：去中心化 + 边缘计算
-
-### **网络拓扑**
-```
-🤖 AI Agent（MCP/A2A）    🌍 人类客户端（Decorator/@remote）
-         \                      /
-          v                    v
-   ☁️ 轻量网关集群（路由 + 协议适配，不参与计算）
-                    ↓
-        💻 个人算力节点（实际 GPU/CPU 执行）
-                    ↓
-           🔗 点对点协作网络
-```
-
-### **核心技术栈**
-- **通信协议**：gRPC + Protocol Buffers
-- **安全传输**：端到端加密
-- **负载均衡**：智能资源感知
-- **容错机制**：自动重试和恢复
-
----
-
-## 🌊 加入算力革命
-
-### **🔥 为什么易联网将改变一切**
-
-**传统模式的局限**：
-- 💸 云服务费用随规模指数增长
-- 🔒 数据必须上传到第三方服务器
-- ⚡ 冷启动和网络延迟限制性能
-- 🏢 被大型云服务商绑定
-
-**易联网的突破**：
-- 💰 **算力共享经济**：贡献闲置资源，获得全球算力
-- 🔐 **隐私by Design**：数据永远不离开你的设备
--  **边缘优先**：零延迟，最优性能
-- 🌐 **去中心化**：无单点故障，无供应商锁定
-
-### ** 我们的使命**
-
-> **重新定义计算的未来**：从少数云服务商垄断算力，到每个设备都是算力网络的一部分。
-
-### ** 立即加入**
-
-```bash
-# 成为易联网的早期节点
-pip install easyremote
-
-# 贡献你的算力
-python -c "
-from easyremote import ComputeNode
-node = ComputeNode('demo.easynet.io:8080')
-@node.register
-def hello_world(): return 'Hello from my device!'
-node.serve()
-"
-```
-
----
-
-## 🏗️ 开发者生态
-
-| 角色 | 贡献 | 收益 |
-|------|------|------|
-| **算力提供者** | 闲置GPU/CPU时间 | 算力积分/代币奖励 |
-| **应用开发者** | 创新算法和应用 | 全球算力资源访问 |
-| **网关运营者** | 网络基础设施 | 路由费用分成 |
-| **生态建设者** | 工具和文档 | 社区治理权益 |
-
----
-
-## 📞 加入社区
-
-* ** 技术讨论**: [GitHub Issues](https://github.com/Qingbolan/EasyCompute/issues)
-* **💬 社区交流**: [GitHub Discussions](https://github.com/Qingbolan/EasyCompute/discussions)
-* **📧 商务合作**: [silan.hu@u.nus.edu](mailto:silan.hu@u.nus.edu)
-* **👨‍💻 项目发起人**: [Silan Hu](https://github.com/Qingbolan) - NUS PhD Candidate
-
----
-
-<div align="center">
-
-## 🌟 "未来的软件不是部署在云上，而是运行在你的系统+易联网之上"
-
-** Ready to join the computing revolution?**
+## 上手
 
 ```bash
 pip install easyremote
+
+# 一次性前置（类比 ssh-keygen 的一次性成本，换来签名调用与回执链）
+easynet pair                                  # 设备配对，签发身份
+easynet agent add --type claude-code er      # 注册能力的归属 agent
+easyremote doctor                            # 逐项体检：库 / daemon / 身份 / 注册
 ```
 
-**不要只把它看作分布式函数工具 —— 它是运行在旧世界轨道上，却驶向新世界终点的原型机。**
+之后就是上面的 12 行。`examples/` 有可直接运行的节点、客户端、编排三个示例。
 
-*⭐ 如果你认同这个新世界观，请给我们一个星标！*
+### 三层调用面（渐进暴露）
 
-</div>
+```python
+client = Client()
+
+# L0 —— 结果优先
+client.execute("ai_inference", prompt="hi")
+
+# L1 —— 选点 / 流 / 超时
+client.call("ai_inference", prompt="hi", node="gpu-1", timeout=10)
+
+# L2 —— 完整调用对象：七元组进，回执出
+inv = client.invoke("ai_inference", prompt="inspect me")
+inv.tuple.subject     # 七元组永远可检视
+inv.receipts()        # 回执链
+```
+
+---
+
+## 适用场景
+
+| # | 场景 | 适用对象 | 解决什么 |
+|---|----------|-------------|----------------|
+| K1 | **私有 AI 推理池**（团队 GPU 池） | AI 团队 / 研发组 | 团队 GPU 共享推理与负载分摊，消除重复云开销 |
+| K2 | **Agent 工具网关**（企业工具网格） | Agent 平台团队 | 统一能力目录，Claude/GPT/自研 agent 直接发现并调用企业函数 |
+| K6 | **数据不出域 AI** | 医疗 / 金融 / 政务 | 推理跑在数据所在设备，合规且可问责 |
+| K9 | **运行时设备能力注入** | ToC Agent 应用 / 边缘平台 | 不重启即热注册新能力（`easynet agent refresh` 路径已实测） |
+| K10 | **Claude Code 机器人指挥**（Commander Skill + MCP） | Agent 产品团队 / 机器人平台 | 在 Claude Code 安装 commander skill 后，通过 MCP 远程部署并操作 client-sandbox 机器人 |
+
+---
+
+## 状态（v2.0.0a0）
+
+v2 是基于 EasyNet 栈（[EasyNet-Axon](https://github.com/EasyRemote/EasyNet-Axon) 协议层 + easynet-daemon）的全新实现，**不兼容 v1**。规格与逐项实测记录见 [`docs/design/easyremote-v2-easynet-refactor.md`](docs/design/easyremote-v2-easynet-refactor.md)。
+
+| 能力 | 状态 |
+|---|---|
+| 注册 → 热加载 → 调用闭环（warm 宿主） | ✅ 真 daemon 实测全通 |
+| 三层客户端 / `@remote` stub / async 镜像 | ✅ |
+| Pipeline → EAL → mission.run | ✅ |
+| Gateway（hub + 自签 TLS 引导） | ✅ |
+| `easyremote doctor` | ✅ |
+| 流式 / 服务端 Context 组合 / <50ms warm 延迟 | ⏳ 待 daemon host-attach 协议（EasyNet-Cli 侧） |
+| 回执链密码学验证 | ⏳ 待完整回执获取路径（RFC-007/008） |
+
+## License
+
+[MIT](LICENSE) © Silan Hu

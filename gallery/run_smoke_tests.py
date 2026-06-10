@@ -165,6 +165,18 @@ class GallerySmokeTester:
                 client_script=self.gallery_root
                 / "projects/06_runtime_device_capability_injection/agent_client.py",
             ),
+            HumanCase(
+                name="H6 Claude Code Robot Commander MCP",
+                port=18085,
+                server_script=self.gallery_root
+                / "projects/07_claude_code_robot_commander_mcp/server.py",
+                node_scripts=(
+                    self.gallery_root
+                    / "projects/07_claude_code_robot_commander_mcp/client_sandbox_node.py",
+                ),
+                client_script=self.gallery_root
+                / "projects/07_claude_code_robot_commander_mcp/commander_client.py",
+            ),
         )
 
     def _run_protocol_case(self, case: ProtocolCase) -> SmokeResult:

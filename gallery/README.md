@@ -23,6 +23,7 @@ Author: Silan Hu (silan.hu@u.nus.edu)
 | K7 | 长任务多 Agent 协作工厂 | Agent 工作流平台 | 路线图 | 需要 A2A 状态机增强 | 需要任务状态抽象 |
 | K8 | MCP 资源知识网络（Resources/Prompts） | 知识中台/Agent 平台 | 路线图 | 需要 MCP resources/prompts | 需要 schema 与资源映射 |
 | K9 | 远程设备能力注入（拍照/录像/流媒体） | ToC Agent 应用/边缘设备平台 | 已可落地 | 远程下发 skill payload + 动态安装 + 按用户定向节点 | 用户节点运行时注册新函数 |
+| K10 | Claude Code 远程机器人指挥（Commander Skill + MCP） | Agent 产品团队/机器人平台 | 已可落地 | Commander Skill 封装 MCP tools/call，远程部署与执行机器人动作 | client-sandbox 节点按需注入 runtime 机器人能力 |
 
 ## 阅读方式
 
@@ -45,6 +46,7 @@ Author: Silan Hu (silan.hu@u.nus.edu)
 - `gallery/projects/04_function_marketplace`
 - `gallery/projects/05_local_data_residency_ai`
 - `gallery/projects/06_runtime_device_capability_injection`
+- `gallery/projects/07_claude_code_robot_commander_mcp`
 
 ## 全量案例自检
 

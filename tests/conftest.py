@@ -1,16 +1,19 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+"""Shared fixtures."""
 
-"""
-Pytest bootstrap for local package imports.
-
-Author: Silan Hu (silan.hu@u.nus.edu)
-"""
-
-import sys
+import shutil
+import tempfile
 from pathlib import Path
 
+import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+
+@pytest.fixture()
+def short_tmp() -> Path:
+    """A short-prefix temp dir for AF_UNIX sockets.
+
+    pytest's tmp_path nests deep enough to blow the ~104-byte
+    sun_path limit on macOS; sockets must bind under /tmp instead.
+    """
+    path = Path(tempfile.mkdtemp(prefix="er-", dir="/tmp"))
+    yield path
+    shutil.rmtree(path, ignore_errors=True)

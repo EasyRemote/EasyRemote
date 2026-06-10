@@ -1,216 +1,91 @@
-# pyproject.toml
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "easyremote"
 dynamic = ["version"]
-description = "A lightweight framework for hassle-free remote computing resource sharing"
+description = "Turn a local function into a globally callable capability"
 readme = "README.md"
-license = {text = "MIT"}
-authors = [{name = "Silan Hu", email = "silan.hu@u.nus.edu"}]
-maintainers = [{name = "Silan Hu", email = "silan.hu@u.nus.edu"}]
+license = { text = "MIT" }
+authors = [{ name = "Silan Hu", email = "silan.hu@u.nus.edu" }]
+maintainers = [{ name = "Silan Hu", email = "silan.hu@u.nus.edu" }]
 keywords = [
-    "remote-computing", 
-    "distributed-computing", 
-    "gpu-sharing", 
-    "cloud-computing", 
-    "grpc", 
-    "asyncio"
+    "capability",
+    "distributed-computing",
+    "easynet",
+    "remote-execution",
+    "verifiable-execution",
 ]
 classifiers = [
-    # Development Status
-    "Development Status :: 4 - Beta",
-    
-    # Intended Audience
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "Intended Audience :: Science/Research",
-    "Intended Audience :: Information Technology",
-    "Intended Audience :: System Administrators",
-    
-    # License
     "License :: OSI Approved :: MIT License",
-    
-    # Programming Language
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3 :: Only",
-    
-    # Topics
-    "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: System :: Distributed Computing",
-    "Topic :: System :: Networking",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
-    "Topic :: Software Development :: Libraries :: Application Frameworks",
-    
-    # Operating System
-    "Operating System :: OS Independent",
-    
-    # Environment
-    "Environment :: Web Environment",
-    "Environment :: Console",
-    
-    # Framework
-    "Framework :: AsyncIO",
-    
-    # Natural Language
-    "Natural Language :: English",
-    "Natural Language :: Chinese (Simplified)",
-    
-    # Typing
     "Typing :: Typed",
 ]
+requires-python = ">=3.10"
+# 运行时零第三方依赖：协议对象来自 easynet_axon（task #5 落地时以其
+# 真实发布名加入），传输走平台 wheel 内置的 libeasynet_cli（SPEC §4.2）。
+dependencies = []
 
-dependencies = [
-    "grpcio>=1.71.0,<2.0.0",
-    "protobuf>=4.21.0,<6.0.0",
-    "rich>=13.0.0",
-    "pyfiglet>=0.8.0",
-    "psutil>=5.8.0"
-]
-
-requires-python = ">=3.9"
+[project.scripts]
+easyremote = "easyremote._cli:main"
 
 [project.urls]
 Homepage = "https://github.com/Qingbolan/EasyRemote"
-Documentation = "https://github.com/Qingbolan/EasyRemote/blob/main/README.md"
 Repository = "https://github.com/Qingbolan/EasyRemote.git"
 "Bug Tracker" = "https://github.com/Qingbolan/EasyRemote/issues"
-Changelog = "https://github.com/Qingbolan/EasyRemote/releases"
-"Source Code" = "https://github.com/Qingbolan/EasyRemote"
 
 [project.optional-dependencies]
-gpu = [
-    "GPUtil>=1.4.0"
-]
-build = [
-    "grpcio-tools>=1.71.0,<2.0.0"
-]
-dev = [
-    "grpcio-tools>=1.71.0,<2.0.0",
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.0.0",
-    "black>=22.0.0",
-    "isort>=5.10.0",
-    "flake8>=4.0.0",
-    "mypy>=1.0.0",
-    "pre-commit>=2.17.0"
-]
-test = [
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.0.0"
-]
-docs = [
-    "mkdocs>=1.4.0",
-    "mkdocs-material>=8.0.0",
-    "mkdocstrings>=0.19.0"
-]
+pydantic = ["pydantic>=2.0"]
+gateway = ["cryptography>=42"]
 
 [dependency-groups]
 dev = [
-    "grpcio-tools>=1.71.0,<2.0.0",
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.0.0",
-    "black>=22.0.0",
-    "isort>=5.10.0",
-    "flake8>=4.0.0",
-    "mypy>=1.0.0",
-    "pre-commit>=2.17.0"
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.13",
+    "mypy>=1.10",
 ]
-test = [
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.0.0"
-]
-docs = [
-    "mkdocs>=1.4.0",
-    "mkdocs-material>=8.0.0",
-    "mkdocstrings>=0.19.0"
-]
-
-[tool.setuptools]
-include-package-data = true
-
-[tool.setuptools.dynamic]
-version = {attr = "easyremote._version.__version__"}
 
 [tool.uv]
-default-groups = ["dev", "test"]
+default-groups = ["dev"]
+
+[tool.setuptools.dynamic]
+version = { attr = "easyremote._version.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["easyremote*"]
 
 [tool.setuptools.package-data]
-easyremote = [
-    "core/protos/*.proto", 
-    "core/protos/*_pb2.py", 
-    "core/protos/*_pb2_grpc.py", 
-    "py.typed"
-]
-
-[tool.black]
-line-length = 88
-target-version = ['py39']
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-  # directories
-  \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | build
-  | dist
-  | easyremote/core/protos/.*_pb2\.py
-  | easyremote/core/protos/.*_pb2_grpc\.py
-)/
-'''
-
-[tool.isort]
-profile = "black"
-multi_line_output = 3
-line_length = 88
-skip_glob = ["easyremote/core/protos/*_pb2.py", "easyremote/core/protos/*_pb2_grpc.py"]
+easyremote = ["py.typed", "_transport/_lib/**/*"]
 
 [tool.ruff]
-exclude = [
-    "easyremote/core/protos/*_pb2.py",
-    "easyremote/core/protos/*_pb2_grpc.py",
-]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.mypy]
-python_version = "3.9"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-exclude = [
-    "easyremote/core/protos/.*_pb2\\.py",
-    "easyremote/core/protos/.*_pb2_grpc\\.py"
-]
+python_version = "3.10"
+strict = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-python_files = ["test_*.py", "*_test.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-addopts = [
-    "--strict-markers",
-    "--strict-config",
-    "--verbose",
-]
+addopts = ["--strict-markers", "--strict-config"]
 markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "integration: marks tests as integration tests",
+    "integration: requires a running easynet-daemon",
 ]
+
+[[tool.mypy.overrides]]
+module = "cryptography.*"
+ignore_missing_imports = true
