@@ -4,17 +4,12 @@ Source of truth is the pairing-issued ``~/.easynet/credentials.json``
 (``EasyNet-Cli/src/persistence/config.rs::Credentials``: ``node_id``,
 ``realm``, ``hub_endpoint``, optional ``username``).
 
-URA construction policy (ura-discipline): this module is the ONLY
-place in the package that renders URA strings, and it renders exactly
-the two RFC-001 §URA canonical shapes mirrored in
-``EasyNet-Cli/src/ura.rs:14-28``:
-
-    device  easynet:///r/<realm>/device/<device-id>
-    hub     easynet:///r/<realm>/hub          (singleton, no tail)
-
-Every other URA (abilities, agents, receipts) reaches this package
-pre-built — from daemon `discover` responses or Axon builders — and
-is passed through verbatim.
+URA policy (ura-discipline): **Axon owns URA truth.** Ability URAs are
+built by ``easynet_axon.ura.build_device_ability_ura``; the device and
+hub shapes — which the Python SDK has no builder for yet — are rendered
+here and then **round-tripped through ``easynet_axon.ura.parse_ura``**
+before they ever leave this module, so nothing this package emits can
+disagree with the canonical parser. No other module renders URAs.
 """
 
 from __future__ import annotations
@@ -22,12 +17,44 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from easynet_axon import ura as axon_ura
+
 from .config import read_credentials
-from .errors import Unavailable
+from .errors import InternalError, Unavailable
 
-__all__ = ["LocalIdentity"]
+__all__ = ["LocalIdentity", "device_ability_ura", "device_ura", "hub_ura"]
 
-_URA_SCHEME = "easynet:///r"
+
+def device_ura(realm: str, node_id: str) -> str:
+    """RFC-001 device shape, validated by the canonical parser."""
+    return _validated(f"{axon_ura.URA_SCHEME}{realm}/device/{node_id}")
+
+
+def hub_ura(realm: str) -> str:
+    """RFC-001 hub singleton shape, validated by the canonical parser."""
+    return _validated(f"{axon_ura.URA_SCHEME}{realm}/hub")
+
+
+def device_ability_ura(
+    realm: str, node_id: str, namespace: str, local_name: str
+) -> str:
+    """Device-owned ability URA — straight from the Axon builder."""
+    return _validated(
+        axon_ura.build_device_ability_ura(realm, node_id, namespace, local_name)
+    )
+
+
+def _validated(candidate: str) -> str:
+    """AXIOM 22.2: every URA must round-trip through the canonical parser."""
+    try:
+        axon_ura.parse_ura(candidate)
+    except axon_ura.ParseError as exc:
+        raise InternalError(
+            f"constructed URA {candidate!r} is rejected by the canonical parser"
+            f" ({exc}) — likely corrupt credentials; re-pair with `easynet pair`",
+            reason="ura_round_trip_failed",
+        ) from exc
+    return candidate
 
 
 @dataclass(frozen=True)
@@ -63,10 +90,8 @@ class LocalIdentity:
 
     @property
     def device_ura(self) -> str:
-        """This device's URA (RFC-001 §URA device shape)."""
-        return f"{_URA_SCHEME}/{self.realm}/device/{self.node_id}"
+        return device_ura(self.realm, self.node_id)
 
     @property
     def hub_ura(self) -> str:
-        """The realm hub's URA (RFC-001 §URA hub singleton shape)."""
-        return f"{_URA_SCHEME}/{self.realm}/hub"
+        return hub_ura(self.realm)

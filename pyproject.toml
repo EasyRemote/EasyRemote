@@ -31,9 +31,10 @@ classifiers = [
     "Typing :: Typed",
 ]
 requires-python = ">=3.10"
-# 运行时零第三方依赖：协议对象来自 easynet_axon（task #5 落地时以其
-# 真实发布名加入），传输走平台 wheel 内置的 libeasynet_cli（SPEC §4.2）。
-dependencies = []
+# 协议真相归 Axon：URA builder/parser、签名、回执验证都来自 easynet_axon
+# （发布名 easynet-run-axon）。传输走平台 wheel 内置的 libeasynet_cli
+# （SPEC §4.2）。除此之外零第三方依赖。
+dependencies = ["easynet-run-axon>=0.108"]
 
 [project.scripts]
 easyremote = "easyremote._cli:main"
@@ -57,6 +58,11 @@ dev = [
 
 [tool.uv]
 default-groups = ["dev"]
+
+[tool.uv.sources]
+# Dev installs resolve the Axon SDK from the sibling checkout; release
+# builds need it published (tracked with the PyPI naming open question).
+easynet-run-axon = { path = "../EasyNet-Axon/sdk/python", editable = true }
 
 [tool.setuptools.dynamic]
 version = { attr = "easyremote._version.__version__" }
@@ -88,4 +94,8 @@ markers = [
 
 [[tool.mypy.overrides]]
 module = "cryptography.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "easynet_axon.*"
 ignore_missing_imports = true
