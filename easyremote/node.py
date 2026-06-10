@@ -32,7 +32,6 @@ import inspect
 import json
 import re
 import subprocess
-import sys
 import threading
 import warnings
 from collections.abc import Callable
@@ -40,7 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ._host import HostServer
+from ._host import HostServer, fastpath
 from ._host.server import HostedFunction
 from ._version import __version__
 from .context import Context
@@ -262,10 +261,7 @@ class ComputeNode:
         # missing-template failure mode, so optionals stay optional.
         manifest: dict[str, Any] = {
             "category": "easyremote",
-            "command": (
-                f"{sys.executable} -m easyremote._host.forward"
-                f" {self._host.socket_path} {qualified}"
-            ),
+            "command": fastpath.forwarder_command(self._host.socket_path, qualified),
             "description": description,
             "destructive_hint": False,
             "idempotent_hint": False,

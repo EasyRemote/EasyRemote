@@ -23,7 +23,7 @@ from .errors import (
     SchemaError,
     Unavailable,
 )
-from .gateway import Gateway, TLSConfig
+from .gateway import Gateway, Server, TLSConfig
 from .invocation import Invocation, InvocationTuple, PreparedInvocation
 from .node import ComputeNode
 from .pipeline import MissionRun, Pipeline
@@ -52,6 +52,7 @@ __all__ = [
     "RemoteFunction",
     "ResourceExhausted",
     "SchemaError",
+    "Server",
     "Stream",
     "TLSConfig",
     "Unavailable",

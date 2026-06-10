@@ -8,6 +8,7 @@ host-attach protocol when Cli PR-1 lands; nothing outside this
 package knows the difference.
 """
 
+from . import fastpath
 from .server import HostServer
 
-__all__ = ["HostServer"]
+__all__ = ["HostServer", "fastpath"]
