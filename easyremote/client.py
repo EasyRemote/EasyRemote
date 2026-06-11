@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import random
 import threading
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -33,7 +34,7 @@ from typing import Any, cast
 
 from ._transport import BidiChannel, FrameStream, Transport
 from .errors import DeadlineExceeded, InvalidArgument, Unavailable
-from .identity import LocalIdentity
+from .identity import LocalIdentity, device_route, device_ura
 from .invocation import (
     Arguments,
     Causal,
@@ -156,6 +157,7 @@ class Client:
         self._transport: Transport | None = None
         self._identity: LocalIdentity | None = None
         self._schemas: dict[str, dict[str, Any]] = {}  # ability name → input_schema
+        self._candidates: dict[str, list[FunctionInfo]] = {}  # verb → discover hits
         self._round_robin: dict[str, int] = {}
 
     # -- L0 ------------------------------------------------------------------
@@ -171,11 +173,12 @@ class Client:
         /,
         *args: Any,
         node: str | None = None,
+        pick: str | None = None,
         timeout: float | None = None,
         **kwargs: Any,
     ) -> Any:
         return self.invoke(
-            function, *args, node=node, timeout=timeout, **kwargs
+            function, *args, node=node, pick=pick, timeout=timeout, **kwargs
         ).result()
 
     def stream(self, function: str, /, *args: Any, **kwargs: Any) -> Stream:
@@ -214,6 +217,7 @@ class Client:
         sign: bool | None = None,
         metadata: Mapping[str, str] | None = None,
         node: str | None = None,
+        pick: str | None = None,
         timeout: float | None = None,
         **kwargs: Any,
     ) -> Invocation:
@@ -225,6 +229,7 @@ class Client:
             sign=sign,
             metadata=metadata,
             node=node,
+            pick=pick,
             **kwargs,
         )
         return self._dispatch(prepared, timeout=timeout)
@@ -239,6 +244,7 @@ class Client:
         sign: bool | None = None,
         metadata: Mapping[str, str] | None = None,
         node: str | None = None,
+        pick: str | None = None,
         **kwargs: Any,
     ) -> PreparedInvocation:
         if sign:
@@ -248,7 +254,7 @@ class Client:
                 " only path wired today",
                 reason="signing_path_pending",
             )
-        callee, ability = self._address(function, node)
+        callee, ability = self._address(function, node, pick)
         payload = self._named_arguments(ability, args, kwargs)
         tuple_ = InvocationTuple(
             caller=self._who().device_ura,
@@ -272,9 +278,12 @@ class Client:
         ).result()
         candidates = (response or {}).get("candidates", [])
         infos = [FunctionInfo.from_candidate(c) for c in candidates]
+        self._candidates.clear()
         for info in infos:
             if info.name and info.input_schema:
                 self._schemas.setdefault(info.name, info.input_schema)
+            if info.name:
+                self._candidates.setdefault(info.name, []).append(info)
         return infos
 
     # -- async mirror -------------------------------------------------------------
@@ -315,21 +324,53 @@ class Client:
                 ) from None
         return Invocation(prepared.tuple, response)
 
-    def _address(self, function: str, node: str | None) -> tuple[str, str]:
+    def _address(
+        self, function: str, node: str | None, pick: str | None = None
+    ) -> tuple[str, str]:
         """(callee URA, qualified ability name) for a function reference.
 
         Assumption pinned for P0: the daemon's invocation service
         resolves agent abilities by qualified name with the device as
         callee (AbilitySelector owns owner disambiguation). Bare names
         get this client's namespace; dotted names pass through.
+        ``pick`` selects among discovered device-owned candidates.
         """
         identity = self._who()
         ability = function if "." in function else f"{self._namespace}.{function}"
-        if node is None:
-            return identity.device_ura, ability
-        from .identity import device_ura
+        if node is not None:
+            return device_ura(identity.realm, node), ability
+        if pick is not None:
+            selected = self._pick(function.rsplit(".", 1)[-1], pick)
+            if selected is not None:
+                return selected
+        return identity.device_ura, ability
 
-        return device_ura(identity.realm, node), ability
+    def _pick(self, verb: str, policy: str) -> tuple[str, str] | None:
+        """Select among device-owned discover candidates for ``verb``.
+
+        Agent/hub-owned candidates are skipped — their hosting device
+        is not derivable from the URA alone (identity.device_route).
+        With no usable candidates the default local addressing applies;
+        call functions() first to populate the candidate cache.
+        """
+        if policy not in ("round_robin", "random"):
+            raise InvalidArgument(
+                f"pick must be 'round_robin' or 'random', got {policy!r}"
+                " (resource_aware needs daemon-side load metrics — Cli PR-3)",
+                reason="invalid_pick_policy",
+            )
+        routes = [
+            route
+            for info in self._candidates.get(verb, [])
+            if (route := device_route(info.qualified_name)) is not None
+        ]
+        if not routes:
+            return None
+        if policy == "random":
+            return random.choice(routes)
+        index = self._round_robin.get(verb, 0)
+        self._round_robin[verb] = index + 1
+        return routes[index % len(routes)]
 
     def _named_arguments(
         self, ability: str, args: tuple[Any, ...], kwargs: dict[str, Any]

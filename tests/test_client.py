@@ -215,6 +215,83 @@ def test_remote_stub_decorator_options():
     assert wire["callee_ura"].endswith("/device/gpu-1")
 
 
+# -- pick selection ----------------------------------------------------------
+
+
+def candidate(verb, device_id):
+    return {
+        "ability": verb,
+        "qualified_name": f"easynet:///r/acme/ability/device.{device_id}.er.{verb}",
+        "owner": "device",
+        "description": "",
+        "input_schema": {"type": "object", "properties": {}},
+        "visibility": "device",
+        "score": 1.0,
+    }
+
+
+def test_round_robin_alternates_device_candidates():
+    discover = ok_response(
+        {"candidates": [candidate("fn", "dev-a"), candidate("fn", "dev-b")]}
+    )
+    client, transport = make_client(responses=[discover])
+    client.functions()
+
+    client.execute("fn", pick="round_robin")
+    client.execute("fn", pick="round_robin")
+    callees = [w["callee_ura"] for w in transport.invocations[1:]]
+    assert callees == [
+        "easynet:///r/acme/device/dev-a",
+        "easynet:///r/acme/device/dev-b",
+    ]
+    assert transport.invocations[1]["ability"] == "er.fn"  # wire name from URA
+
+
+def test_pick_random_chooses_a_known_candidate():
+    discover = ok_response(
+        {"candidates": [candidate("fn", "dev-a"), candidate("fn", "dev-b")]}
+    )
+    client, transport = make_client(responses=[discover])
+    client.functions()
+    client.execute("fn", pick="random")
+    assert transport.invocations[1]["callee_ura"].rsplit("/", 1)[-1] in (
+        "dev-a",
+        "dev-b",
+    )
+
+
+def test_pick_without_candidates_falls_back_to_local():
+    client, transport = make_client()
+    client.execute("fn", pick="round_robin")
+    assert transport.invocations[0]["callee_ura"] == DEVICE_URA
+
+
+def test_agent_owned_candidates_are_skipped_by_pick():
+    agent_candidate = {
+        "ability": "fn",
+        "qualified_name": "easynet:///r/acme/ability/user-1.claude.fn",
+        "owner": "claude",
+        "description": "",
+        "input_schema": {},
+        "visibility": "device",
+        "score": 1.0,
+    }
+    client, transport = make_client(
+        responses=[ok_response({"candidates": [agent_candidate]})]
+    )
+    client.functions()
+    client.execute("fn", pick="round_robin")  # falls back: not addressable
+    assert transport.invocations[1]["callee_ura"] == DEVICE_URA
+
+
+def test_invalid_pick_policy_rejected():
+    client, _ = make_client()
+    with pytest.raises(InvalidArgument) as exc_info:
+        client.execute("fn", pick="resource_aware")
+    assert exc_info.value.reason == "invalid_pick_policy"
+    assert "PR-3" in str(exc_info.value)
+
+
 # -- async mirror -------------------------------------------------------------
 
 

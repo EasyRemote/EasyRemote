@@ -20,6 +20,7 @@ import inspect
 import json
 import socket
 import threading
+import typing
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,25 +28,42 @@ from typing import Any
 
 from ..errors import InternalError, InvalidArgument, RemoteError
 from ..schema import DerivedSignature
+from . import codec
 
 __all__ = ["HostServer", "HostedFunction"]
 
 
 @dataclass(frozen=True)
 class HostedFunction:
-    """One resident function plus its derived schema (for bytes params)."""
+    """One resident function plus the type intent that rehydrates its args."""
 
     name: str
     fn: Callable[..., Any]
     signature: DerivedSignature
 
+    def __post_init__(self) -> None:
+        try:
+            hints = typing.get_type_hints(self.fn)
+        except Exception:  # unresolvable forward refs degrade to raw JSON
+            hints = {}
+        object.__setattr__(self, "_hints", hints)
+
     def call(self, args: dict[str, Any]) -> Any:
-        kwargs = dict(args)
-        properties = self.signature.input_schema.get("properties", {})
-        for param, value in kwargs.items():
-            prop = properties.get(param, {})
-            if prop.get("contentEncoding") == "base64" and isinstance(value, str):
-                kwargs[param] = base64.b64decode(value)
+        hints: dict[str, Any] = self._hints  # type: ignore[attr-defined]
+        kwargs: dict[str, Any] = {}
+        for param, value in args.items():
+            try:
+                kwargs[param] = (
+                    codec.rehydrate(value, hints[param])
+                    if param in hints
+                    else self._schema_fallback(param, value)
+                )
+            except Exception as exc:
+                raise InvalidArgument(
+                    f"'{self.name}' argument '{param}' does not fit its"
+                    f" annotated type: {type(exc).__name__}: {exc}",
+                    reason="argument_mismatch",
+                ) from None
         try:
             result = self.fn(**kwargs)
         except TypeError as exc:
@@ -58,11 +76,15 @@ class HostedFunction:
             ) from None
         if inspect.iscoroutine(result):
             result = asyncio.run(result)
-        if isinstance(result, bytes):
-            # Multimodal returns travel as base64 strings (the schema
-            # already advertises contentEncoding for bytes outputs).
-            return base64.b64encode(result).decode("ascii")
-        return result
+        return codec.to_jsonable(result)
+
+    def _schema_fallback(self, param: str, value: Any) -> Any:
+        """Schema-override registrations have no annotation to drive
+        rehydration; honor the one wire-level encoding schemas declare."""
+        prop = self.signature.input_schema.get("properties", {}).get(param, {})
+        if prop.get("contentEncoding") == "base64" and isinstance(value, str):
+            return base64.b64decode(value)
+        return value
 
 
 class HostServer:
