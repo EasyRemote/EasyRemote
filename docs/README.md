@@ -10,6 +10,7 @@ gateway APIs or future protocol adapters.
 
 - [v2 EasyNet refactor spec](design/easyremote-v2-easynet-refactor.md)
 - [Packaging and versioning policy](development/PACKAGING_VERSIONING_POLICY.md)
+- [References and attribution notes](REFERENCES.md)
 
 ## Runnable Entrypoints
 

@@ -114,11 +114,15 @@ prepared.tuple.subject
 
 ## 状态（v2.0.0a0）
 
-v2 是基于 EasyNet 栈（[EasyNet-Axon](https://github.com/EasyRemote/EasyNet-Axon) 协议层 + easynet-daemon）的全新实现，**不兼容 v1**。规格与逐项实测记录见 [`docs/design/easyremote-v2-easynet-refactor.md`](docs/design/easyremote-v2-easynet-refactor.md)。
+v2 是基于 EasyNet 栈（[EasyNet-Axon](https://github.com/EasyRemote/EasyNet-Axon) 协议层 + easynet-daemon）的全新实现，**不兼容 v1**。规格与 EasyNet-Cli/Axon 契约说明见 [`docs/design/easyremote-v2-easynet-refactor.md`](docs/design/easyremote-v2-easynet-refactor.md)。
+
+`✅` 表示当前仓库已实现，并有单元/契约测试覆盖；只有明确写出 "live daemon" 的行才表示真实 daemon 链路验证。daemon 可用性、运行时 ability 加载、回执持久化属于 EasyNet-Cli/Axon 契约，因此和 facade 本地行为分开标注。
 
 | 能力 | 状态 |
 |---|---|
-| 注册 → 部署 → 调用闭环（device ability，warm 宿主） | ✅ facade 已实现，并用 host_stream 契约单测固定 |
+| 注册 → 部署包生成（device ability，warm 宿主） | ✅ facade 已实现，并用 host_stream 契约单测固定 |
+| 运行时 ability 部署 / hot-load | ✅ facade 会调用 `easynet ability deploy --node local`；真实 daemon hot-load 属于 EasyNet-Cli 契约 |
+| live daemon 调用闭环 | 🧪 仅集成/手工路径；CI 在没有 `EASYNET_CLI_LIB` + 运行中 daemon 时跳过 |
 | 三层客户端 / `@remote` stub / async 镜像 | ✅ |
 | Pipeline → EAL → mission.run | ✅ |
 | Server（hub + 自签 TLS 引导） | ✅ |
@@ -126,7 +130,12 @@ v2 是基于 EasyNet 栈（[EasyNet-Axon](https://github.com/EasyRemote/EasyNet-
 | 流式 producer/consumer | ✅ host_stream 路径已实现；见 `examples/04_streaming_*.py` |
 | 服务端 Context 只读身份注入 | ✅ 从 host_stream envelope 注入 `ctx.caller` / `ctx.invocation_id` |
 | 服务端 Context 组合（`ctx.call` 子调用） | ⏳ 等待 parent receipt URA 路径用于因果链 |
+| warm-host 延迟目标（`<50ms`） | 🧪 本版本不宣称；需要 live daemon benchmark |
 | 回执链密码学验证 | ⏳ 待完整回执获取路径（RFC-007/008） |
+
+## 归属与引用
+
+EasyRemote 使用 MIT 许可证。EasyNet 运行时依赖是 Apache-2.0 项目，见 [`NOTICE.md`](NOTICE.md)。用于定位设计的系统与研究参考文献集中列在 [`docs/REFERENCES.md`](docs/REFERENCES.md)。
 
 ## License
 

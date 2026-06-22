@@ -122,11 +122,15 @@ prepared.tuple.subject
 
 ## Status (v2.0.0a0)
 
-v2 is a clean reimplementation on the EasyNet stack ([EasyNet-Axon](https://github.com/EasyRemote/EasyNet-Axon) protocol layer + easynet-daemon), **not compatible with v1**. The spec, with line-by-line verification records against live daemon runs, lives at [`docs/design/easyremote-v2-easynet-refactor.md`](docs/design/easyremote-v2-easynet-refactor.md).
+v2 is a clean reimplementation on the EasyNet stack ([EasyNet-Axon](https://github.com/EasyRemote/EasyNet-Axon) protocol layer + easynet-daemon), **not compatible with v1**. The spec, including the EasyNet-Cli/Axon contract notes, lives at [`docs/design/easyremote-v2-easynet-refactor.md`](docs/design/easyremote-v2-easynet-refactor.md).
+
+`✅` means implemented in this repository and covered by unit/contract tests unless the row explicitly says "live daemon". Daemon availability, runtime ability loading, and receipt persistence are EasyNet-Cli/Axon contracts, so they are documented separately from facade-local behavior.
 
 | Capability | Status |
 |---|---|
-| register → deploy → invoke closed loop (device abilities, warm host) | ✅ implemented in the facade and unit-tested against the host_stream contract |
+| register → deploy package generation (device abilities, warm host) | ✅ implemented in the facade and unit-tested against the host_stream contract |
+| Runtime ability deployment / hot-load | ✅ facade invokes `easynet ability deploy --node local`; live daemon hot-load is an EasyNet-Cli contract |
+| invoke closed loop against a live daemon | 🧪 integration/manual path only; CI skips without `EASYNET_CLI_LIB` + a running daemon |
 | Three-layer client / `@remote` stubs / async mirror | ✅ |
 | Pipeline → EAL → mission.run | ✅ |
 | Server (hub + self-signed TLS bootstrap) | ✅ |
@@ -135,7 +139,12 @@ v2 is a clean reimplementation on the EasyNet stack ([EasyNet-Axon](https://gith
 | Async functions / generators (sync + async) | ✅ |
 | Server-side Context (read-only caller identity) | ✅ `ctx.caller` + `ctx.invocation_id` injected from the host_stream envelope |
 | Server-side Context composition (`ctx.call` child invocations) | ⏳ needs the parent-receipt-URA path for causal chaining (RFC-007/008) |
+| Warm-host latency target (`<50ms`) | 🧪 not claimed in this release; requires a live-daemon benchmark |
 | Cryptographic receipt-chain verification | ⏳ pending the full-receipt fetch path (RFC-007/008) |
+
+## Attribution
+
+EasyRemote is MIT-licensed. Its EasyNet runtime dependencies are Apache-2.0 projects and are listed in [`NOTICE.md`](NOTICE.md). Research and systems references used to position the design are collected in [`docs/REFERENCES.md`](docs/REFERENCES.md).
 
 ## License
 

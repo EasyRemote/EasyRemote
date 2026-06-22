@@ -5,6 +5,7 @@
 > 读者：EasyRemote / EasyNet 工程团队
 > 性质：normative——实现与本文冲突时，以本文为准或先修订本文
 > 配套：EasyNet-Cli 侧 3 个 PR（§9），独立工作流
+> 参考：系统论文、协议和第三方归属集中列在 [`../REFERENCES.md`](../REFERENCES.md)
 
 ---
 
@@ -382,19 +383,26 @@ ability descriptor 自动投影为 MCP tool spec（`easynet mcp_server` /
 `easynet start --mcp`）。facade 不复刻目录；`AbilityInfo.mcp_tool` 仅供
 检视。
 
-### 5.5 `Context`（服务端组合——composable 的第一半）
+### 5.5 `Context`（当前只读身份注入；组合面待 receipt URA）
+
+当前 v2.0.0a0 已落地的是 `host_stream` envelope 注入的只读上下文：
+`ctx.invocation_id` 与 `ctx.caller`。服务端子调用、progress、inbox/cancel
+等组合方法在 facade 中保留为显式 API stub，但会抛
+`Unavailable(reason="context_dispatch_not_wired")`。原因是 child invocation
+必须携带可验证的 parent receipt URA；在 RFC-007/008 的 receipt body URA /
+full-receipt fetch 路径落地前，facade 不会伪造 causal reference。
+
+**当前可用：**
 
 ```python
 from easyremote import Context
 
 @node.register
 def quarterly_report(ctx: Context, quarter: str) -> str:
-    rows = ctx.call("teamA.fetch_sales", quarter)   # 跨网络子调用
-    ctx.progress({"stage": "summarizing"})
-    if ctx.cancelled:
-        return ""
-    return summarize(rows)
+    return f"{quarter} requested by {ctx.caller} in {ctx.invocation_id}"
 ```
+
+**未来组合面（保留 API，当前不可用）：**
 
 ```python
 class Context:
@@ -416,9 +424,10 @@ class Context:
     def cancelled(self) -> bool
 ```
 
-底层映射：Axon `AbilityContext`（invocation_id / emit_progress / inbox /
+目标底层映射：Axon `AbilityContext`（invocation_id / emit_progress / inbox /
 supervisor）+ daemon `invoke` 系统 ability。`ctx.call` 是 composable 的
-服务端兑现：能力像库一样互相调用，每一跳都在回执链上。
+服务端兑现目标：能力像库一样互相调用，每一跳都在回执链上；但这依赖
+parent receipt URA 作为 causal_context，因此本版本只声明 future surface。
 
 ### 5.6 `Client` 与 `@remote`
 

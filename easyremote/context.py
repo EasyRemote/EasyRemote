@@ -25,11 +25,12 @@ _NOT_WIRED = (
 
 @dataclass(frozen=True)
 class Context:
-    """Injected first parameter for composing capabilities server-side.
+    """Injected first parameter for server-side caller context.
 
-    ``ctx.call`` creates a child invocation whose causal context is
-    automatically chained to the current one — composition as a
-    first-class citizen of the receipt chain.
+    Today this carries read-only identity (`invocation_id`, `caller`).
+    Child dispatch methods are intentionally present but unavailable
+    until the parent receipt URA path can make their causal_context
+    verifiable.
     """
 
     invocation_id: str
