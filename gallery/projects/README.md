@@ -1,34 +1,34 @@
-# Gallery Projects Index
+# Gallery Projects
 
 Author: Silan Hu (silan.hu@u.nus.edu)
 
-## 目标
+## Purpose
 
-把历史上有教学价值但已清理的示例，重建为“可运行的小项目模板”，用于快速上手。
+`gallery/projects/` now keeps scenario directories, not old implementation code. Each subdirectory README answers one question: if this project is rebuilt, which real usage scenario should it serve, which concrete problem should it solve, and what target outcome should the user get?
 
-## 项目列表
+For currently runnable code, see [`../../examples/README.md`](../../examples/README.md). This directory no longer provides Makefiles, script entrypoints, or smoke test instructions.
 
-- `00_basic_remote_math`
-  - 对应历史基础示例（server + compute node + client）
-- `01_team_gpu_pool_load_balancing`
-  - 对应历史多节点负载均衡示例
-- `02_mcp_tool_mesh`
-  - 对应历史 MCP 工具网关类示例
-- `03_a2a_incident_copilot`
-  - 对应历史多 Agent 协作/运维处置类示例
-- `04_function_marketplace`
-  - 对应函数市场（K5）示例
-- `05_local_data_residency_ai`
-  - 对应本地数据不出域（K6）示例
-- `06_runtime_device_capability_injection`
-  - 对应远程 agent 运行时下发用户设备拍照/录像/流媒体能力（K9）示例（支持按用户节点定向）
-- `07_claude_code_robot_commander_mcp`
-  - 对应 Claude Code commander skill 通过 MCP 远程下发并操控 client-sandbox 机器人（K10）示例
+## Project Index
 
-## 统一规则
+| Directory | Scenario | Description |
+|---|---|---|
+| [`00_basic_remote_math`](00_basic_remote_math/README.md) | K4 Demo-as-API | Uses the smallest function case to explain how a local function becomes a demoable remote capability |
+| [`01_team_gpu_pool_load_balancing`](01_team_gpu_pool_load_balancing/README.md) | K1 Private AI Inference Hub | Uses a team GPU pool to explain multi-node capability sharing and load distribution |
+| [`02_mcp_tool_mesh`](02_mcp_tool_mesh/README.md) | K2 Agent Capability Backend | Uses an enterprise tool mesh to explain how agents discover and call organizational capabilities |
+| [`03_a2a_incident_copilot`](03_a2a_incident_copilot/README.md) | K3 A2A Incident Copilot Network | Uses an incident copilot to explain how operations actions can be orchestrated by agents |
+| [`04_function_marketplace`](04_function_marketplace/README.md) | K5 Internal Function Marketplace | Uses cross-team function reuse to explain the value of a capability catalog |
+| [`05_local_data_residency_ai`](05_local_data_residency_ai/README.md) | K6 Local Data Residency AI | Uses sensitive data processing to explain why computation should move toward the data |
+| [`06_runtime_device_capability_injection`](06_runtime_device_capability_injection/README.md) | K9 Runtime Device Capability Injection | Uses camera, video, and streaming actions to explain on-demand user-device capability installation |
+| [`07_claude_code_robot_commander_mcp`](07_claude_code_robot_commander_mcp/README.md) | K10 Claude Code Robot Commander | Uses a commander skill to explain how an agent remotely deploys and operates device capabilities |
 
-- 所有项目均对齐当前 EasyRemote API。
-- 每个目录自带 `README.md` 和入口脚本。
-- 每个目录均提供 `Makefile` 一键命令（`make help` 查看）。
-- 代码采用 OOP 组织，便于复制到真实业务仓库。
-- 可用 `uv run python gallery/run_smoke_tests.py` 对现有应支持案例做全量冒烟测试。
+## Writing Rule
+
+Each project README uses the same structure:
+
+- Usage scenario
+- Concrete use case
+- Current problem
+- Intent
+- Target outcome
+
+This keeps the gallery from becoming another code index. It should first clarify demand and product judgment, then decide whether an implementation is worth rebuilding.

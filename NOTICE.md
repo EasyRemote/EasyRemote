@@ -5,24 +5,43 @@ Copyright (c) 2024 Silan Hu
 
 This product includes software developed by Silan Hu (silan.hu@u.nus.edu).
 
-## Third Party Components
+## Third-Party Runtime Components
 
-This software includes the following third-party components:
+EasyRemote is an MIT-licensed Python facade over the EasyNet runtime. The
+following third-party or sibling-project components are relevant to normal
+runtime use:
 
-1. Go Kitex Framework
-   - Copyright (c) ByteDance
-   - License: Apache License 2.0
-   - Website: https://github.com/cloudwego/kitex
+1. EasyNet-Axon / `easynet-run-axon`
+   - Role: URA construction/parsing, invocation and receipt protocol helpers.
+   - License: Apache License 2.0.
+   - Website: https://github.com/EasyRemote/EasyNet-Axon
 
-2. Flask (Optional Component)
-   - Copyright (c) 2014 by Armin Ronacher and contributors
-   - License: BSD 3-Clause
-   - Website: https://flask.palletsprojects.com/
+2. EasyNet CLI / `libeasynet_cli`
+   - Role: local daemon, ability deployment, C ABI transport, stream/bidi
+     invocation surfaces.
+   - License: Apache License 2.0.
+   - Website: https://github.com/EasyRemote/EasyNet-Cli
+   - Note: not bundled in the pure Python wheel; users install EasyNet CLI or
+     point `EASYNET_CLI_LIB` / `configure(library_path=...)` at an ABI v3
+     library.
 
-3. WebSockets for Python
-   - Copyright (c) 2011-2023 Aymeric Augustin and contributors
-   - License: BSD 3-Clause
-   - Website: https://github.com/aaugustin/websockets
+3. EasyNet
+   - Role: backend/runtime family for EasyNet hubs and services that the
+     EasyRemote facade is designed to work with.
+   - License: Apache License 2.0.
+   - Website: https://github.com/EasyRemote/EasyNet
 
-Each component used by this software is provided under its own license terms, 
-which can be found in the respective source code or documentation.
+4. pydantic (optional extra: `easyremote[pydantic]`)
+   - Role: optional schema/model support when user function annotations use
+     Pydantic models.
+   - License: MIT License.
+   - Website: https://github.com/pydantic/pydantic
+
+5. cryptography (optional extra: `easyremote[gateway]`)
+   - Role: optional self-signed TLS material generation for the hub wrapper.
+   - License: Apache License 2.0 or BSD License.
+   - Website: https://github.com/pyca/cryptography
+
+Each component is provided under its own license terms. This notice is for
+attribution and dependency clarity; it does not replace the license text in the
+respective upstream projects.

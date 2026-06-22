@@ -1,14 +1,13 @@
 """`easyremote doctor` — diagnose the local EasyNet link (SPEC §4.2).
 
 Checks run shallow-to-deep and never mutate anything: library → ABI →
-discovery files → daemon liveness → identity → agent registration.
+discovery files → daemon liveness → identity → live transport.
 Each failure carries the exact command that fixes it; exit code is the
 number of failed checks.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 from dataclasses import dataclass
@@ -28,7 +27,7 @@ class Check:
     detail: str
 
 
-def run_checks(namespace: str = "er") -> list[Check]:
+def run_checks() -> list[Check]:
     checks: list[Check] = []
 
     def add(name: str, ok: bool, detail: str) -> None:
@@ -70,28 +69,7 @@ def run_checks(namespace: str = "er") -> list[Check]:
     except RemoteError as exc:
         add("identity", False, str(exc))
 
-    # 5. agent registration for the default namespace
-    registry_path = config.agents_root().parent / "agents.json"
-    try:
-        agents = json.loads(registry_path.read_text(encoding="utf-8")).get("agents", {})
-        if namespace in agents:
-            add(
-                "agent",
-                True,
-                f"'{namespace}' registered → {agents[namespace].get('root_path')}",
-            )
-        else:
-            registered = ", ".join(sorted(agents)) or "none"
-            add(
-                "agent",
-                False,
-                f"'{namespace}' not registered (have: {registered}) — run"
-                f" `easynet agent add --type claude-code {namespace}`",
-            )
-    except (FileNotFoundError, json.JSONDecodeError):
-        add("agent", False, f"no readable {registry_path} — is the daemon paired?")
-
-    # 6. live transport (only meaningful when everything above held)
+    # 5. live transport (only meaningful when everything above held)
     if library_ok and control is not None:
         try:
             from ._transport import Transport
@@ -107,13 +85,10 @@ def run_checks(namespace: str = "er") -> list[Check]:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] != ["doctor"]:
-        print("usage: easyremote doctor [--namespace <agent>]", file=sys.stderr)
+        print("usage: easyremote doctor", file=sys.stderr)
         return 2
-    namespace = "er"
-    if "--namespace" in argv:
-        namespace = argv[argv.index("--namespace") + 1]
 
-    checks = run_checks(namespace)
+    checks = run_checks()
     width = max(len(check.name) for check in checks)
     for check in checks:
         mark = "✓" if check.ok else "✗"

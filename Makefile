@@ -9,11 +9,12 @@ sync:
 	uv sync
 
 lint:
-	uv run ruff check easyremote tests gallery examples --output-format=full
+	uv run ruff check easyremote tests examples --output-format=full
 
 test:
 	uv run pytest -q
 
 smoke:
-	uv run python gallery/run_smoke_tests.py
-
+	uv run pytest -q
+	uv run ruff check easyremote tests examples --output-format=full
+	uv run mypy easyremote

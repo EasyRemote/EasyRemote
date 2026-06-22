@@ -43,8 +43,8 @@ After registration, that function is a **capability** — and capability is not 
 from easyremote import Client
 Client().execute("ai_inference", prompt="hello")
 
-# An agent: auto-projected as an MCP tool, discovered and called by Claude
-#   claude mcp add easynet -- easynet mcp_server
+# An agent runtime: call the same capability through the EasyRemote client
+#   Client().call("ai_inference", prompt="hello")
 
 # A system: one step in a pipeline, composed with other people's functions
 from easyremote import Pipeline
@@ -63,7 +63,7 @@ Git lowered the unit of sharing code from a project to a commit. Docker lowered 
 
 **And the moment nothing else can replace it: the day agents operate real-world resources.** Agent capability jumps a tier every quarter, but agent accountability hasn't changed since day one — a tool call goes out, and everything after that is self-reported. Letting an agent check the weather is fine; letting it touch your database, place orders, or drive hardware means "what did it actually do" can no longer be an autobiography. Signed invocations plus receipt chains express authorization the way it was always meant to be said: **this agent, under my authority, within this task chain, may call this capability and act on this object.**
 
-Ray, Modal, and RunPod make remote execution *easy*. MCP makes tools *connectable*. Nobody makes local capabilities *composable and accountable* service units. We build the layer missing between them.
+Ray, Modal, and RunPod make remote execution *easy*. Tool protocols make agents *connectable*. Nobody makes local capabilities *composable and accountable* service units. We build the layer missing between them.
 
 **Cloud computing moved code to the compute. EasyRemote keeps the compute where it is — and makes it globally callable.**
 
@@ -77,11 +77,17 @@ pip install easyremote
 # One-time prerequisites (an ssh-keygen-style cost, buying you
 # signed invocations and receipt chains)
 easynet pair                                  # pair this device, issue identity
-easynet agent add --type claude-code er      # register the owning agent
-easyremote doctor                            # check library / daemon / identity / agent
+easyremote doctor                            # check library / daemon / identity / transport
 ```
 
-Then it's the twelve lines above. `examples/` contains runnable node, client, and pipeline examples.
+Then it's the twelve lines above. `examples/` has runnable node/client pairs:
+
+| Example | Shows |
+|---|---|
+| `01_hello_node.py` / `02_hello_client.py` | minimal register → call |
+| `03_pipeline.py` | compose abilities into an EAL mission |
+| `remote_demo_node.py` / `remote_demo_client.py` | every function shape via `@node.register` + `@remote` (unary, `*args`/`**kwargs`, async, generator, Context) |
+| `04_streaming_node.py` / `04_streaming_client.py` | proves streaming is **incremental, not batched** — measures per-frame arrival gaps |
 
 ### Three call layers, progressively disclosed
 
@@ -91,13 +97,15 @@ client = Client()
 # L0 — result-first
 client.execute("ai_inference", prompt="hi")
 
-# L1 — targeting / streams / timeouts
-client.call("ai_inference", prompt="hi", node="gpu-1", timeout=10)
+# L1 — targeting / streams / timeouts without stealing ability arg names
+client.call(Client.target("ai_inference", node="gpu-1", timeout=10), prompt="hi")
 
-# L2 — the full invocation object: seven-tuple in, receipts out
-inv = client.invoke("ai_inference", prompt="inspect me")
-inv.tuple.subject     # the seven-tuple is always inspectable
-inv.receipts()        # the receipt chain
+# L2 — inspect the seven-tuple before dispatch
+prepared = client.prepare("ai_inference", prompt="inspect me")
+prepared.tuple.subject
+
+# send() is for daemon unary/system abilities; EasyRemote-hosted
+# abilities are host_stream and should be consumed with call()/stream().
 ```
 
 ---
@@ -107,26 +115,36 @@ inv.receipts()        # the receipt chain
 | # | Scenario | Who it's for | What it solves |
 |---|----------|-------------|----------------|
 | K1 | **Private AI Inference Hub** (team GPU pool) | AI teams / R&D groups | Share team GPUs for inference with load spreading; eliminate redundant cloud spend |
-| K2 | **Agent Tool Gateway** (enterprise tool mesh) | Agent platform teams | A unified capability catalog Claude, GPT, and custom agents discover and call directly |
+| K2 | **Agent Capability Backend** (enterprise tool mesh) | Agent platform teams | A unified capability catalog custom agent runtimes can discover and call through EasyRemote |
 | K6 | **Local Data Residency AI** | Healthcare / Finance / Government | Inference runs on the device where the data lives — compliant and accountable |
-| K9 | **Runtime Device Capability Injection** | ToC agent apps / edge platforms | Hot-register new capabilities without restart (`easynet agent refresh`, live-verified) |
-| K10 | **Claude Code Robot Commander** (Commander Skill + MCP) | Agent product teams / Robotics platforms | Install a commander skill in Claude Code, then remotely deploy and operate client-sandbox robots through MCP |
 
 ---
 
 ## Status (v2.0.0a0)
 
-v2 is a clean reimplementation on the EasyNet stack ([EasyNet-Axon](https://github.com/EasyRemote/EasyNet-Axon) protocol layer + easynet-daemon), **not compatible with v1**. The spec, with line-by-line verification records against live daemon runs, lives at [`docs/design/easyremote-v2-easynet-refactor.md`](docs/design/easyremote-v2-easynet-refactor.md).
+v2 is a clean reimplementation on the EasyNet stack ([EasyNet-Axon](https://github.com/EasyRemote/EasyNet-Axon) protocol layer + easynet-daemon), **not compatible with v1**. The spec, including the EasyNet-Cli/Axon contract notes, lives at [`docs/design/easyremote-v2-easynet-refactor.md`](docs/design/easyremote-v2-easynet-refactor.md).
+
+`✅` means implemented in this repository and covered by unit/contract tests unless the row explicitly says "live daemon". Daemon availability, runtime ability loading, and receipt persistence are EasyNet-Cli/Axon contracts, so they are documented separately from facade-local behavior.
 
 | Capability | Status |
 |---|---|
-| register → hot-load → invoke closed loop (warm host) | ✅ verified against a live daemon |
+| register → deploy package generation (device abilities, warm host) | ✅ implemented in the facade and unit-tested against the host_stream contract |
+| Runtime ability deployment / hot-load | ✅ facade invokes `easynet ability deploy --node local`; live daemon hot-load is an EasyNet-Cli contract |
+| invoke closed loop against a live daemon | 🧪 integration/manual path only; CI skips without `EASYNET_CLI_LIB` + a running daemon |
 | Three-layer client / `@remote` stubs / async mirror | ✅ |
 | Pipeline → EAL → mission.run | ✅ |
-| Gateway (hub + self-signed TLS bootstrap) | ✅ |
+| Server (hub + self-signed TLS bootstrap) | ✅ |
 | `easyremote doctor` | ✅ |
-| Streaming / server-side Context composition / <50ms warm latency | ⏳ pending the daemon host-attach protocol (EasyNet-Cli side) |
+| Streaming | ✅ host_stream producer/consumer implemented; see `examples/04_streaming_*.py` |
+| Async functions / generators (sync + async) | ✅ |
+| Server-side Context (read-only caller identity) | ✅ `ctx.caller` + `ctx.invocation_id` injected from the host_stream envelope |
+| Server-side Context composition (`ctx.call` child invocations) | ⏳ needs the parent-receipt-URA path for causal chaining (RFC-007/008) |
+| Warm-host latency target (`<50ms`) | 🧪 not claimed in this release; requires a live-daemon benchmark |
 | Cryptographic receipt-chain verification | ⏳ pending the full-receipt fetch path (RFC-007/008) |
+
+## Attribution
+
+EasyRemote is MIT-licensed. Its EasyNet runtime dependencies are Apache-2.0 projects and are listed in [`NOTICE.md`](NOTICE.md). Research and systems references used to position the design are collected in [`docs/REFERENCES.md`](docs/REFERENCES.md).
 
 ## License
 

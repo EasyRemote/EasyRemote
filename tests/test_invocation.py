@@ -54,8 +54,15 @@ def test_encode_matches_ffi_golden_fixture():
         "subject_ura": "ura://device/test/callee",
         "nonce_base64": "AQIDBAUGBwgJCgsMDQ4PEA==",
         "causal_context": {"form": "none"},
+        "descriptor_version": "1.0.0",
         "args": {"ping": True},
     }
+
+
+def test_descriptor_version_defaults_and_overrides():
+    assert encode_invocation(make_tuple())["descriptor_version"] == "1.0.0"
+    custom = encode_invocation(make_tuple(), descriptor_version="2.3.4")
+    assert custom["descriptor_version"] == "2.3.4"
 
 
 def test_binary_arguments_use_base64_and_content_type():
@@ -154,6 +161,12 @@ def test_args_digest_is_stable_sha256():
     b = Arguments.from_json({"b": 1, "a": 2})
     assert a.digest() == b.digest()
     assert len(a.digest()) == 32
+
+
+def test_json_arguments_reject_non_finite_numbers():
+    with pytest.raises(InvalidArgument) as exc_info:
+        Arguments.from_json({"bad": float("nan")}).digest()
+    assert exc_info.value.reason == "invalid_json_payload"
 
 
 # -- response decoding ------------------------------------------------------------

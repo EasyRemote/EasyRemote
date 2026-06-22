@@ -1,33 +1,21 @@
 # 04 Function Marketplace
 
-Author: Silan Hu (silan.hu@u.nus.edu)
+## Usage Scenario
 
-## 场景
+An organization has many validated business functions, but they are scattered across services, scripts, and repositories. A platform team wants to turn them into a discoverable, reusable, governable capability marketplace.
 
-组织内函数市场（K5）：把跨团队函数能力做成可发现、可调用、可治理的目录。
+## Concrete Use Case
 
-## 文件
+The finance team owns `normalize_invoice`, the operations team owns `classify_ticket`, and the data team owns `score_customer_health`. A new project needs all three for customer risk analysis and should not copy the logic into a new codebase.
 
-- `server.py`: 网关（8082）
-- `node_finance.py`: 财务域函数节点
-- `node_ops.py`: 运维域函数节点
-- `client.py`: Human 路线调用
-- `runtime.py`: Agent 路线 runtime
-- `agent_catalog_demo.py`: MCP + A2A 目录与调用演示
+## Current Problem
 
-## 快速运行
+Function reuse often stops at "I know another team wrote that." Real use still requires copying code, opening a new API, negotiating permissions, or waiting for another team's backlog. There is no shared catalog, and the function has no clear owner, version, invocation record, or quality signal.
 
-### Human 路线
+## Intent
 
-1. `uv run python gallery/projects/04_function_marketplace/server.py`
-2. `uv run python gallery/projects/04_function_marketplace/node_finance.py`
-3. `uv run python gallery/projects/04_function_marketplace/node_ops.py`
-4. `uv run python gallery/projects/04_function_marketplace/client.py`
+This project defines a function marketplace as a marketplace of callable capabilities. It is not a snippet list. The original teams continue to own the functions, while the platform provides common discovery and governance.
 
-### Agent 路线
+## Target Outcome
 
-`uv run python gallery/projects/04_function_marketplace/agent_catalog_demo.py`
-
-## 一键命令
-
-- `cd gallery/projects/04_function_marketplace && make help`
+New projects can search existing capabilities before building new ones. The platform can attach tags, permissions, scores, audits, and version policy to capabilities. Business functions move from team-local implementation to organization-level assets.

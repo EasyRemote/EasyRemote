@@ -2,22 +2,17 @@
 
 Author: Silan Hu (silan.hu@u.nus.edu)
 
-## Language selection
+This branch keeps documentation deliberately small. Files in this directory
+must describe the current v2 host_stream implementation, not historical v1
+gateway APIs or future protocol adapters.
 
-- English: [docs/en/README.md](en/README.md)
-- 中文: [docs/zh/README.md](zh/README.md)
+## Current Documents
 
-## Fast links
+- [v2 EasyNet refactor spec](design/easyremote-v2-easynet-refactor.md)
+- [Packaging and versioning policy](development/PACKAGING_VERSIONING_POLICY.md)
+- [References and attribution notes](REFERENCES.md)
 
-- English quick start: [docs/en/user-guide/quick-start.md](en/user-guide/quick-start.md)
-- 中文快速开始: [docs/zh/user-guide/quick-start.md](zh/user-guide/quick-start.md)
-- 中文业务落地与路线分层: [docs/zh/CORE_USE_CASES_AND_ROUTES.md](zh/CORE_USE_CASES_AND_ROUTES.md)
-- Killer Apps Gallery: [gallery/README.md](../gallery/README.md)
-- Gallery Projects: [gallery/projects/README.md](../gallery/projects/README.md)
-- MCP implemented scope: [docs/ai/mcp-integration.md](ai/mcp-integration.md)
-- A2A implemented scope: [docs/ai/a2a-integration.md](ai/a2a-integration.md)
-- Packaging/versioning policy: [docs/development/PACKAGING_VERSIONING_POLICY.md](development/PACKAGING_VERSIONING_POLICY.md)
+## Runnable Entrypoints
 
-## Note
-
-This documentation separates implemented scope from roadmap scope to avoid drift between docs and code.
+- [Project README](../README.md)
+- [Examples](../examples/README.md)

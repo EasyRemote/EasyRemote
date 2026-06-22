@@ -27,6 +27,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from ._json import dumps_wire
 from .errors import InternalError, InvalidArgument
 from .receipts import InvocationState, Receipt, ReceiptChain
 
@@ -44,6 +45,13 @@ __all__ = [
 ]
 
 JSON_CONTENT_TYPE = "application/json"
+
+# Default ability descriptor version the daemon assigns to a device
+# ability at registration (EasyNet-Cli
+# `DEFAULT_ABILITY_DESCRIPTOR_VERSION`). A call binds against the
+# descriptor at this version; the daemon adopts the value when the
+# ability has not pinned a different one.
+DEFAULT_DESCRIPTOR_VERSION = "1.0.0"
 
 
 def fresh_nonce() -> bytes:
@@ -86,9 +94,9 @@ class Arguments:
     def canonical_bytes(self) -> bytes:
         if self.raw is not None:
             return self.raw
-        return json.dumps(
-            self.json_value, separators=(",", ":"), ensure_ascii=False
-        ).encode("utf-8")
+        return dumps_wire(self.json_value, what="invocation arguments").encode(
+            "utf-8"
+        )
 
     def digest(self) -> bytes:
         """SHA-256 of the canonical argument bytes (the tuple's args_digest)."""
@@ -250,8 +258,16 @@ def encode_invocation(
     metadata: Mapping[str, str] | None = None,
     caller_signature: CallerSignature | None = None,
     bidi_streams: Sequence[StreamSpec] | None = None,
+    descriptor_version: str = DEFAULT_DESCRIPTOR_VERSION,
 ) -> dict[str, Any]:
-    """Encode the seven-tuple (plus transport extras) to the FFI wire dict."""
+    """Encode the seven-tuple (plus transport extras) to the FFI wire dict.
+
+    ``descriptor_version`` is descriptor metadata the daemon binds the
+    call against — NOT an eighth tuple field. It rides as a transport
+    extra (like ``metadata``/``timeout``). The default matches the
+    device-ability descriptor version the daemon assigns at registration,
+    so an ordinary call binds without a version mismatch.
+    """
     wire: dict[str, Any] = {
         "caller_ura": tuple_.caller,
         "callee_ura": tuple_.callee,
@@ -259,6 +275,7 @@ def encode_invocation(
         "subject_ura": tuple_.subject,
         "nonce_base64": base64.b64encode(tuple_.nonce).decode("ascii"),
         "causal_context": _encode_causal(tuple_.causal),
+        "descriptor_version": descriptor_version,
     }
     if tuple_.arguments.is_json:
         wire["args"] = tuple_.arguments.json_value
@@ -356,14 +373,15 @@ class Invocation:
 
 
 def _unwrap_executor_envelope(value: Any) -> Any:
-    """Unwrap the daemon shell-executor result envelope.
+    """Unwrap standard daemon executor/registry result envelopes.
 
-    P0-verified live (daemon v0.64.8): abilities dispatched through the
-    shell executor return ``{fulfilled_by, exit_code, elapsed_ms,
-    sandboxed, result: "<stdout string>"}`` — the ability's actual
-    return value is JSON text inside ``result``. System abilities
-    (e.g. discover) return their JSON directly and pass through here
-    untouched.
+    Shell-executor abilities return ``{fulfilled_by, exit_code,
+    elapsed_ms, sandboxed, result: "<stdout string>"}``; the actual
+    value is JSON text inside ``result``. The daemon ``<self>.invoke``
+    ability returns ``{result, fulfilled_by, target, ability,
+    qualified_name, elapsed_ms}``; result-first clients should see the
+    inner ability result, not the routing envelope. System abilities
+    (e.g. discover) return their JSON directly and pass through.
     """
     if (
         isinstance(value, dict)
@@ -375,6 +393,8 @@ def _unwrap_executor_envelope(value: Any) -> Any:
             return json.loads(value["result"])
         except json.JSONDecodeError:
             return value["result"]  # plain-text stdout abilities
+    if isinstance(value, dict) and "fulfilled_by" in value and "result" in value:
+        return value["result"]
     return value
 
 

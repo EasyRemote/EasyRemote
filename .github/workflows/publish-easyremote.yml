@@ -37,6 +37,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout EasyNet-Axon SDK source
+        uses: actions/checkout@v4
+        with:
+          repository: EasyRemote/EasyNet-Axon
+          path: EasyNet-Axon
+
+      - name: Expose Axon SDK at local source path
+        run: |
+          rm -rf ../EasyNet-Axon
+          ln -s "$GITHUB_WORKSPACE/EasyNet-Axon" ../EasyNet-Axon
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -49,10 +60,13 @@ jobs:
         run: uv sync --frozen
 
       - name: Lint
-        run: uvx ruff check easyremote tests gallery examples --output-format=full
+        run: uvx ruff check easyremote tests examples --output-format=full
 
       - name: Test
         run: uv run pytest -q
+
+      - name: Validate publishable dependency metadata
+        run: uv lock --check --no-sources
 
       - name: Read package version
         id: version

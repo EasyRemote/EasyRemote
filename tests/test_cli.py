@@ -1,7 +1,5 @@
 """`easyremote doctor`: check ladder and actionable failures."""
 
-import json
-
 import pytest
 
 import easyremote.config as config
@@ -29,25 +27,6 @@ def test_empty_machine_fails_with_fix_commands(isolated_environment):
     assert "easynet start" in checks["control.json"].detail
     assert not checks["identity"].ok
     assert "easynet pair" in checks["identity"].detail
-    assert not checks["agent"].ok
-
-
-def test_registered_agent_passes(isolated_environment):
-    tmp = isolated_environment
-    (tmp / "agents.json").write_text(
-        json.dumps({"agents": {"er": {"root_path": str(tmp / "er")}}})
-    )
-    checks = by_name(run_checks())
-    assert checks["agent"].ok
-
-
-def test_namespace_flag_changes_target(isolated_environment):
-    tmp = isolated_environment
-    (tmp / "agents.json").write_text(
-        json.dumps({"agents": {"demo": {"root_path": str(tmp / "demo")}}})
-    )
-    checks = by_name(run_checks("demo"))
-    assert checks["agent"].ok
 
 
 def test_main_prints_marks_and_returns_failure_count(isolated_environment, capsys):

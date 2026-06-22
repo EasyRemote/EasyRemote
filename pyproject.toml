@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,7 @@ name = "easyremote"
 dynamic = ["version"]
 description = "Turn a local function into a globally callable capability"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "Silan Hu", email = "silan.hu@u.nus.edu" }]
 maintainers = [{ name = "Silan Hu", email = "silan.hu@u.nus.edu" }]
 keywords = [
@@ -20,7 +20,6 @@ keywords = [
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -31,9 +30,10 @@ classifiers = [
     "Typing :: Typed",
 ]
 requires-python = ">=3.10"
-# 运行时零第三方依赖：协议对象来自 easynet_axon（task #5 落地时以其
-# 真实发布名加入），传输走平台 wheel 内置的 libeasynet_cli（SPEC §4.2）。
-dependencies = []
+# 协议真相归 Axon：URA builder/parser、签名、回执验证都来自 easynet_axon
+# （发布名 easynet-run-axon）。传输走 libeasynet_cli C ABI；当前
+# 纯 Python wheel 要求用户安装 EasyNet CLI 或显式配置 EASYNET_CLI_LIB。
+dependencies = ["easynet-run-axon>=0.108"]
 
 [project.scripts]
 easyremote = "easyremote._cli:main"
@@ -58,6 +58,11 @@ dev = [
 [tool.uv]
 default-groups = ["dev"]
 
+[tool.uv.sources]
+# Dev installs resolve the Axon SDK from the sibling checkout; release
+# builds need it published (tracked with the PyPI naming open question).
+easynet-run-axon = { path = "../EasyNet-Axon/sdk/python", editable = true }
+
 [tool.setuptools.dynamic]
 version = { attr = "easyremote._version.__version__" }
 
@@ -66,7 +71,7 @@ where = ["."]
 include = ["easyremote*"]
 
 [tool.setuptools.package-data]
-easyremote = ["py.typed", "_transport/_lib/**/*"]
+easyremote = ["py.typed"]
 
 [tool.ruff]
 line-length = 88
@@ -88,4 +93,8 @@ markers = [
 
 [[tool.mypy.overrides]]
 module = "cryptography.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "easynet_axon.*"
 ignore_missing_imports = true

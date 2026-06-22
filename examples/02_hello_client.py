@@ -1,4 +1,4 @@
-"""Call a capability three ways, shallow to deep."""
+"""Call a capability through the result-first and typed-stub surfaces."""
 
 from easyremote import Client, remote
 
@@ -15,8 +15,9 @@ def ai_inference(prompt: str, max_tokens: int = 64) -> dict: ...
 
 print(ai_inference("hello again"))
 
-# L2 — the full invocation object: seven-tuple in, receipts out
-invocation = client.invoke("ai_inference", prompt="inspect me")
-print("state:", invocation.state.name)
-print("tuple.subject:", invocation.tuple.subject)
-print("result:", invocation.result())
+# L2 — inspect the seven-tuple before dispatch. EasyRemote-hosted
+# abilities register as host_stream, so dispatch them with call()/stream()
+# after inspection rather than PreparedInvocation.send() / invoke().
+prepared = client.prepare("ai_inference", prompt="inspect me")
+print("tuple.subject:", prepared.tuple.subject)
+print("result:", client.call("ai_inference", prompt="inspect me"))

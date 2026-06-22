@@ -12,34 +12,32 @@ Author: Silan Hu (silan.hu@u.nus.edu)
 
 ### Core runtime dependencies
 
-These are required for normal gateway/node/client runtime:
+The core runtime intentionally has one protocol dependency:
 
-- `grpcio`
-- `protobuf`
-- `rich`
-- `pyfiglet`
-- `psutil`
+- `easynet-run-axon>=0.108`
+
+`libeasynet_cli` is a runtime prerequisite, not a Python dependency in
+the pure facade wheel. Users either install EasyNet CLI so the dynamic
+loader can find the system library, or point `EASYNET_CLI_LIB` /
+`configure(library_path=...)` at an explicit ABI v3 library. A future
+platform wheel may bundle that library, but this repository must not
+advertise bundled native bytes until the binary-wheel pipeline actually
+ships them.
 
 ### Optional extras
 
-- `gpu`: installs `GPUtil` for GPU usage metrics collection.
-- `build`: installs `grpcio-tools` for protobuf/gRPC code generation.
-- `dev`: development toolchain and test dependencies.
-- `test`: test dependencies only.
-- `docs`: documentation toolchain.
+- `pydantic`: optional Pydantic schema support.
+- `gateway`: optional gateway compatibility dependencies.
 
 ## uv Group Policy
 
 `pyproject.toml` defines dependency groups for uv:
 
 - `dev`
-- `test`
-- `docs`
 
-Default uv groups are:
+The default uv group is:
 
 - `dev`
-- `test`
 
 So a plain `uv sync` in repository context gives a usable development + testing environment.
 
@@ -60,11 +58,13 @@ Package version is defined in:
 
 1. Update `easyremote/_version.py`.
 2. Run `uv sync`.
-3. Run `uv run pytest -q`.
-4. Verify installation paths:
+3. Run `uv lock --check --no-sources` to prove published dependency
+   metadata is installable without local sibling sources.
+4. Run `uv run pytest -q`.
+5. Verify installation paths:
    - `pip install .`
-   - `pip install .[gpu]`
-   - `pip install .[build]`
-5. Merge to `main` (or trigger `Publish easyremote to PyPI` manually).
-6. Ensure GitHub OIDC Trusted Publisher is configured on PyPI for this repository.
-7. Publish release notes.
+   - `pip install .[pydantic]`
+   - `pip install .[gateway]`
+6. Merge to `main` (or trigger `Publish easyremote to PyPI` manually).
+7. Ensure GitHub OIDC Trusted Publisher is configured on PyPI for this repository.
+8. Publish release notes.

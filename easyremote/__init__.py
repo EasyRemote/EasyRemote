@@ -9,7 +9,7 @@ implemented and tested.
 """
 
 from ._version import __version__
-from .client import BidiSession, Client, RemoteFunction, Stream, remote
+from .client import BidiSession, CallTarget, Client, RemoteFunction, Stream, remote
 from .config import configure
 from .context import Context
 from .errors import (
@@ -23,7 +23,7 @@ from .errors import (
     SchemaError,
     Unavailable,
 )
-from .gateway import Gateway, TLSConfig
+from .gateway import Gateway, Server, TLSConfig
 from .invocation import Invocation, InvocationTuple, PreparedInvocation
 from .node import ComputeNode
 from .pipeline import MissionRun, Pipeline
@@ -31,6 +31,7 @@ from .receipts import InvocationState, Receipt, ReceiptChain
 
 __all__ = [
     "BidiSession",
+    "CallTarget",
     "Cancelled",
     "Client",
     "ComputeNode",
@@ -52,6 +53,7 @@ __all__ = [
     "RemoteFunction",
     "ResourceExhausted",
     "SchemaError",
+    "Server",
     "Stream",
     "TLSConfig",
     "Unavailable",
