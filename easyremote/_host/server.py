@@ -376,6 +376,7 @@ class HostServer:
             {"terminal": {"output_hash": rolling.finish(), "frames": seq}},
         )
 
+
 def _stream_error(kind: str, reason: str, message: str) -> dict[str, Any]:
     """A single terminal `error` frame for the host_stream wire.
 

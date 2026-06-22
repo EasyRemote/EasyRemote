@@ -335,8 +335,6 @@ class ComputeNode:
             )
 
 
-
-
 def _derived_lambda_name(fn: Callable[..., Any]) -> str:
     """A stable, valid ability name for a lambda or partial."""
     code = getattr(fn, "__code__", None)
