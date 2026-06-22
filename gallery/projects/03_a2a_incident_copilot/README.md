@@ -1,27 +1,21 @@
 # 03 A2A Incident Copilot
 
-Author: Silan Hu (silan.hu@u.nus.edu)
+## Usage Scenario
 
-## 场景
+SRE and platform engineering teams want an incident copilot to help process alerts: collect evidence, call diagnostic scripts, prepare remediation suggestions, and request human approval before risky actions.
 
-恢复原先“多 Agent 协作/运维处置”教学价值，以 A2A 协议项目形式提供。
+## Concrete Use Case
 
-## 文件
+An API latency alert fires. The copilot calls a log node for error summaries, a metrics node for latency distribution, and a deployment node for recent changes. If the risk is low, it prepares a rollback recommendation. If the action writes state, it waits for the on-call engineer to approve.
 
-- `runtime.py`: 任务执行 runtime
-- `run_demo.py`: A2A 请求演示入口
+## Current Problem
 
-## 运行
+Operations knowledge is scattered across runbooks, scripts, dashboards, and personal experience. Agents can read docs and write recommendations, but calling internal scripts safely introduces permission, network, execution evidence, and multi-step state management problems.
 
-`uv run python gallery/projects/03_a2a_incident_copilot/run_demo.py`
+## Intent
 
-## 一键命令
+This project makes operations actions authorized capabilities and lets agents organize them through A2A-style task chains. Diagnosis, judgment, and remediation are no longer agent autobiography; they become executions with call boundaries and receipts.
 
-- `cd gallery/projects/03_a2a_incident_copilot && make help`
+## Target Outcome
 
-## 覆盖协议行为
-
-- `agent.capabilities`
-- `task.execute`
-- `task.send` notification
-- batch request
+The on-call engineer gets a copilot that can perform low-risk diagnosis, summarize evidence, and preserve human approval points. The system can trace the identity, input, output, and result of each step, so incident review does not depend on chat history and memory.

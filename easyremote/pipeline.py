@@ -25,6 +25,7 @@ provenance contract for EAL artifacts is a flagged P0 item.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -125,6 +126,8 @@ class Pipeline:
                 f" got {on_failure!r}",
                 reason="invalid_failure_policy",
             )
+        timeout_seconds = _timeout_seconds(timeout)
+        retries_count = _retries_count(retries)
         for name, value in args.items():
             self._validate_field(name, value)
         step = Step(
@@ -132,8 +135,8 @@ class Pipeline:
             ref=ref,
             args=dict(args),
             on=on,
-            timeout=int(timeout) if timeout is not None else None,
-            retries=retries,
+            timeout=timeout_seconds,
+            retries=retries_count,
             on_failure=on_failure,
             optional=optional,
         )
@@ -187,8 +190,16 @@ class Pipeline:
                     reason="foreign_step_output",
                 )
             return
-        if isinstance(value, (str, int, float, bool)):
+        if isinstance(value, bool | str | int):
             return
+        if isinstance(value, float):
+            if math.isfinite(value):
+                return
+            raise InvalidArgument(
+                f"argument '{name}' is non-finite ({value!r}); EAL numbers must"
+                " be finite",
+                reason="non_finite_field",
+            )
         raise InvalidArgument(
             f"argument '{name}' is {type(value).__name__} — EAL field values are"
             " scalars or step outputs; pass structured data through an ability"
@@ -261,6 +272,35 @@ def _field_value(value: Any) -> str:
         return value.render()
     if isinstance(value, bool):
         return "true" if value else "false"
-    if isinstance(value, (int, float)):
+    if isinstance(value, int):
+        return repr(value)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise InvalidArgument(
+                f"EAL number must be finite, got {value!r}",
+                reason="non_finite_field",
+            )
         return repr(value)
     return _string(value)
+
+
+def _timeout_seconds(timeout: float | None) -> int | None:
+    if timeout is None:
+        return None
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise InvalidArgument(
+            f"timeout must be a positive finite number of seconds, got {timeout!r}",
+            reason="invalid_timeout",
+        )
+    return max(1, math.ceil(timeout))
+
+
+def _retries_count(retries: int | None) -> int | None:
+    if retries is None:
+        return None
+    if retries < 0:
+        raise InvalidArgument(
+            f"retries must be non-negative, got {retries}",
+            reason="invalid_retries",
+        )
+    return retries

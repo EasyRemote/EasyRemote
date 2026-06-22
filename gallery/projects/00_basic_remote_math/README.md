@@ -1,23 +1,21 @@
 # 00 Basic Remote Math
 
-Author: Silan Hu (silan.hu@u.nus.edu)
+## Usage Scenario
 
-## 场景
+This is the smallest Demo-as-API scenario. A developer already has a local function and wants another person or system to call it remotely without building a full backend first.
 
-最小可运行项目，对应被清理前的 `basic` 测试思路。
+## Concrete Use Case
 
-## 文件
+A sales engineer writes `calculate_quote`, a local function that computes pricing from customer size, plan, and discount. The sales team needs to try it tomorrow. Ideally, the engineer registers the function and the demo client calls it directly.
 
-- `server.py`: 启动网关
-- `compute_node.py`: 注册并暴露函数
-- `client.py`: 调用远程函数
+## Current Problem
 
-## 运行步骤
+To let others try one function, teams often build a temporary HTTP API, start a service, configure ports, add authentication, and explain that the demo is not production. Early prototype feedback gets slowed down by deployment work.
 
-1. 终端 A: `uv run python gallery/projects/00_basic_remote_math/server.py`
-2. 终端 B: `uv run python gallery/projects/00_basic_remote_math/compute_node.py`
-3. 终端 C: `uv run python gallery/projects/00_basic_remote_math/client.py`
+## Intent
 
-## 一键命令
+This project states the minimum EasyRemote value: a function should not need to become a full service before it can be remotely called. The first service boundary should be registering a capability, not building a temporary backend.
 
-- `cd gallery/projects/00_basic_remote_math && make help`
+## Target Outcome
+
+The user can move from "it runs locally" to "someone else can call it" quickly. The caller gets a stable entrypoint, the provider keeps the local execution environment, and neither side takes on full deployment cost for an early demo.

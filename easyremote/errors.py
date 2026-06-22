@@ -21,6 +21,7 @@ __all__ = [
     "SchemaError",
     "Unavailable",
     "error_from_abi",
+    "error_from_wire",
 ]
 
 
@@ -141,3 +142,37 @@ def error_from_abi(code: int, message: str = "") -> RemoteError:
     """
     cls, reason = _ABI_ERRORS.get(code, (InternalError, f"unknown_abi_code_{code}"))
     return cls(message or _ABI_HINTS.get(reason, reason), reason=reason)
+
+
+# Every concrete taxonomy class keyed by its wire `KIND` string, so a
+# `{kind, reason, message}` error frame round-trips back to the right
+# exception type (a stream's terminal error, a receipt failure, …).
+# SchemaError is excluded: it subclasses ValueError (registration-time),
+# not RemoteError, so it has no wire KIND and never appears in a frame.
+_KIND_TO_CLASS: dict[str, type[RemoteError]] = {
+    cls.KIND: cls
+    for cls in (
+        Cancelled,
+        DeadlineExceeded,
+        Unavailable,
+        InvalidArgument,
+        ResourceExhausted,
+        PermissionDenied,
+        InternalError,
+    )
+}
+
+
+def error_from_wire(error: dict[str, object]) -> RemoteError:
+    """Reconstruct a :class:`RemoteError` from a wire error object.
+
+    Accepts the daemon's ``{kind, reason, message}`` shape (any field may
+    be absent). An unknown or missing ``kind`` falls back to
+    :class:`InternalError` so the failure still surfaces as one
+    vocabulary rather than being swallowed.
+    """
+    kind = str(error.get("kind") or "")
+    reason = str(error.get("reason") or "")
+    message = str(error.get("message") or "")
+    cls = _KIND_TO_CLASS.get(kind, InternalError)
+    return cls(message or reason or kind or "remote stream error", reason=reason)

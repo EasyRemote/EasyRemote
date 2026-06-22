@@ -26,13 +26,14 @@ class FakeDaemon:
 
 def make_gateway(tmp_path, tls, **kwargs):
     started = []
+    realm = kwargs.pop("realm", "acme")
 
     def starter(config):
         started.append(config)
         return FakeDaemon()
 
     gateway = Server(
-        8443, realm="acme", tls=tls, home=tmp_path, daemon_starter=starter, **kwargs
+        8443, realm=realm, tls=tls, home=tmp_path, daemon_starter=starter, **kwargs
     )
     return gateway, started
 
@@ -62,6 +63,23 @@ def test_start_writes_pinned_hub_config_and_passes_ffi_shape(tmp_path):
     assert 'listen_tcp = "0.0.0.0:8443"' in config
     assert f'tls_cert_pem = "{tls.cert_pem}"' in config
     assert f'tls_key_pem = "{tls.key_pem}"' in config
+
+
+def test_hub_config_escapes_toml_values(tmp_path):
+    cert = tmp_path / 'c"ert.pem'
+    key = tmp_path / 'k"ey.pem'
+    cert.write_text("cert")
+    key.write_text("key")
+    gateway, _ = make_gateway(
+        tmp_path, TLSConfig(cert, key), realm='ac"me'
+    )
+
+    gateway.start()
+    config = (tmp_path / "daemon-config.toml").read_text()
+
+    assert 'realm = "ac\\"me"' in config
+    assert 'tls_cert_pem = "' in config
+    assert '\\"ert.pem"' in config
 
 
 def test_existing_config_is_never_rewritten(tmp_path):

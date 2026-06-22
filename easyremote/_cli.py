@@ -1,7 +1,7 @@
 """`easyremote doctor` — diagnose the local EasyNet link (SPEC §4.2).
 
 Checks run shallow-to-deep and never mutate anything: library → ABI →
-discovery files → daemon liveness → identity → agent registration.
+discovery files → daemon liveness → identity → live transport.
 Each failure carries the exact command that fixes it; exit code is the
 number of failed checks.
 """

@@ -1,14 +1,14 @@
 """ComputeNode: device-ability packaging, deploy announcements, lifecycle."""
 
-import io
 import json
+import socket
 from collections.abc import Iterator
+from functools import partial
 
 import pytest
 
-from easyremote._host.forward import main as forward_main
 from easyremote.context import Context
-from easyremote.errors import InvalidArgument, Unavailable
+from easyremote.errors import InvalidArgument
 from easyremote.node import ComputeNode
 
 
@@ -24,16 +24,34 @@ def read_manifest(info):
     return json.loads((info.package_dir / "ability.json").read_text())
 
 
-def test_register_writes_scaffold_shaped_ability_json(node, monkeypatch):
-    monkeypatch.setenv("EASYREMOTE_FORWARDER", "python")  # deterministic command
+def host_stream_frames(socket_path, fn, args):
+    request = {"request": {"fn": fn, "args": args, "caller": "", "call_id": "t"}}
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.connect(str(socket_path))
+        connection.sendall((json.dumps(request) + "\n").encode())
+        frames = []
+        for raw in connection.makefile("r"):
+            raw = raw.strip()
+            if not raw:
+                continue
+            frames.append(json.loads(raw))
+            if "terminal" in frames[-1] or "error" in frames[-1]:
+                break
+        return frames
 
+
+def test_register_writes_scaffold_shaped_ability_json(node):
     @node.register
     def ai_inference(prompt: str, max_tokens: int = 64) -> str:
         """Generate a completion on this device."""
         return prompt
 
     manifest = read_manifest(ai_inference.info)
-    assert manifest["name"] == "er.ai_inference"
+    # Canonical shape for the daemon's install transaction: name is the
+    # verb only (AbilityManifest.name forbids dots); namespace carries
+    # `er` separately; tool_name keeps the qualified human-facing form.
+    assert manifest["name"] == "ai_inference"
+    assert manifest["namespace"] == "er"
     assert manifest["tool_name"] == "er.ai_inference"
     assert manifest["description"] == "Generate a completion on this device."
     assert manifest["category"] == "easyremote"
@@ -45,10 +63,27 @@ def test_register_writes_scaffold_shaped_ability_json(node, monkeypatch):
     assert schema["properties"]["max_tokens"]["default"] == 64
     assert manifest["output_schema"] == {"type": "string"}
 
-    command = manifest["command"]
-    assert "-m easyremote._host.forward" in command
-    assert command.endswith("er.ai_inference")
-    assert "{{" not in command  # the argv-template era is over
+    # EVERY ability — unary or generator — routes through the host_stream
+    # executor: it carries full JSON args + caller identity in the request
+    # frame (the shell executor nulls stdin and only templates argv, so it
+    # cannot pass arbitrary args). A unary function's single return value
+    # rides back as one terminal frame.
+    exec_ = manifest["exec"]
+    assert exec_["kind"] == "host_stream"
+    assert exec_["function"] == "er.ai_inference"
+    assert exec_["host_socket"].endswith("host.sock")
+    assert "command" not in manifest  # the daemon never read `command`
+
+
+def test_non_finite_defaults_are_not_written_to_ability_json(node):
+    @node.register
+    def score(value: float = float("nan")) -> float:
+        return value
+
+    text = (score.info.package_dir / "ability.json").read_text()
+    assert "NaN" not in text
+    manifest = read_manifest(score.info)
+    assert "default" not in manifest["input_schema"]["properties"]["value"]
 
 
 def test_device_ontology_naming_unpaired(node, monkeypatch):
@@ -114,23 +149,78 @@ def test_start_deploys_each_package_to_local_node(short_tmp):
         assert len(deploys) == 2  # post-start registration publishes immediately
 
 
-def test_stream_function_rejected_with_enabler_pointer(node):
+def test_start_rolls_back_host_when_deploy_fails(short_tmp):
+    def fail(_args):
+        raise RuntimeError("deploy failed")
+
+    node = ComputeNode(abilities_dir=short_tmp / "abilities", cli_runner=fail)
+
+    @node.register
+    def fn(a: int) -> int:
+        return a
+
+    with pytest.raises(RuntimeError, match="deploy failed"):
+        node.start()
+
+    assert not node.host_socket.exists()
+    assert not node._started
+
+
+def test_post_start_registration_rolls_back_when_deploy_fails(short_tmp):
+    deploys = []
+    node = ComputeNode(abilities_dir=short_tmp / "abilities", cli_runner=deploys.append)
+
+    @node.register
+    def first(a: int) -> int:
+        return a
+
+    with node:
+        def fail(_args):
+            raise RuntimeError("late deploy failed")
+
+        node._run_cli = fail
+        with pytest.raises(RuntimeError, match="late deploy failed"):
+            @node.register
+            def late(b: int) -> int:
+                return b
+
+        assert [ability.name for ability in node.abilities] == ["first"]
+        frames = host_stream_frames(node.host_socket, "er.late", {"b": 1})
+        assert frames[0]["error"]["reason"] == "not_found"
+
+
+def test_stream_function_writes_host_stream_exec(node):
+    # Generators are now supported: they register as server-stream
+    # abilities whose manifest declares the `host_stream` executor so
+    # the daemon's install transaction binds them stream-mode.
     def chunks(n: int) -> Iterator[str]:
         yield "x"
 
-    with pytest.raises(Unavailable) as exc_info:
-        node.register(chunks)
-    assert exc_info.value.reason == "stream_requires_host_attach"
-    assert "PR-1" in str(exc_info.value)
+    fn = node.register(chunks)
+    manifest = read_manifest(fn.info)
+    assert manifest["name"] == "chunks"
+    assert manifest["namespace"] == "er"
+    exec_ = manifest["exec"]
+    assert exec_["kind"] == "host_stream"
+    assert exec_["function"] == "er.chunks"
+    assert exec_["host_socket"].endswith("host.sock")
 
 
-def test_context_function_rejected_with_enabler_pointer(node):
+def test_context_function_registers_via_host_stream(node):
+    # Context-taking functions are now supported: they route through the
+    # host_stream exec (the only path that carries caller identity), so
+    # the host can build the injected Context.
     def report(ctx: Context, q: str) -> str:
         return q
 
-    with pytest.raises(Unavailable) as exc_info:
-        node.register(report)
-    assert exc_info.value.reason == "context_requires_host_attach"
+    fn = node.register(report)
+    manifest = read_manifest(fn.info)
+    assert manifest["name"] == "report"
+    assert manifest["exec"]["kind"] == "host_stream"
+    # `ctx` is the injected first param — it must NOT appear in the
+    # caller-facing input schema.
+    assert "ctx" not in manifest["input_schema"]["properties"]
+    assert list(manifest["input_schema"]["properties"]) == ["q"]
 
 
 def test_duplicate_and_invalid_names_rejected(node):
@@ -157,6 +247,15 @@ def test_registered_function_still_callable_locally(node):
     assert double(21) == 42
 
 
+def test_partial_without_name_gets_stable_generated_ability_name(node):
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    registered = node.register(partial(add, 1))
+    assert registered.name.startswith("fn_")
+    assert registered.qualified_name == f"er.{registered.name}"
+
+
 def test_gateway_param_accepted_classic_shape(tmp_path):
     # Classic FaaS shape: ComputeNode("hub:8443"). Unpaired test env →
     # no credentials to validate against, so it is simply carried.
@@ -164,7 +263,7 @@ def test_gateway_param_accepted_classic_shape(tmp_path):
     assert node.namespace == "er"
 
 
-def test_end_to_end_through_real_socket(short_tmp, capsys, monkeypatch):
+def test_end_to_end_through_real_socket(short_tmp):
     node = ComputeNode(abilities_dir=short_tmp / "abilities", cli_runner=lambda _: None)
 
     @node.register
@@ -172,8 +271,8 @@ def test_end_to_end_through_real_socket(short_tmp, capsys, monkeypatch):
         return {"hello": who, "excited": excited}
 
     with node:
-        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"who": "world"})))
-        code = forward_main([str(node.host_socket), "er.greet"])
-    out, err = capsys.readouterr()
-    assert code == 0, err
-    assert json.loads(out) == {"hello": "world", "excited": False}
+        frames = host_stream_frames(node.host_socket, "er.greet", {"who": "world"})
+
+    items = [frame["stream_item"] for frame in frames if "stream_item" in frame]
+    assert items == [{"hello": "world", "excited": False}]
+    assert frames[-1]["terminal"]["frames"] == 1

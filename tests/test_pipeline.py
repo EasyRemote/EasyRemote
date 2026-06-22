@@ -39,6 +39,30 @@ def test_on_target_and_bool_int_rendering():
     assert "n = 3" in eal
 
 
+def test_fractional_timeout_rounds_up_to_positive_seconds():
+    pipe = Pipeline("p")
+    pipe.step("er.fn", timeout=0.5)
+    assert "timeout 1" in pipe.to_eal()
+
+
+def test_invalid_timeout_and_retries_rejected():
+    pipe = Pipeline("p")
+    with pytest.raises(InvalidArgument) as exc_info:
+        pipe.step("er.fn", timeout=0)
+    assert exc_info.value.reason == "invalid_timeout"
+
+    with pytest.raises(InvalidArgument) as exc_info:
+        pipe.step("er.fn", retries=-1)
+    assert exc_info.value.reason == "invalid_retries"
+
+
+def test_non_finite_eal_number_rejected():
+    pipe = Pipeline("p")
+    with pytest.raises(InvalidArgument) as exc_info:
+        pipe.step("er.fn", x=float("nan"))
+    assert exc_info.value.reason == "non_finite_field"
+
+
 def test_alias_deduplication():
     pipe = Pipeline("p")
     first = pipe.step("er.fn", a=1)

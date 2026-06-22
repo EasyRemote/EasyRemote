@@ -1,25 +1,21 @@
 # 01 Team GPU Pool Load Balancing
 
-Author: Silan Hu (silan.hu@u.nus.edu)
+## Usage Scenario
 
-## 场景
+An AI team owns multiple GPU machines scattered across personal workstations, lab servers, or remote boxes. The team wants to organize them as a shared inference pool instead of having every person buy duplicate cloud compute.
 
-恢复原先“多节点负载均衡”教学价值，但完全对齐当前 API。
+## Concrete Use Case
 
-## 文件
+Two machines keep the same `generate_embedding` model warm. An evaluation job needs to process 100,000 texts. The client only asks for `generate_embedding`, and EasyRemote distributes calls across available GPU nodes.
 
-- `server.py`: 网关（8081）
-- `node_gpu_alpha.py`: 节点 A（暴露 `train_model`）
-- `node_gpu_beta.py`: 节点 B（暴露同名 `train_model`）
-- `client.py`: 负载均衡调用方
+## Current Problem
 
-## 运行步骤
+Team GPU sharing often depends on manual coordination: ask whose machine is free, send data to someone, SSH into a box, and copy results back. Even internal services tend to create one-off APIs, logs, and permission policies per machine.
 
-1. 终端 A: `uv run python gallery/projects/01_team_gpu_pool_load_balancing/server.py`
-2. 终端 B: `uv run python gallery/projects/01_team_gpu_pool_load_balancing/node_gpu_alpha.py`
-3. 终端 C: `uv run python gallery/projects/01_team_gpu_pool_load_balancing/node_gpu_beta.py`
-4. 终端 D: `uv run python gallery/projects/01_team_gpu_pool_load_balancing/client.py`
+## Intent
 
-## 一键命令
+This project treats GPU machines as capability hosts, not manually managed servers. The model stays on the local machine, while the remote world sees a capability name, node state, and invocation result.
 
-- `cd gallery/projects/01_team_gpu_pool_load_balancing && make help`
+## Target Outcome
+
+The team can turn idle GPUs into shared inference capacity. Callers do not need to know which machine hosts the model, providers do not give up machine control, and the platform can add routing, rate limits, auditing, and quotas.

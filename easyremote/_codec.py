@@ -1,15 +1,14 @@
-"""Argument/result fidelity codec for the warm host.
+"""Shared JSON fidelity codec for EasyRemote invocation payloads.
 
-JSON carries the wire; annotations carry the intent. Parameters are
-rehydrated to their annotated Python types — dataclasses, pydantic
-models, tuples, sets, enums, bytes, through nested containers and
-Optionals — before the function runs, and results are lowered back to
-JSON-able values symmetrically. A function written against rich types
-works unchanged across the network.
+The daemon transport is JSON, while user functions naturally use richer
+Python values. This module is the single lowering/rehydration point:
+clients lower outbound arguments to JSON-able values, and the warm host
+rehydrates inbound JSON using the registered function annotations before
+execution.
 
-Deliberate limits: unions beyond Optional are tried arm-by-arm and
-fall back to the raw value; arbitrary classes were already rejected at
-registration (SchemaError), so they cannot reach here.
+It is deliberately internal. Axon owns canonical invocation bytes and
+wire truth; this module only handles EasyRemote's Python value fidelity
+inside the JSON ``args`` field.
 """
 
 from __future__ import annotations
@@ -39,7 +38,7 @@ def rehydrate(value: Any, annotation: Any = _EMPTY) -> Any:
     args = typing.get_args(annotation)
 
     if origin in (Union, types.UnionType):
-        non_none = [a for a in args if a is not type(None)]
+        non_none = [item for item in args if item is not type(None)]
         for arm in non_none:
             try:
                 return rehydrate(value, arm)
@@ -76,14 +75,14 @@ def rehydrate(value: Any, annotation: Any = _EMPTY) -> Any:
                 }
             )
         validate = getattr(annotation, "model_validate", None)
-        if callable(validate) and isinstance(value, dict):  # pydantic v2
+        if callable(validate) and isinstance(value, dict):
             return validate(value)
 
     return value
 
 
 def to_jsonable(value: Any) -> Any:
-    """Lower a rich Python value to JSON-able form (mirror of rehydrate)."""
+    """Lower a Python value to JSON-able data without using pickle."""
     if isinstance(value, bytes):
         return base64.b64encode(value).decode("ascii")
     if isinstance(value, enum.Enum):
@@ -94,7 +93,7 @@ def to_jsonable(value: Any) -> Any:
             for field in dataclasses.fields(value)
         }
     dump = getattr(value, "model_dump", None)
-    if callable(dump):  # pydantic v2
+    if callable(dump):
         return dump(mode="json")
     if isinstance(value, (list, tuple, set, frozenset)):
         return [to_jsonable(item) for item in value]

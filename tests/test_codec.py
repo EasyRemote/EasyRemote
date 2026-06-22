@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from easyremote._host import codec
+from easyremote import _codec as codec
 from easyremote._host.server import HostedFunction
 from easyremote.errors import InvalidArgument
 from easyremote.schema import derive

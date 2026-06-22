@@ -16,7 +16,6 @@ from __future__ import annotations
 import dataclasses
 import enum
 import inspect
-import json
 import types
 import typing
 import warnings
@@ -33,14 +32,20 @@ from collections.abc import (
 from dataclasses import dataclass
 from typing import Any, Literal, Union
 
-from .errors import SchemaError
+from ._json import dumps_wire
+from .errors import InvalidArgument, SchemaError
 
-__all__ = ["DerivedSignature", "derive"]
+__all__ = ["PARAMETER_ORDER_KEY", "VAR_POSITIONAL_KEY", "DerivedSignature", "derive"]
 
 # JSON Schema extension carrying positional-call order. JSON object key
 # order is not contractual, so the explicit list is what lets a client
 # map `execute("fn", a, b)` onto named parameters.
 PARAMETER_ORDER_KEY = "x-easyremote-parameter-order"
+
+# Names the array-typed parameter that absorbs a function's `*args` tail,
+# so the warm host can re-expand it into positional arguments at call
+# time. Absent when the function declares no `*args`.
+VAR_POSITIONAL_KEY = "x-easyremote-var-positional"
 
 _SCALARS: dict[type, dict[str, Any]] = {
     str: {"type": "string"},
@@ -98,21 +103,39 @@ def derive(fn: Any, *, context_type: type | None = None) -> DerivedSignature:
     name = getattr(fn, "__name__", str(fn))
 
     parameters = list(signature.parameters.values())
-    takes_context = _takes_context(parameters, hints, context_type)
+    takes_context = _takes_context(parameters, hints, context_type, name)
     if takes_context:
         parameters = parameters[1:]
 
     properties: dict[str, dict[str, Any]] = {}
     required: list[str] = []
+    order: list[str] = []
+    var_positional: str | None = None  # the *args parameter name, if any
+    additional_properties: Any = False  # True once **kwargs is declared
     for parameter in parameters:
-        if parameter.kind in (
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        ):
-            raise SchemaError(
-                f"'{name}' declares *{parameter.name} — capabilities need explicit"
-                " parameters so callers and the daemon share one schema"
+        # `*args` becomes one array-typed parameter (the variadic tail);
+        # `**kwargs` opens the object so extra keys are accepted. Both
+        # keep a single shared schema rather than being rejected — the
+        # daemon validates the typed half and passes the rest through.
+        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+            ann = hints.get(parameter.name, parameter.annotation)
+            item = (
+                _to_schema(ann, name, parameter.name)
+                if ann is not inspect.Parameter.empty
+                else {}
             )
+            properties[parameter.name] = {"type": "array", "items": item}
+            order.append(parameter.name)
+            var_positional = parameter.name
+            continue
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            ann = hints.get(parameter.name, parameter.annotation)
+            additional_properties = (
+                _to_schema(ann, name, parameter.name)
+                if ann is not inspect.Parameter.empty
+                else True
+            )
+            continue
         annotation = hints.get(parameter.name, parameter.annotation)
         if annotation is inspect.Parameter.empty:
             warnings.warn(
@@ -129,15 +152,20 @@ def derive(fn: Any, *, context_type: type | None = None) -> DerivedSignature:
         else:
             schema = _with_default(schema, parameter.default)
         properties[parameter.name] = schema
+        order.append(parameter.name)
 
     input_schema: dict[str, Any] = {
         "type": "object",
         "properties": properties,
-        "additionalProperties": False,
-        PARAMETER_ORDER_KEY: [p.name for p in parameters],
+        "additionalProperties": additional_properties,
+        PARAMETER_ORDER_KEY: order,
     }
     if required:
         input_schema["required"] = required
+    if var_positional is not None:
+        # Mark which named parameter absorbs surplus positional args so the
+        # host can re-expand it into *args when calling the function.
+        input_schema[VAR_POSITIONAL_KEY] = var_positional
 
     is_stream = inspect.isgeneratorfunction(fn) or inspect.isasyncgenfunction(fn)
     output_schema = _output_schema(
@@ -158,8 +186,8 @@ def _with_default(schema: dict[str, Any], default: Any) -> dict[str, Any]:
     from discovery alone. Non-JSON defaults are simply not advertised.
     """
     try:
-        json.dumps(default)
-    except (TypeError, ValueError):
+        dumps_wire(default, what="schema default")
+    except InvalidArgument:
         return schema
     enriched = dict(schema)
     enriched["default"] = default
@@ -179,11 +207,32 @@ def _takes_context(
     parameters: list[inspect.Parameter],
     hints: dict[str, Any],
     context_type: type | None,
+    fn_name: str,
 ) -> bool:
+    """Whether ``fn`` takes the injected Context — which must be first.
+
+    Context is server-injected, not a caller argument, so it only makes
+    sense as the leading parameter. A Context annotation anywhere else
+    is a definition error: raise loudly rather than silently treating it
+    as a normal parameter (which would later fail with a misleading
+    "cannot become a JSON schema" error).
+    """
     if context_type is None or not parameters:
         return False
-    first = parameters[0]
-    return hints.get(first.name, first.annotation) is context_type
+    positions = [
+        index
+        for index, parameter in enumerate(parameters)
+        if hints.get(parameter.name, parameter.annotation) is context_type
+    ]
+    if not positions:
+        return False
+    if positions != [0]:
+        raise SchemaError(
+            f"'{fn_name}' annotates {context_type.__name__} on a non-first"
+            f" parameter ({', '.join(parameters[i].name for i in positions)}) —"
+            " Context is server-injected and must be the first parameter"
+        )
+    return True
 
 
 def _output_schema(

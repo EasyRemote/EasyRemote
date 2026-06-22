@@ -17,6 +17,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
 
+from .._json import dumps_wire
 from ..config import settings
 from ..errors import InternalError, Unavailable
 from .abi import Library, RawCallback, library
@@ -96,6 +97,10 @@ class _FrameQueue:
     def _on_frame(self, _user_data: object, frame_json: bytes | None) -> None:
         try:
             if frame_json is None:
+                # End-of-stream marker (C ABI contract: one final
+                # callback with a null chunk). Without acting on it a
+                # queue consumer blocks forever on the next `recv`.
+                self.finish()
                 return
             self._frames.put(_loads(frame_json.decode("utf-8"), what="frame"))
         except BaseException as exc:
@@ -236,7 +241,7 @@ class DaemonProcess:
 
 
 def _dumps(payload: dict[str, Any]) -> str:
-    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+    return dumps_wire(payload, what="daemon invocation payload")
 
 
 def _loads(text: str, *, what: str) -> dict[str, Any]:

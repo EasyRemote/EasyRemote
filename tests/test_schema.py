@@ -124,6 +124,12 @@ def test_defaults_are_not_required():
     assert sig.input_schema[PARAMETER_ORDER_KEY] == ["a", "b"]
 
 
+def test_non_finite_default_is_not_advertised():
+    def fn(a: float = float("inf")) -> None: ...
+
+    assert "default" not in props(derive(fn))["a"]
+
+
 def test_unannotated_parameter_warns_and_is_permissive():
     def fn(a): ...
 
@@ -148,11 +154,30 @@ def test_custom_class_rejected_with_three_exits():
         assert exit_marker in message
 
 
-def test_variadics_rejected():
-    def fn(*args: int) -> None: ...
+def test_var_positional_becomes_array_param():
+    def fn(*nums: int) -> None: ...
 
-    with pytest.raises(SchemaError, match="explicit"):
-        derive(fn)
+    sig = derive(fn)
+    from easyremote.schema import VAR_POSITIONAL_KEY
+
+    assert sig.input_schema["properties"]["nums"] == {
+        "type": "array",
+        "items": {"type": "integer"},
+    }
+    assert sig.input_schema[VAR_POSITIONAL_KEY] == "nums"
+    # *args is variadic, never required.
+    assert "nums" not in sig.input_schema.get("required", [])
+
+
+def test_var_keyword_opens_additional_properties():
+    def fn(base: int, **extra: str) -> None: ...
+
+    sig = derive(fn)
+    # **kwargs opens the object; its value schema is the annotation.
+    assert sig.input_schema["additionalProperties"] == {"type": "string"}
+    assert sig.input_schema["required"] == ["base"]
+    # The **kwargs parameter itself is not a named property.
+    assert "extra" not in sig.input_schema["properties"]
 
 
 def test_non_string_dict_keys_rejected():
@@ -206,6 +231,15 @@ def test_context_type_not_given_means_plain_param():
 
     with pytest.raises(SchemaError):  # Ctx is then just an opaque class
         derive(fn)
+
+
+def test_context_on_non_first_param_rejected():
+    class Ctx: ...
+
+    def fn(prompt: str, ctx: Ctx) -> str: ...
+
+    with pytest.raises(SchemaError, match="must be the first parameter"):
+        derive(fn, context_type=Ctx)
 
 
 def test_no_warning_for_fully_annotated():

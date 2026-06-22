@@ -25,7 +25,6 @@ from .errors import InternalError, Unavailable
 __all__ = [
     "LocalIdentity",
     "device_ability_ura",
-    "device_route",
     "device_ura",
     "hub_ura",
 ]
@@ -48,28 +47,6 @@ def device_ability_ura(
     return _validated(
         axon_ura.build_device_ability_ura(realm, node_id, namespace, local_name)
     )
-
-
-def device_route(ability_ura: str) -> tuple[str, str] | None:
-    """(callee device URA, wire ability name) for a device-owned ability URA.
-
-    Returns None for agent/hub-owned abilities: their hosting device is
-    not derivable from the URA alone, so multi-candidate selection
-    cannot address them — a deliberate scope limit, not an oversight.
-    """
-    try:
-        parsed = axon_ura.parse_ura(ability_ura)
-    except axon_ura.ParseError:
-        return None
-    ability = parsed.ability
-    if ability is None or not isinstance(ability.owner, axon_ura.DeviceOwner):
-        return None
-    wire = (
-        f"{ability.namespace}.{ability.local_name}"
-        if ability.namespace
-        else ability.local_name
-    )
-    return device_ura(parsed.realm, ability.owner.device_id), wire
 
 
 def _validated(candidate: str) -> str:

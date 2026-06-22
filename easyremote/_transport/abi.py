@@ -241,14 +241,22 @@ def _platform_library_name() -> str:
 
 
 def candidate_paths(explicit: Path | None) -> Iterator[Path | str]:
-    """Library resolution order (SPEC §4.2): explicit/env → wheel → system."""
+    """Library resolution order (SPEC §4.2): explicit/env -> bundled -> system.
+
+    The public pure-Python wheel does not currently ship native libraries.
+    Bundled lookup is kept as a single optional slot for platform-specific
+    wheels, but nonexistent package paths are skipped so diagnostics only
+    list locations the loader actually tried.
+    """
     if explicit is not None:
         yield explicit
         return  # an explicit path is a contract, not a hint — no fallback
     bundled_dir = (
         Path(__file__).parent / "_lib" / f"{sys.platform}-{platform.machine()}"
     )
-    yield bundled_dir / _platform_library_name()
+    bundled = bundled_dir / _platform_library_name()
+    if bundled.exists():
+        yield bundled
     found = ctypes.util.find_library("easynet_cli")
     if found:
         yield found

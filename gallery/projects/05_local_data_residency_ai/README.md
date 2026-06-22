@@ -1,31 +1,21 @@
 # 05 Local Data Residency AI
 
-Author: Silan Hu (silan.hu@u.nus.edu)
+## Usage Scenario
 
-## 场景
+Healthcare, finance, government, and industrial customers want to use AI on sensitive data, but raw data cannot leave the local data center, private network, or compliance region.
 
-本地数据不出域（K6）：原始敏感数据留在本地节点，仅输出脱敏结果和风险评分。
+## Concrete Use Case
 
-## 文件
+A hospital stores raw patient notes on an internal server. An external agent may request a sanitized summary and risk labels, but must not read the raw note. The EasyRemote node executes `summarize_patient_record` inside the hospital boundary and returns only the sanitized result.
 
-- `server.py`: 网关（8083）
-- `node_local_processor.py`: 本地合规处理节点
-- `client.py`: Human 路线调用
-- `runtime.py`: Agent 路线 runtime
-- `protocol_demo.py`: MCP + A2A 协议演示
+## Current Problem
 
-## 快速运行
+AI workflows often send data to a central model or cloud service by default. For strongly regulated organizations, that can violate data residency, audit, and authorization requirements. Fully local AI keeps data safe but makes remote orchestration and reuse difficult.
 
-### Human 路线
+## Intent
 
-1. `uv run python gallery/projects/05_local_data_residency_ai/server.py`
-2. `uv run python gallery/projects/05_local_data_residency_ai/node_local_processor.py`
-3. `uv run python gallery/projects/05_local_data_residency_ai/client.py`
+This project moves computation toward the data. EasyRemote does not require data to migrate to an external service. Instead, the local node exposes compliant processing functions as remotely callable capabilities.
 
-### Agent 路线
+## Target Outcome
 
-`uv run python gallery/projects/05_local_data_residency_ai/protocol_demo.py`
-
-## 一键命令
-
-- `cd gallery/projects/05_local_data_residency_ai && make help`
+Sensitive data remains local, and remote callers receive only allowed results. The data owner keeps the execution environment and access boundary, while agent workflows can still include local AI processing in a unified orchestration path.

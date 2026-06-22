@@ -7,7 +7,7 @@ discoverable (MCP via `easynet mcp_server`), and composable
 
 from easyremote import ComputeNode
 
-node = ComputeNode()  # namespace "er"; agent root comes from the daemon
+node = ComputeNode()  # namespace "er"; identity from the local daemon
 
 
 @node.register

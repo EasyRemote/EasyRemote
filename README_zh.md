@@ -43,8 +43,8 @@ node.serve()
 from easyremote import Client
 Client().execute("ai_inference", prompt="hello")
 
-# Agent：自动投影为 MCP tool，Claude 直接发现、直接调用
-#   claude mcp add easynet -- easynet mcp_server
+# Agent runtime：通过 EasyRemote client 调同一个能力
+#   Client().call("ai_inference", prompt="hello")
 
 # 系统：作为 Pipeline 的一步，和别人的函数编排成任务链
 from easyremote import Pipeline
@@ -63,7 +63,7 @@ Git 把分享代码的单位从项目降到一次 commit。Docker 把部署软�
 
 **而它真正不可替代的时刻，是 agent 要操作真实世界资源的那天。** agent 的能力每三个月上一个台阶，问责方式却从未变过：一次 tool call 发出去，剩下全凭它自己汇报。让它查天气无所谓；让它动数据库、下采购单、操作设备——"它做了什么"不能再是自述。签名调用 + 回执链给出的授权语义是：**这个 agent、以我的授权、在这条任务链里、可以调这个能力、动这个对象**。
 
-Ray、Modal、RunPod 把远程执行做**易**，MCP 把工具做**通**；没有人把本地能力做成**可组合、可问责**的服务单元。我们做的是它们之间缺的那一层。
+Ray、Modal、RunPod 把远程执行做**易**，工具协议让 agent 变得**可连接**；没有人把本地能力做成**可组合、可问责**的服务单元。我们做的是它们之间缺的那一层。
 
 **云计算让代码迁移到计算资源。EasyRemote 让计算资源留在原地，同时获得全球可调用性。**
 
@@ -76,7 +76,7 @@ pip install easyremote
 
 # 一次性前置（类比 ssh-keygen 的一次性成本，换来签名调用与回执链）
 easynet pair                                  # 设备配对，签发身份
-easyremote doctor                            # 逐项体检：库 / daemon / 身份 / 注册
+easyremote doctor                            # 逐项体检：库 / daemon / 身份 / transport
 ```
 
 之后就是上面的 12 行。`examples/` 有可直接运行的节点、客户端、编排三个示例。
@@ -89,13 +89,15 @@ client = Client()
 # L0 —— 结果优先
 client.execute("ai_inference", prompt="hi")
 
-# L1 —— 选点 / 流 / 超时
-client.call("ai_inference", prompt="hi", node="gpu-1", timeout=10)
+# L1 —— 选点 / 流 / 超时，不占用能力参数名
+client.call(Client.target("ai_inference", node="gpu-1", timeout=10), prompt="hi")
 
-# L2 —— 完整调用对象：七元组进，回执出
-inv = client.invoke("ai_inference", prompt="inspect me")
-inv.tuple.subject     # 七元组永远可检视
-inv.receipts()        # 回执链
+# L2 —— 发出前检视七元组
+prepared = client.prepare("ai_inference", prompt="inspect me")
+prepared.tuple.subject
+
+# send()/invoke() 保留给 daemon unary/system ability；
+# EasyRemote-hosted ability 是 host_stream，消费面用 call()/stream()。
 ```
 
 ---
@@ -105,10 +107,8 @@ inv.receipts()        # 回执链
 | # | 场景 | 适用对象 | 解决什么 |
 |---|----------|-------------|----------------|
 | K1 | **私有 AI 推理池**（团队 GPU 池） | AI 团队 / 研发组 | 团队 GPU 共享推理与负载分摊，消除重复云开销 |
-| K2 | **Agent 工具网关**（企业工具网格） | Agent 平台团队 | 统一能力目录，Claude/GPT/自研 agent 直接发现并调用企业函数 |
+| K2 | **Agent 能力后端**（企业工具网格） | Agent 平台团队 | 统一能力目录，自研 agent runtime 通过 EasyRemote 发现并调用企业函数 |
 | K6 | **数据不出域 AI** | 医疗 / 金融 / 政务 | 推理跑在数据所在设备，合规且可问责 |
-| K9 | **运行时设备能力注入** | ToC Agent 应用 / 边缘平台 | 不重启即热注册新能力（`easynet agent refresh` 路径已实测） |
-| K10 | **Claude Code 机器人指挥**（Commander Skill + MCP） | Agent 产品团队 / 机器人平台 | 在 Claude Code 安装 commander skill 后，通过 MCP 远程部署并操作 client-sandbox 机器人 |
 
 ---
 
@@ -118,12 +118,14 @@ v2 是基于 EasyNet 栈（[EasyNet-Axon](https://github.com/EasyRemote/EasyNet-
 
 | 能力 | 状态 |
 |---|---|
-| 注册 → 部署 → 调用闭环（device ability，warm 宿主） | ⏳ facade 已验证契约正确；阻塞于上游 daemon 部署→路由脱节（最小复现：`ability deploy --node local` 报 activated，但 `ability show`/invoke 返回 not-found/ROUTE_NEGATIVE） |
+| 注册 → 部署 → 调用闭环（device ability，warm 宿主） | ✅ facade 已实现，并用 host_stream 契约单测固定 |
 | 三层客户端 / `@remote` stub / async 镜像 | ✅ |
 | Pipeline → EAL → mission.run | ✅ |
 | Server（hub + 自签 TLS 引导） | ✅ |
 | `easyremote doctor` | ✅ |
-| 流式 / 服务端 Context 组合 / <50ms warm 延迟 | ⏳ 待 daemon host-attach 协议（EasyNet-Cli 侧） |
+| 流式 producer/consumer | ✅ host_stream 路径已实现；见 `examples/04_streaming_*.py` |
+| 服务端 Context 只读身份注入 | ✅ 从 host_stream envelope 注入 `ctx.caller` / `ctx.invocation_id` |
+| 服务端 Context 组合（`ctx.call` 子调用） | ⏳ 等待 parent receipt URA 路径用于因果链 |
 | 回执链密码学验证 | ⏳ 待完整回执获取路径（RFC-007/008） |
 
 ## License

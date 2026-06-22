@@ -22,16 +22,17 @@ client = Client(GATEWAY_ADDRESS)
 @remote(client=client)
 def add_numbers(a: int, b: int) -> int:
     # Local fallback body for static analysis; @remote executes remotely.
-    return a + b
+    pass
 
 
 @remote(client=client)
 def multiply_numbers(a: int, b: int) -> int:
-    return a * b
+    pass
 
 
 @remote(client=client)
-def summarize(text: str, max_words: int = 12) -> str: ...
+def summarize(text: str, max_words: int = 12) -> str:
+    pass
 
 
 @remote(client=client)

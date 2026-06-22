@@ -6,30 +6,24 @@ functions become device-owned abilities —
     easynet:///r/<realm>/ability/device.<node-id>.<namespace>.<fn>
 
 — deployed through ``easynet ability deploy --node local`` with the
-scaffold-authoritative ``ability.json`` (verified via
-``easynet ability new``). The runtime invokes the ability's ``command``
-with the args JSON on **stdin** and reads the result from **stdout**;
-our command is the :mod:`easyremote._host.forward` shim, which relays
-to the warm host where the function (and its model) stays resident.
+daemon's canonical ``ability.json`` install transaction. Every
+EasyRemote ability binds to the daemon-owned ``host_stream`` executor:
+the daemon opens the warm host socket, sends the JSON argument object
+plus read-only caller identity, and receives one or many stream frames.
+Unary functions are single-frame streams; generators are multi-frame
+streams.
 
-The stdin/stdout contract is strictly better than the agent-side
-argv-template path: optional parameters stay optional, JSON types
-arrive intact, and no required-all schema rewriting exists.
-
-Still rejected loudly — a one-shot stdin/stdout exchange cannot carry
-them (both resolved by the daemon host-attach enabler, SPEC §9 PR-1):
-
-- generator/stream functions (no frame path),
-- Context-taking functions (caller/invocation_id are not in the
-  stdin payload, and fabricating them would corrupt the receipt chain).
+This module owns packaging and local host registration only. Invocation
+admission, descriptor binding, routing, receipt production, and stream
+terminal semantics stay with ``easynet-daemon`` / Axon.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import functools
+import hashlib
 import inspect
-import json
 import re
 import subprocess
 import threading
@@ -39,8 +33,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ._host import HostServer, fastpath
+from ._host import HostServer
 from ._host.server import HostedFunction
+from ._json import dumps_wire
 from ._version import __version__
 from .context import Context
 from .errors import InvalidArgument, Unavailable
@@ -51,11 +46,6 @@ __all__ = ["AbilityInfo", "ComputeNode", "RegisteredFunction"]
 _EASYREMOTE_DIR = Path.home() / ".easynet" / "easyremote"
 
 _NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-
-_HOST_ATTACH_HINT = (
-    " — supported once the daemon external-host-attach protocol lands"
-    " (SPEC §9, Cli PR-1)"
-)
 
 
 @dataclass(frozen=True)
@@ -144,22 +134,14 @@ class ComputeNode:
             )
 
         signature = derive(fn, context_type=Context)
-        if signature.takes_context:
-            raise Unavailable(
-                f"'{getattr(fn, '__name__', fn)}' takes a Context — the device"
-                " ability stdin payload carries args only, not caller identity"
-                " or invocation ids" + _HOST_ATTACH_HINT,
-                reason="context_requires_host_attach",
-            )
-        if signature.is_stream:
-            raise Unavailable(
-                f"'{getattr(fn, '__name__', fn)}' is a generator — the device"
-                " ability exchange is one stdin/stdout round trip; frames"
-                " cannot stream" + _HOST_ATTACH_HINT,
-                reason="stream_requires_host_attach",
-            )
 
-        ability_name = name or fn.__name__
+        ability_name = name if name is not None else str(getattr(fn, "__name__", ""))
+        if name is None and not _NAME_PATTERN.match(ability_name):
+            # A lambda / partial has no public ability-safe name. Mint a
+            # stable name from its source location and bound arguments so
+            # repeated registration of the same callable is idempotent. An
+            # explicit name= always wins.
+            ability_name = _derived_lambda_name(fn)
         if not _NAME_PATTERN.match(ability_name):
             raise InvalidArgument(
                 f"ability name {ability_name!r} must match {_NAME_PATTERN.pattern}"
@@ -180,7 +162,12 @@ class ComputeNode:
             signature = dataclasses.replace(signature, input_schema=input_schema)
 
         qualified = f"{self._namespace}.{ability_name}"
+        # A Context-taking function also routes through host_stream: that
+        # is the only exec path that carries the caller identity / call_id
+        # the host needs to build the Context. (A unary Context function's
+        # single return value rides back as one terminal frame.)
         package_dir = self._write_package(
+            ability_name,
             qualified,
             description or _first_doc_line(fn) or f"{ability_name} (easyremote)",
             signature.input_schema,
@@ -194,9 +181,14 @@ class ComputeNode:
             package_dir=package_dir,
             ura=self._device_ability_ura(ability_name),
         )
-        self._abilities[ability_name] = info
-        if self._started:
-            self._deploy(info)  # post-start registration: publish immediately
+        try:
+            self._abilities[ability_name] = info
+            if self._started:
+                self._deploy(info)  # post-start registration: publish immediately
+        except BaseException:
+            self._abilities.pop(ability_name, None)
+            self._host.remove(qualified)
+            raise
         return RegisteredFunction(hosted, info)
 
     # -- lifecycle -----------------------------------------------------------
@@ -212,11 +204,18 @@ class ComputeNode:
             self.stop()
 
     def start(self) -> None:
+        if self._started:
+            return
         self._check_gateway()
         self._host.start()
+        try:
+            for info in self._abilities.values():
+                self._deploy(info)
+        except BaseException:
+            self._host.stop()
+            self._started = False
+            raise
         self._started = True
-        for info in self._abilities.values():
-            self._deploy(info)
 
     def stop(self) -> None:
         self._host.stop()
@@ -251,23 +250,29 @@ class ComputeNode:
 
     def _write_package(
         self,
+        local_name: str,
         qualified: str,
         description: str,
         input_schema: dict[str, Any],
         output_schema: dict[str, Any] | None,
     ) -> Path:
-        # Field set mirrors the `easynet ability new` scaffold. Schemas
-        # keep their true semantics: the stdin contract has no
-        # missing-template failure mode, so optionals stay optional.
+        # Canonical manifest for the daemon's `ability.deploy` install
+        # transaction. `name` is the verb only (the daemon's
+        # AbilityManifest.name forbids dots); `namespace` carries the
+        # `er` segment separately, and the daemon assembles the wire key
+        # `er.<verb>` from them. `tool_name` keeps the qualified form for
+        # human-facing surfaces. Schemas keep their true semantics: the
+        # stdin contract has no missing-template failure mode, so
+        # optionals stay optional.
         manifest: dict[str, Any] = {
             "category": "easyremote",
-            "command": fastpath.forwarder_command(self._host.socket_path, qualified),
             "description": description,
             "destructive_hint": False,
             "idempotent_hint": False,
             "input_schema": input_schema,
             "instructions": description,
-            "name": qualified,
+            "name": local_name,
+            "namespace": self._namespace,
             "open_world_hint": False,
             "prerequisites": [],
             "read_only_hint": False,
@@ -277,11 +282,23 @@ class ComputeNode:
         }
         if output_schema is not None:
             manifest["output_schema"] = output_schema
+        # EVERY ability routes through the host_stream executor: it carries
+        # full args + caller identity in the request frame (the shell
+        # executor nulls stdin and only templates argv, so it cannot pass
+        # arbitrary JSON args or the caller). A unary function emits one
+        # terminal frame; a generator emits many. One path, no exec
+        # mismatch. Field names match the daemon's AbilityExec::HostStream
+        # serde shape (internally tagged `kind`, snake_case) verbatim.
+        manifest["exec"] = {
+            "kind": "host_stream",
+            "host_socket": str(self._host.socket_path),
+            "function": qualified,
+        }
 
         package_dir = self._abilities_dir / qualified
         package_dir.mkdir(parents=True, exist_ok=True)
         (package_dir / "ability.json").write_text(
-            json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+            dumps_wire(manifest, what="ability manifest", indent=2) + "\n",
             encoding="utf-8",
         )
         return package_dir
@@ -316,6 +333,47 @@ class ComputeNode:
                 UserWarning,
                 stacklevel=3,
             )
+
+
+
+
+def _derived_lambda_name(fn: Callable[..., Any]) -> str:
+    """A stable, valid ability name for a lambda or partial."""
+    code = getattr(fn, "__code__", None)
+    if code is not None:
+        seed = f"lambda:{code.co_filename}:{code.co_firstlineno}"
+    elif isinstance(fn, functools.partial):
+        inner = getattr(fn.func, "__code__", None)
+        if inner is not None:
+            seed = (
+                f"partial:{inner.co_filename}:{inner.co_firstlineno}:"
+                f"{_stable_repr(fn.args)}:{_stable_repr(fn.keywords or {})}"
+            )
+        else:
+            seed = f"partial:{type(fn.func).__module__}.{type(fn.func).__qualname__}"
+    else:
+        seed = f"callable:{type(fn).__module__}.{type(fn).__qualname__}"
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
+    return f"fn_{digest}"
+
+
+def _stable_repr(value: Any) -> str:
+    """Stable-ish representation for callable-name seeds.
+
+    Primitive JSON-like values keep their literal representation. Other
+    objects fall back to type identity rather than memory address so names
+    do not change only because a process restarted.
+    """
+    if isinstance(value, (str, int, float, bool, type(None))):
+        return repr(value)
+    if isinstance(value, tuple):
+        return "(" + ",".join(_stable_repr(item) for item in value) + ")"
+    if isinstance(value, list):
+        return "[" + ",".join(_stable_repr(item) for item in value) + "]"
+    if isinstance(value, dict):
+        items = sorted((repr(key), _stable_repr(item)) for key, item in value.items())
+        return "{" + ",".join(f"{key}:{item}" for key, item in items) + "}"
+    return f"<{type(value).__module__}.{type(value).__qualname__}>"
 
 
 def _first_doc_line(fn: Callable[..., Any]) -> str:

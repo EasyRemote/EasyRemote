@@ -5,7 +5,7 @@ Recreates the v1 ``examples/decorator_route/compute_node.py`` demo on
 the v2 (EasyNet-native) API — same shape, richer payloads: sync math,
 an async summarizer, and a multimodal (bytes-in/bytes-out) thumbnail
 function. Functions stay warm in this process; the daemon reaches them
-through the native fast forwarder in single-digit milliseconds.
+through its host_stream executor and the warm host socket.
 """
 
 from easyremote import ComputeNode
@@ -14,8 +14,8 @@ from easyremote import ComputeNode
 class MathComputeNode:
     """Registers business functions and serves them as device abilities."""
 
-    def __init__(self, gateway_address: str | None = None) -> None:
-        self._node = ComputeNode(gateway_address)
+    def __init__(self, gateway: str | None = None) -> None:
+        self._node = ComputeNode(gateway)
         self._register_functions()
 
     def _register_functions(self) -> None:

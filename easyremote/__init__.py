@@ -9,7 +9,7 @@ implemented and tested.
 """
 
 from ._version import __version__
-from .client import BidiSession, Client, RemoteFunction, Stream, remote
+from .client import BidiSession, CallTarget, Client, RemoteFunction, Stream, remote
 from .config import configure
 from .context import Context
 from .errors import (
@@ -31,6 +31,7 @@ from .receipts import InvocationState, Receipt, ReceiptChain
 
 __all__ = [
     "BidiSession",
+    "CallTarget",
     "Cancelled",
     "Client",
     "ComputeNode",
