@@ -28,10 +28,17 @@ def test_from_wire_parses_all_fields():
     receipt = Receipt.from_wire(wire_receipt())
     assert receipt.index == 0
     assert receipt.invocation_id == "inv-1"
+    assert receipt.receipt_type == "1"
     assert receipt.state is InvocationState.ADMITTED
     assert receipt.prev_receipt_hash == bytes(32)
     assert receipt.self_hash == b"\xaa" * 32
     assert receipt.raw["self_hash_hex"] == "aa" * 32  # nothing lost
+
+
+def test_from_wire_accepts_current_string_receipt_type_and_state():
+    receipt = Receipt.from_wire(wire_receipt(receipt_type="admitted", state="admitted"))
+    assert receipt.receipt_type == "admitted"
+    assert receipt.state is InvocationState.ADMITTED
 
 
 def test_unknown_state_degrades_to_unspecified_not_crash():

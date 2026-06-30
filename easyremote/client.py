@@ -12,8 +12,9 @@ Addressing: the caller is this device (pairing identity); the callee
 defaults to the local daemon's device URA, which owns routing — one
 ``_address()`` seam encodes that assumption so the P0 link
 verification adjusts exactly one place if the dispatch contract says
-otherwise. Ability URAs from `discover` are used verbatim, never
-reconstructed.
+otherwise. Ability URAs from `discover` are projected into explicit
+tuple fields with Axon's URA parser; daemon route policy still lives
+behind libeasynet_cli.
 
 Per-call timeouts are client-side only (the C ABI unary invoke is a
 blocking call with no wire-level timeout field): the caller's wait is
@@ -29,16 +30,26 @@ import contextlib
 import functools
 import inspect
 import queue
-import random
 import threading
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 from . import _codec
+from ._addressing import (
+    PICK_POLICIES,
+    AbilityAddressResolver,
+    ResolvedAbility,
+    is_ability_ura,
+)
 from ._transport import BidiChannel, FrameStream, Transport
-from .errors import DeadlineExceeded, InvalidArgument, Unavailable, error_from_wire
-from .identity import LocalIdentity, device_ura
+from .errors import (
+    DeadlineExceeded,
+    InvalidArgument,
+    Unavailable,
+    error_from_wire,
+)
+from .identity import LocalIdentity
 from .invocation import (
     JSON_CONTENT_TYPE,
     Arguments,
@@ -61,8 +72,6 @@ __all__ = [
     "Stream",
     "remote",
 ]
-
-_PICK_POLICIES = frozenset({"round_robin", "random"})
 
 
 @dataclass(frozen=True)
@@ -88,23 +97,6 @@ class FunctionInfo:
             visibility=str(candidate.get("visibility", "")),
             score=float(candidate.get("score", 0.0)),
         )
-
-
-@dataclass(frozen=True)
-class _ResolvedAbility:
-    """One concrete invocation target plus the schema that belongs to it.
-
-    Schemas are only safe to apply after owner selection. Two devices can
-    expose the same verb with different parameter order/defaults, so a
-    bare verb cache is only used when discovery proved it unambiguous.
-    """
-
-    callee: str
-    ability: str
-    input_schema: dict[str, Any] | None = None
-    ability_ura: str | None = None
-    subject: str | None = None
-    argument_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -137,9 +129,9 @@ class CallTarget:
                 "target cannot specify both node and pick",
                 reason="ambiguous_target_selection",
             )
-        if self.pick is not None and self.pick not in _PICK_POLICIES:
+        if self.pick is not None and self.pick not in PICK_POLICIES:
             raise InvalidArgument(
-                f"pick must be one of {sorted(_PICK_POLICIES)}, got {self.pick!r}"
+                f"pick must be one of {sorted(PICK_POLICIES)}, got {self.pick!r}"
                 " (resource_aware needs daemon-side load metrics — Cli PR-3)",
                 reason="invalid_pick_policy",
             )
@@ -229,12 +221,9 @@ class Stream:
             and not frame.get("payload_base64")
         ):
             return _NO_VALUE
-        if (
-            "payload_json" in frame
-            and (
-                frame.get("payload_json") is not None
-                or frame.get("content_type") == JSON_CONTENT_TYPE
-            )
+        if "payload_json" in frame and (
+            frame.get("payload_json") is not None
+            or frame.get("content_type") == JSON_CONTENT_TYPE
         ):
             return frame["payload_json"]
         encoded = frame.get("payload_base64")
@@ -274,16 +263,6 @@ def _stream_error_payload(value: Any) -> dict[str, Any] | None:
     ):
         return value["error"]
     return None
-
-
-def _is_ability_ura(value: str) -> bool:
-    """True when `value` should be handed to the daemon as an Ability URA.
-
-    This deliberately only recognises the scheme. Python must not parse
-    owner/callee/ability facts out of the URA; the CLI/Axon
-    AbilitySelector boundary is the canonical parser.
-    """
-    return value.strip().startswith("easynet://")
 
 
 class BidiSession:
@@ -331,6 +310,7 @@ class Client:
         self._gateway_checked = False
         self._timeout = timeout
         self._namespace = namespace
+        self._addressing = AbilityAddressResolver(namespace)
         self._transport_override = transport
         self._identity_override = identity
         self._lock = threading.Lock()
@@ -345,9 +325,7 @@ class Client:
 
     # -- L0 ------------------------------------------------------------------
 
-    def execute(
-        self, function: str | CallTarget, /, *args: Any, **kwargs: Any
-    ) -> Any:
+    def execute(self, function: str | CallTarget, /, *args: Any, **kwargs: Any) -> Any:
         return self.call(function, *args, **kwargs)
 
     # -- L1 ------------------------------------------------------------------
@@ -378,13 +356,6 @@ class Client:
     ) -> Stream:
         target = self._target(function)
         prepared = self.prepare(target, *args, **kwargs)
-        if self._uses_ability_ura_dispatch(prepared):
-            raise Unavailable(
-                "streaming by canonical Ability URA needs a CLI/Axon"
-                " ability_ura stream surface; Python facade will not parse"
-                " the URA or synthesize callee/ability",
-                reason="ability_ura_stream_surface_missing",
-            )
         return self._open_stream(prepared, timeout=target.timeout)
 
     def _open_stream(
@@ -401,7 +372,7 @@ class Client:
             prepared.tuple.ability.endswith(".invoke")
             and isinstance(args, dict)
             and isinstance(args.get("ability_ura"), str)
-        )
+        ) or is_ability_ura(prepared.tuple.subject)
 
     def session(
         self,
@@ -412,13 +383,6 @@ class Client:
         **kwargs: Any,
     ) -> BidiSession:
         target = self._target(function)
-        if _is_ability_ura(target.function):
-            raise Unavailable(
-                "bidi sessions by canonical Ability URA need a CLI/Axon"
-                " ability_ura bidi surface; Python facade will not parse"
-                " the URA or synthesize callee/ability",
-                reason="ability_ura_bidi_surface_missing",
-            )
         prepared = self.prepare(target, **kwargs)
         wire = encode_invocation(
             prepared.tuple,
@@ -507,16 +471,14 @@ class Client:
 
     def functions(self, query: str = "", scope: str = "device") -> list[FunctionInfo]:
         """Discoverable capabilities, via the daemon's `discover` ability."""
-        response = self.invoke(
-            f"{self._namespace}.discover", scope=scope, query=query
-        ).result()
+        response = self.invoke("discover", scope=scope, query=query).result()
         candidates = (response or {}).get("candidates", [])
         infos = [FunctionInfo.from_candidate(c) for c in candidates]
         self._candidates.clear()
         self._schemas.clear()
         self._schemas_by_ura.clear()
         for info in infos:
-            if info.name:
+            if info.name and info.qualified_name:
                 self._candidates.setdefault(info.name, []).append(info)
             if info.qualified_name and info.input_schema:
                 self._schemas_by_ura[info.qualified_name] = info.input_schema
@@ -578,8 +540,8 @@ class Client:
         wire = encode_invocation(prepared.tuple, metadata=prepared.metadata)
         budget = timeout if timeout is not None else self._timeout
         transport = self._connected()
-        result: queue.Queue[tuple[bool, dict[str, Any] | BaseException]] = (
-            queue.Queue(maxsize=1)
+        result: queue.Queue[tuple[bool, dict[str, Any] | BaseException]] = queue.Queue(
+            maxsize=1
         )
         timed_out = threading.Event()
 
@@ -640,90 +602,27 @@ class Client:
 
     def _address(
         self, function: str, node: str | None, pick: str | None = None
-    ) -> _ResolvedAbility:
+    ) -> ResolvedAbility:
         """(callee URA, qualified ability name) for a function reference.
 
         Short names get this client's namespace; dotted names pass
-        through. Canonical Ability URAs are never parsed here: they are
-        wrapped for the daemon's ``<self>.invoke`` ability, whose CLI
-        boundary owns AbilitySelector parsing and routing.
+        through. Canonical Ability URAs are projected through the Axon URA
+        parser into explicit Invocation tuple fields; daemon route policy
+        still lives behind libeasynet_cli.
         """
-        identity = self._who()
-        if _is_ability_ura(function):
-            if node is not None or pick is not None:
-                raise InvalidArgument(
-                    "a canonical Ability URA already names the callable;"
-                    " do not combine it with node or pick",
-                    reason="target_override_for_ability_ura",
-                )
-            return _ResolvedAbility(
-                callee=identity.device_ura,
-                ability=f"{self._namespace}.invoke",
-                input_schema=self._schemas_by_ura.get(function),
-                ability_ura=function,
-                subject=function,
-                argument_label=function,
-            )
-        ability = function if "." in function else f"{self._namespace}.{function}"
-        verb = ability.rsplit(".", 1)[-1]
-        if node is not None:
-            callee = device_ura(identity.realm, node)
-            return _ResolvedAbility(
-                callee=callee,
-                ability=ability,
-                input_schema=self._schemas.get(verb),
-                argument_label=ability,
-            )
-        if pick is not None:
-            selected = self._pick(verb, pick)
-            if selected is not None:
-                return selected
-        route = (identity.device_ura, ability)
-        return _ResolvedAbility(
-            callee=route[0],
-            ability=route[1],
-            input_schema=self._schemas.get(verb),
-            argument_label=ability,
+        return self._addressing.resolve(
+            function,
+            identity=self._who(),
+            node=node,
+            pick=pick,
+            schemas=self._schemas,
+            schemas_by_ura=self._schemas_by_ura,
+            candidates=self._candidates,
+            round_robin=self._round_robin,
         )
 
-    def _pick(self, verb: str, policy: str) -> _ResolvedAbility | None:
-        """Select among discovered Ability URA candidates for ``verb``.
-
-        The client chooses only a discovered Ability URA. It never
-        derives callee/ability from that URA; ``<self>.invoke`` hands
-        it to the daemon/CLI AbilitySelector boundary. With no usable
-        candidates the default local addressing applies; call
-        functions() first to populate the candidate cache.
-        """
-        if policy not in _PICK_POLICIES:
-            raise InvalidArgument(
-                f"pick must be one of {sorted(_PICK_POLICIES)}, got {policy!r}"
-                " (resource_aware needs daemon-side load metrics — Cli PR-3)",
-                reason="invalid_pick_policy",
-            )
-        candidates = [
-            _ResolvedAbility(
-                callee=self._who().device_ura,
-                ability=f"{self._namespace}.invoke",
-                input_schema=info.input_schema
-                or self._schemas_by_ura.get(info.qualified_name),
-                ability_ura=info.qualified_name,
-                subject=info.qualified_name,
-                argument_label=info.qualified_name,
-            )
-            for info in self._candidates.get(verb, [])
-            if info.qualified_name
-        ]
-        if not candidates:
-            return None
-        if policy == "random":
-            return random.choice(candidates)
-        index = self._round_robin.get(verb, 0)
-        self._round_robin[verb] = index + 1
-        return candidates[index % len(candidates)]
-
     def _named_arguments(
-        self, target: _ResolvedAbility, args: tuple[Any, ...], kwargs: dict[str, Any]
+        self, target: ResolvedAbility, args: tuple[Any, ...], kwargs: dict[str, Any]
     ) -> dict[str, Any]:
         """Map positionals onto names and fill advertised defaults."""
         schema = target.input_schema
@@ -778,8 +677,6 @@ class Client:
             for name, prop in schema.get("properties", {}).items():
                 if name not in payload and "default" in prop:
                     payload[name] = prop["default"]
-        if target.ability_ura is not None:
-            payload = {"ability_ura": target.ability_ura, "args": payload}
         return cast("dict[str, Any]", _codec.to_jsonable(payload))
 
     @staticmethod

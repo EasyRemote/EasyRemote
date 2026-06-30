@@ -30,10 +30,10 @@ NONCE = bytes(range(1, 17))  # base64: AQIDBAUGBwgJCgsMDQ4PEA==
 
 def make_tuple(**overrides):
     defaults = dict(
-        caller="ura://device/test/caller",
-        callee="ura://device/test/callee",
+        caller="easynet:///r/test/device/caller",
+        callee="easynet:///r/test/device/callee",
         ability="observe.health",
-        subject="ura://device/test/callee",
+        subject="easynet:///r/test/device/callee",
         nonce=NONCE,
         causal=None,
         arguments=Arguments.from_json({"ping": True}),
@@ -48,10 +48,13 @@ def make_tuple(**overrides):
 def test_encode_matches_ffi_golden_fixture():
     wire = encode_invocation(make_tuple())
     assert wire == {
-        "caller_ura": "ura://device/test/caller",
-        "callee_ura": "ura://device/test/callee",
+        "caller_ura": "easynet:///r/test/device/caller",
+        "callee_ura": "easynet:///r/test/device/callee",
         "ability": "observe.health",
-        "subject_ura": "ura://device/test/callee",
+        "descriptor_ref": (
+            "easynet:///r/test/ability/device.callee.observe.health@1.0.0"
+        ),
+        "subject_ura": "easynet:///r/test/device/callee",
         "nonce_base64": "AQIDBAUGBwgJCgsMDQ4PEA==",
         "causal_context": {"form": "none"},
         "descriptor_version": "1.0.0",
@@ -63,6 +66,18 @@ def test_descriptor_version_defaults_and_overrides():
     assert encode_invocation(make_tuple())["descriptor_version"] == "1.0.0"
     custom = encode_invocation(make_tuple(), descriptor_version="2.3.4")
     assert custom["descriptor_version"] == "2.3.4"
+    assert (
+        custom["descriptor_ref"]
+        == "easynet:///r/test/ability/device.callee.observe.health@2.3.4"
+    )
+
+
+def test_explicit_descriptor_ref_sets_descriptor_version():
+    descriptor_ref = "easynet:///r/test/ability/device.callee.observe.health@2.3.4"
+    wire = encode_invocation(make_tuple(ability=descriptor_ref))
+    assert wire["ability"] == descriptor_ref
+    assert wire["descriptor_ref"] == descriptor_ref
+    assert wire["descriptor_version"] == "2.3.4"
 
 
 def test_binary_arguments_use_base64_and_content_type():
@@ -264,12 +279,14 @@ def test_prepared_invocation_inspect_then_send():
         return Invocation(prepared.tuple, ok_response())
 
     prepared = PreparedInvocation(tuple=make_tuple(), dispatcher=dispatcher)
-    adjusted = prepared.with_subject("ura://device/test/other").with_causal(
+    adjusted = prepared.with_subject("easynet:///r/test/device/other").with_causal(
         CausalRef(receipt_hash=b"\xee" * 32, receipt_ura="easynet:///r/r")
     )
 
-    assert prepared.tuple.subject == "ura://device/test/callee"  # original untouched
-    assert adjusted.tuple.subject == "ura://device/test/other"
+    assert (
+        prepared.tuple.subject == "easynet:///r/test/device/callee"
+    )  # original untouched
+    assert adjusted.tuple.subject == "easynet:///r/test/device/other"
     assert isinstance(adjusted.tuple.causal, CausalRef)
 
     invocation = adjusted.send()

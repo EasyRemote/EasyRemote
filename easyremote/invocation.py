@@ -5,6 +5,9 @@ inspectable (design invariant 2), never hidden inside a string. The
 wire encoding targets the libeasynet_cli invocation JSON exactly as
 parsed by ``EasyNet-Cli/src/ffi/invocation.rs::InvocationJson::parse``:
 
+- ``descriptor_ref``: ``<owner ability URA>@<descriptor version>``;
+  derived from ``callee`` + ``ability`` + ``descriptor_version`` when the
+  tuple carries a bare route name
 - ``nonce_base64``: 16 bytes, standard base64, never all-zero
 - ``causal_context``: ``{"form": none|scalar|list|merkle, ...}`` with
   hex-encoded 32-byte hashes
@@ -26,6 +29,10 @@ import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
+
+from easynet_axon import ura as axon_ura
+from easynet_axon.invocation.axiom import canonical_ability_descriptor_ref
+from easynet_axon.invocation.error import AxonError
 
 from ._json import dumps_wire
 from .errors import InternalError, InvalidArgument
@@ -94,9 +101,7 @@ class Arguments:
     def canonical_bytes(self) -> bytes:
         if self.raw is not None:
             return self.raw
-        return dumps_wire(self.json_value, what="invocation arguments").encode(
-            "utf-8"
-        )
+        return dumps_wire(self.json_value, what="invocation arguments").encode("utf-8")
 
     def digest(self) -> bytes:
         """SHA-256 of the canonical argument bytes (the tuple's args_digest)."""
@@ -263,19 +268,23 @@ def encode_invocation(
     """Encode the seven-tuple (plus transport extras) to the FFI wire dict.
 
     ``descriptor_version`` is descriptor metadata the daemon binds the
-    call against — NOT an eighth tuple field. It rides as a transport
-    extra (like ``metadata``/``timeout``). The default matches the
-    device-ability descriptor version the daemon assigns at registration,
-    so an ordinary call binds without a version mismatch.
+    call against — NOT an eighth tuple field. Current CLI/Axon surfaces
+    require the descriptor-bound ``descriptor_ref``; this codec derives
+    it while preserving the inspectable tuple route name in ``ability``
+    for local fakes and diagnostics.
     """
+    descriptor_ref, resolved_descriptor_version = _descriptor_ref_for_wire(
+        tuple_, descriptor_version
+    )
     wire: dict[str, Any] = {
         "caller_ura": tuple_.caller,
         "callee_ura": tuple_.callee,
         "ability": tuple_.ability,
+        "descriptor_ref": descriptor_ref,
         "subject_ura": tuple_.subject,
         "nonce_base64": base64.b64encode(tuple_.nonce).decode("ascii"),
         "causal_context": _encode_causal(tuple_.causal),
-        "descriptor_version": descriptor_version,
+        "descriptor_version": resolved_descriptor_version,
     }
     if tuple_.arguments.is_json:
         wire["args"] = tuple_.arguments.json_value
@@ -291,6 +300,41 @@ def encode_invocation(
     if bidi_streams:
         wire["bidi_streams"] = [stream.to_wire() for stream in bidi_streams]
     return wire
+
+
+def _descriptor_ref_for_wire(
+    tuple_: InvocationTuple, descriptor_version: str
+) -> tuple[str, str]:
+    version = descriptor_version.strip()
+    if not version:
+        raise InvalidArgument(
+            "descriptor_version must not be empty",
+            reason="empty_descriptor_version",
+        )
+
+    ability = tuple_.ability.strip()
+    try:
+        descriptor_ref = canonical_ability_descriptor_ref(ability)
+    except AxonError:
+        ability_ura = axon_ura.owner_ability_ura(tuple_.callee, ability)
+        if ability_ura is None:
+            raise InvalidArgument(
+                "cannot derive descriptor_ref from callee/ability:"
+                f" callee={tuple_.callee!r}, ability={ability!r}",
+                reason="descriptor_ref_derivation_failed",
+            ) from None
+        descriptor_ref = f"{ability_ura}@{version}"
+
+    try:
+        canonical_ref = canonical_ability_descriptor_ref(descriptor_ref)
+    except AxonError as exc:
+        raise InvalidArgument(
+            f"descriptor_ref is rejected by Axon: {exc}",
+            reason="invalid_descriptor_ref",
+        ) from exc
+
+    _, resolved_version = canonical_ref.rsplit("@", 1)
+    return canonical_ref, resolved_version
 
 
 class Invocation:

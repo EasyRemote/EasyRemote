@@ -10,9 +10,9 @@ consequences, kept honest here:
   :meth:`Receipt.verify` says so explicitly until the full-receipt fetch
   path lands (flagged SPEC §6 gap, resolved by P0).
 
-``receipt_type`` stays a raw int: its enum numbering has not been
-verified against the proto source, and inventing it would corrupt
-every consumer downstream.
+``receipt_type`` stays a raw string label, matching Axon's canonical
+receipt body. Older integer summaries are accepted and stringified so
+callers do not lose the daemon's original ``raw`` value.
 """
 
 from __future__ import annotations
@@ -57,6 +57,18 @@ _TERMINAL_STATES = frozenset(
     }
 )
 
+_STATE_NAMES = {
+    "unspecified": InvocationState.UNSPECIFIED,
+    "accepted": InvocationState.ACCEPTED,
+    "admitted": InvocationState.ADMITTED,
+    "dispatched": InvocationState.DISPATCHED,
+    "running": InvocationState.RUNNING,
+    "completed": InvocationState.COMPLETED,
+    "failed": InvocationState.FAILED,
+    "timed_out": InvocationState.TIMED_OUT,
+    "cancelled": InvocationState.CANCELLED,
+}
+
 
 @dataclass(frozen=True)
 class Receipt:
@@ -68,7 +80,7 @@ class Receipt:
 
     index: int
     invocation_id: str
-    receipt_type: int
+    receipt_type: str
     state: InvocationState
     timestamp_unix_ms: int
     prev_receipt_hash: bytes
@@ -85,7 +97,7 @@ class Receipt:
             return cls(
                 index=int(wire["index"]),
                 invocation_id=str(wire["invocation_id"]),
-                receipt_type=int(wire["receipt_type"]),
+                receipt_type=str(wire["receipt_type"]),
                 state=_parse_state(wire["state"]),
                 timestamp_unix_ms=int(wire["timestamp_unix_ms"]),
                 prev_receipt_hash=bytes.fromhex(wire["prev_receipt_hash_hex"]),
@@ -151,9 +163,13 @@ class ReceiptChain(Sequence[Receipt]):
 
 
 def _parse_state(value: Any) -> InvocationState:
+    if isinstance(value, str):
+        parsed = _STATE_NAMES.get(value.strip().lower())
+        if parsed is not None:
+            return parsed
     try:
         return InvocationState(int(value))
-    except ValueError:
+    except (ValueError, TypeError):
         # A state this package doesn't know yet must not crash receipt
         # parsing — preserve it as UNSPECIFIED; `raw` keeps the number.
         return InvocationState.UNSPECIFIED

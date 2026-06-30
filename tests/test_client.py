@@ -136,6 +136,17 @@ class FakeTransport:
         self.closed = True
 
 
+class RouteNegativeTransport(FakeTransport):
+    def invoke(self, wire):
+        self.invocations.append(wire)
+        raise InternalError(
+            "easynet_invocation_invoke: daemon returned gRPC status for"
+            f" {wire['descriptor_ref']}: code=FailedPrecondition,"
+            " message=ROUTE_NEGATIVE: namespace.resolve negative",
+            reason="protocol",
+        )
+
+
 def make_client(**kwargs):
     transport = FakeTransport(**kwargs)
     client = Client(transport=transport, identity=IDENTITY)
@@ -158,6 +169,10 @@ def test_execute_addresses_local_device_with_namespaced_ability():
     assert wire["callee_ura"] == DEVICE_URA
     assert wire["subject_ura"] == DEVICE_URA  # default subject = callee
     assert wire["ability"] == "er.ai_inference"
+    assert (
+        wire["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.dev-a.er.ai_inference@1.0.0"
+    )
     assert wire["args"] == {"prompt": "hi"}
     assert wire["causal_context"] == {"form": "none"}
     assert "caller_signature" not in wire  # local-fast admission
@@ -168,10 +183,14 @@ def test_dotted_names_pass_through_and_node_targets_device():
     client.call(Client.target("team.fetch_sales", node="gpu-1"), quarter="Q2")
     wire = transport.invocations[0]
     assert wire["ability"] == "team.fetch_sales"
+    assert (
+        wire["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.gpu-1.team.fetch_sales@1.0.0"
+    )
     assert wire["callee_ura"] == "easynet:///r/acme/device/gpu-1"
 
 
-def test_ability_ura_is_handed_to_daemon_invoke_without_python_route_derivation():
+def test_ability_ura_projects_to_explicit_invocation_tuple():
     ability_ura = "easynet:///r/acme/ability/device.gpu-1.team.fetch_sales"
     client, transport = make_client(
         responses=[
@@ -191,13 +210,14 @@ def test_ability_ura_is_handed_to_daemon_invoke_without_python_route_derivation(
 
     assert result == {"rows": 3}
     wire = transport.invocations[0]
-    assert wire["callee_ura"] == DEVICE_URA
+    assert wire["callee_ura"] == "easynet:///r/acme/device/gpu-1"
     assert wire["subject_ura"] == ability_ura
-    assert wire["ability"] == "er.invoke"
-    assert wire["args"] == {
-        "ability_ura": ability_ura,
-        "args": {"quarter": "Q2"},
-    }
+    assert wire["ability"] == "team.fetch_sales"
+    assert (
+        wire["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.gpu-1.team.fetch_sales@1.0.0"
+    )
+    assert wire["args"] == {"quarter": "Q2"}
 
 
 def test_agent_owned_ability_ura_uses_same_daemon_invoke_path():
@@ -209,11 +229,59 @@ def test_agent_owned_ability_ura_uses_same_daemon_invoke_path():
     )
 
     assert client.call(ability_ura, city="Singapore") == "sunny"
-    assert transport.invocations[0]["ability"] == "er.invoke"
-    assert transport.invocations[0]["args"] == {
-        "ability_ura": ability_ura,
-        "args": {"city": "Singapore"},
-    }
+    assert (
+        transport.invocations[0]["callee_ura"]
+        == "easynet:///r/acme/agent/user-1.claude"
+    )
+    assert transport.invocations[0]["ability"] == "weather"
+    assert transport.invocations[0]["args"] == {"city": "Singapore"}
+
+
+def test_owner_ura_namespace_projects_short_function_to_ability_ura():
+    owner_ura = "easynet:///r/acme/agent/dev.caesura"
+    transport = FakeTransport(responses=[ok_response("ok")])
+    client = Client(namespace=owner_ura, transport=transport, identity=IDENTITY)
+
+    assert client.call("discover", query="") == "ok"
+
+    wire = transport.invocations[0]
+    assert wire["callee_ura"] == owner_ura
+    assert wire["subject_ura"] == "easynet:///r/acme/ability/dev.caesura.discover"
+    assert wire["ability"] == "discover"
+    assert (
+        wire["descriptor_ref"] == "easynet:///r/acme/ability/dev.caesura.discover@1.0.0"
+    )
+    assert wire["args"] == {"query": ""}
+
+
+def test_dotted_namespace_does_not_read_local_agent_registry(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    state = home / ".easynet"
+    state.mkdir(parents=True)
+    (state / "local-agents.json").write_text(
+        json.dumps(
+            {
+                "hosted_agents": [
+                    {
+                        "name": "caesura",
+                        "agent_ura": "easynet:///r/acme/agent/dev.caesura",
+                    }
+                ]
+            }
+        )
+    )
+    monkeypatch.setenv("HOME", str(home))
+    client, transport = make_client()
+
+    client.invoke("caesura.discover", scope="self", query="")
+
+    wire = transport.invocations[0]
+    assert wire["callee_ura"] == DEVICE_URA
+    assert wire["ability"] == "caesura.discover"
+    assert (
+        wire["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.dev-a.caesura.discover@1.0.0"
+    )
 
 
 def test_ability_ura_cannot_be_combined_with_python_targeting():
@@ -228,11 +296,48 @@ def test_ability_ura_cannot_be_combined_with_python_targeting():
     assert exc_info.value.reason == "target_override_for_ability_ura"
 
 
-def test_ability_ura_stream_rejects_until_cli_exposes_stream_surface():
-    client, _ = make_client()
-    with pytest.raises(Unavailable) as exc_info:
-        client.stream("easynet:///r/acme/ability/user-1.claude.weather")
-    assert exc_info.value.reason == "ability_ura_stream_surface_missing"
+def test_route_negative_surfaces_without_cli_subprocess_retry():
+    transport = RouteNegativeTransport()
+    client = Client(transport=transport, identity=IDENTITY)
+
+    with pytest.raises(InternalError) as exc_info:
+        client.invoke("observe.health")
+
+    assert exc_info.value.reason == "protocol"
+    assert len(transport.invocations) == 1
+
+
+def test_ability_ura_stream_uses_descriptor_bound_stream_surface():
+    ability_ura = "easynet:///r/acme/ability/user-1.claude.weather"
+    client, transport = make_client(responses=[ok_response("sunny")])
+
+    assert list(client.stream(ability_ura, city="Singapore")) == ["sunny"]
+    wire = transport.invocations[0]
+    assert wire["callee_ura"] == "easynet:///r/acme/agent/user-1.claude"
+    assert wire["subject_ura"] == ability_ura
+    assert wire["ability"] == "weather"
+    assert (
+        wire["descriptor_ref"]
+        == "easynet:///r/acme/ability/user-1.claude.weather@1.0.0"
+    )
+
+
+def test_ability_ura_bidi_uses_descriptor_bound_bidi_surface():
+    ability_ura = "easynet:///r/acme/ability/user-1.claude.terminal"
+    client, transport = make_client()
+
+    session = client.session(ability_ura, command="bash")
+
+    assert transport.bidi_channel is not None
+    session.close()
+    wire = transport.invocations[0]
+    assert wire["callee_ura"] == "easynet:///r/acme/agent/user-1.claude"
+    assert wire["subject_ura"] == ability_ura
+    assert wire["ability"] == "terminal"
+    assert (
+        wire["descriptor_ref"]
+        == "easynet:///r/acme/ability/user-1.claude.terminal@1.0.0"
+    )
 
 
 # -- argument mapping ------------------------------------------------------------
@@ -278,6 +383,42 @@ def test_discovery_enables_positionals_and_fills_defaults():
 
     client.execute("fn", 41)  # positional now mappable; default filled
     assert transport.invocations[1]["args"] == {"a": 41, "b": 7}
+
+
+def test_functions_with_owner_ura_namespace_discovers_canonical_owner():
+    owner_ura = "easynet:///r/acme/agent/dev.caesura"
+    transport = FakeTransport(
+        responses=[
+            ok_response(
+                {
+                    "candidates": [
+                        {
+                            "ability": "fn",
+                            "qualified_name": "easynet:///r/acme/ability/dev.caesura.fn",
+                            "owner": "caesura",
+                            "description": "",
+                            "input_schema": {},
+                            "visibility": "device",
+                            "score": 1.0,
+                        }
+                    ]
+                }
+            )
+        ],
+    )
+    client = Client(namespace=owner_ura, transport=transport, identity=IDENTITY)
+
+    infos = client.functions(scope="self")
+
+    assert infos[0].qualified_name == "easynet:///r/acme/ability/dev.caesura.fn"
+    wire = transport.invocations[0]
+    assert wire["callee_ura"] == owner_ura
+    assert wire["ability"] == "discover"
+    assert wire["subject_ura"] == "easynet:///r/acme/ability/dev.caesura.discover"
+    assert (
+        wire["descriptor_ref"] == "easynet:///r/acme/ability/dev.caesura.discover@1.0.0"
+    )
+    assert wire["args"] == {"scope": "self", "query": ""}
 
 
 def test_duplicate_positional_and_keyword_rejected():
@@ -503,13 +644,13 @@ def test_round_robin_alternates_device_candidates():
 
     client.execute(Client.target("fn", pick="round_robin"))
     client.execute(Client.target("fn", pick="round_robin"))
-    selected = [w["args"]["ability_ura"] for w in transport.invocations[1:]]
+    selected = [w["subject_ura"] for w in transport.invocations[1:]]
     assert selected == [
         "easynet:///r/acme/ability/device.dev-a.er.fn",
         "easynet:///r/acme/ability/device.dev-b.er.fn",
     ]
     assert transport.invocations[1]["callee_ura"] == DEVICE_URA
-    assert transport.invocations[1]["ability"] == "er.invoke"
+    assert transport.invocations[1]["ability"] == "er.fn"
 
 
 def test_pick_random_chooses_a_known_candidate():
@@ -519,7 +660,7 @@ def test_pick_random_chooses_a_known_candidate():
     client, transport = make_client(responses=[discover])
     client.functions()
     client.execute(Client.target("fn", pick="random"))
-    assert transport.invocations[1]["args"]["ability_ura"] in (
+    assert transport.invocations[1]["subject_ura"] in (
         "easynet:///r/acme/ability/device.dev-a.er.fn",
         "easynet:///r/acme/ability/device.dev-b.er.fn",
     )
@@ -554,8 +695,8 @@ def test_pick_uses_selected_candidate_schema_for_positionals():
     client.execute(Client.target("fn", pick="round_robin"), 11)
     client.execute(Client.target("fn", pick="round_robin"), 22)
 
-    assert transport.invocations[1]["args"]["args"] == {"x": 11}
-    assert transport.invocations[2]["args"]["args"] == {"y": 22}
+    assert transport.invocations[1]["args"] == {"x": 11}
+    assert transport.invocations[2]["args"] == {"y": 22}
 
 
 def test_discovery_does_not_cache_schema_when_candidate_omits_schema():
@@ -589,7 +730,7 @@ def test_pick_without_candidates_falls_back_to_local():
     assert transport.invocations[0]["callee_ura"] == DEVICE_URA
 
 
-def test_agent_owned_candidates_are_pickable_without_python_ura_parsing():
+def test_agent_owned_candidates_are_pickable_from_canonical_ura():
     agent_candidate = {
         "ability": "fn",
         "qualified_name": "easynet:///r/acme/ability/user-1.claude.fn",
@@ -604,11 +745,12 @@ def test_agent_owned_candidates_are_pickable_without_python_ura_parsing():
     )
     client.functions()
     client.execute(Client.target("fn", pick="round_robin"))
-    assert transport.invocations[1]["ability"] == "er.invoke"
     assert (
-        transport.invocations[1]["args"]["ability_ura"]
-        == agent_candidate["qualified_name"]
+        transport.invocations[1]["callee_ura"]
+        == "easynet:///r/acme/agent/user-1.claude"
     )
+    assert transport.invocations[1]["ability"] == "fn"
+    assert transport.invocations[1]["subject_ura"] == agent_candidate["qualified_name"]
 
 
 def test_invalid_pick_policy_rejected():
