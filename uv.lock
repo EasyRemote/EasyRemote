@@ -173,7 +173,7 @@ wheels = [
 
 [[package]]
 name = "easynet-run-axon"
-version = "0.129.22"
+version = "0.129.23"
 source = { editable = "../EasyNet-Axon/sdk/python" }
 dependencies = [
     { name = "cryptography" },

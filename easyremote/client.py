@@ -318,10 +318,6 @@ class Client:
         self._transport: Transport | None = None
         self._retired_transports: set[Transport] = set()
         self._identity: LocalIdentity | None = None
-        self._schemas: dict[str, dict[str, Any]] = {}  # unambiguous verb → schema
-        self._schemas_by_ura: dict[str, dict[str, Any]] = {}
-        self._candidates: dict[str, list[FunctionInfo]] = {}  # verb → discover hits
-        self._round_robin: dict[str, int] = {}
 
     # -- L0 ------------------------------------------------------------------
 
@@ -474,22 +470,7 @@ class Client:
         response = self.invoke("discover", scope=scope, query=query).result()
         candidates = (response or {}).get("candidates", [])
         infos = [FunctionInfo.from_candidate(c) for c in candidates]
-        self._candidates.clear()
-        self._schemas.clear()
-        self._schemas_by_ura.clear()
-        for info in infos:
-            if info.name and info.qualified_name:
-                self._candidates.setdefault(info.name, []).append(info)
-            if info.qualified_name and info.input_schema:
-                self._schemas_by_ura[info.qualified_name] = info.input_schema
-        for verb, group in self._candidates.items():
-            schemas = [info.input_schema for info in group]
-            if (
-                schemas
-                and all(schema for schema in schemas)
-                and all(schema == schemas[0] for schema in schemas)
-            ):
-                self._schemas[verb] = schemas[0]
+        self._addressing.cache.replace(infos)
         return infos
 
     # -- async mirror -------------------------------------------------------------
@@ -615,10 +596,6 @@ class Client:
             identity=self._who(),
             node=node,
             pick=pick,
-            schemas=self._schemas,
-            schemas_by_ura=self._schemas_by_ura,
-            candidates=self._candidates,
-            round_robin=self._round_robin,
         )
 
     def _named_arguments(

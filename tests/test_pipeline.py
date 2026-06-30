@@ -122,7 +122,10 @@ def test_run_submits_source_to_mission_run():
 
     run = pipe.run()
     wire = transport.invocations[0]
-    assert wire["ability"] == "mission.run"
+    assert (
+        wire["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.dev-a.mission.run@1.0.0"
+    )
     assert wire["args"]["label"] == "nightly"
     assert 'mission "nightly"' in wire["args"]["source"]
     assert run.run_id == "run-1"
@@ -142,9 +145,15 @@ def test_track_and_cancel_use_run_id():
 
     assert run.track() == {"state": "running"}
     run.cancel()
-    assert transport.invocations[1]["ability"] == "mission.track"
+    assert (
+        transport.invocations[1]["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.dev-a.mission.track@1.0.0"
+    )
     assert transport.invocations[1]["args"] == {"run_id": "run-9"}
-    assert transport.invocations[2]["ability"] == "mission.cancel"
+    assert (
+        transport.invocations[2]["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.dev-a.mission.cancel@1.0.0"
+    )
 
 
 def test_mission_run_exposes_response_fields():

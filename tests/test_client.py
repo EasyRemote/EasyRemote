@@ -168,7 +168,6 @@ def test_execute_addresses_local_device_with_namespaced_ability():
     assert wire["caller_ura"] == DEVICE_URA
     assert wire["callee_ura"] == DEVICE_URA
     assert wire["subject_ura"] == DEVICE_URA  # default subject = callee
-    assert wire["ability"] == "er.ai_inference"
     assert (
         wire["descriptor_ref"]
         == "easynet:///r/acme/ability/device.dev-a.er.ai_inference@1.0.0"
@@ -182,7 +181,6 @@ def test_dotted_names_pass_through_and_node_targets_device():
     client, transport = make_client()
     client.call(Client.target("team.fetch_sales", node="gpu-1"), quarter="Q2")
     wire = transport.invocations[0]
-    assert wire["ability"] == "team.fetch_sales"
     assert (
         wire["descriptor_ref"]
         == "easynet:///r/acme/ability/device.gpu-1.team.fetch_sales@1.0.0"
@@ -212,7 +210,6 @@ def test_ability_ura_projects_to_explicit_invocation_tuple():
     wire = transport.invocations[0]
     assert wire["callee_ura"] == "easynet:///r/acme/device/gpu-1"
     assert wire["subject_ura"] == ability_ura
-    assert wire["ability"] == "team.fetch_sales"
     assert (
         wire["descriptor_ref"]
         == "easynet:///r/acme/ability/device.gpu-1.team.fetch_sales@1.0.0"
@@ -233,7 +230,10 @@ def test_agent_owned_ability_ura_uses_same_daemon_invoke_path():
         transport.invocations[0]["callee_ura"]
         == "easynet:///r/acme/agent/user-1.claude"
     )
-    assert transport.invocations[0]["ability"] == "weather"
+    assert (
+        transport.invocations[0]["descriptor_ref"]
+        == "easynet:///r/acme/ability/user-1.claude.weather@1.0.0"
+    )
     assert transport.invocations[0]["args"] == {"city": "Singapore"}
 
 
@@ -247,7 +247,6 @@ def test_owner_ura_namespace_projects_short_function_to_ability_ura():
     wire = transport.invocations[0]
     assert wire["callee_ura"] == owner_ura
     assert wire["subject_ura"] == "easynet:///r/acme/ability/dev.caesura.discover"
-    assert wire["ability"] == "discover"
     assert (
         wire["descriptor_ref"] == "easynet:///r/acme/ability/dev.caesura.discover@1.0.0"
     )
@@ -277,7 +276,6 @@ def test_dotted_namespace_does_not_read_local_agent_registry(monkeypatch, tmp_pa
 
     wire = transport.invocations[0]
     assert wire["callee_ura"] == DEVICE_URA
-    assert wire["ability"] == "caesura.discover"
     assert (
         wire["descriptor_ref"]
         == "easynet:///r/acme/ability/device.dev-a.caesura.discover@1.0.0"
@@ -315,7 +313,6 @@ def test_ability_ura_stream_uses_descriptor_bound_stream_surface():
     wire = transport.invocations[0]
     assert wire["callee_ura"] == "easynet:///r/acme/agent/user-1.claude"
     assert wire["subject_ura"] == ability_ura
-    assert wire["ability"] == "weather"
     assert (
         wire["descriptor_ref"]
         == "easynet:///r/acme/ability/user-1.claude.weather@1.0.0"
@@ -333,7 +330,6 @@ def test_ability_ura_bidi_uses_descriptor_bound_bidi_surface():
     wire = transport.invocations[0]
     assert wire["callee_ura"] == "easynet:///r/acme/agent/user-1.claude"
     assert wire["subject_ura"] == ability_ura
-    assert wire["ability"] == "terminal"
     assert (
         wire["descriptor_ref"]
         == "easynet:///r/acme/ability/user-1.claude.terminal@1.0.0"
@@ -378,7 +374,10 @@ def test_discovery_enables_positionals_and_fills_defaults():
 
     infos = client.functions()
     assert infos[0].qualified_name == "easynet:///r/acme/ability/user.er.fn"
-    assert transport.invocations[0]["ability"] == "er.discover"
+    assert (
+        transport.invocations[0]["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.dev-a.er.discover@1.0.0"
+    )
     assert transport.invocations[0]["args"] == {"scope": "device", "query": ""}
 
     client.execute("fn", 41)  # positional now mappable; default filled
@@ -413,7 +412,6 @@ def test_functions_with_owner_ura_namespace_discovers_canonical_owner():
     assert infos[0].qualified_name == "easynet:///r/acme/ability/dev.caesura.fn"
     wire = transport.invocations[0]
     assert wire["callee_ura"] == owner_ura
-    assert wire["ability"] == "discover"
     assert wire["subject_ura"] == "easynet:///r/acme/ability/dev.caesura.discover"
     assert (
         wire["descriptor_ref"] == "easynet:///r/acme/ability/dev.caesura.discover@1.0.0"
@@ -449,17 +447,28 @@ def test_duplicate_positional_and_keyword_rejected():
         client.execute("fn", 1, a=2)
 
 
+def _seed_verb_schema(client, verb, schema):
+    """Populate the discovery cache with one device-owned verb schema."""
+    client._addressing.cache.replace(
+        [FunctionInfo.from_candidate(candidate(verb, "dev-a", schema))]
+    )
+
+
 def test_discovery_maps_surplus_positionals_to_varargs():
     client, transport = make_client()
-    client._schemas["fn"] = {
-        "type": "object",
-        "properties": {
-            "base": {"type": "integer"},
-            "nums": {"type": "array", "items": {"type": "integer"}},
+    _seed_verb_schema(
+        client,
+        "fn",
+        {
+            "type": "object",
+            "properties": {
+                "base": {"type": "integer"},
+                "nums": {"type": "array", "items": {"type": "integer"}},
+            },
+            PARAMETER_ORDER_KEY: ["base", "nums"],
+            VAR_POSITIONAL_KEY: "nums",
         },
-        PARAMETER_ORDER_KEY: ["base", "nums"],
-        VAR_POSITIONAL_KEY: "nums",
-    }
+    )
 
     client.execute("fn", 10, 1, 2, 3)
 
@@ -468,12 +477,16 @@ def test_discovery_maps_surplus_positionals_to_varargs():
 
 def test_discovery_rejects_varargs_duplicate():
     client, _ = make_client()
-    client._schemas["fn"] = {
-        "type": "object",
-        "properties": {"nums": {"type": "array"}},
-        PARAMETER_ORDER_KEY: ["nums"],
-        VAR_POSITIONAL_KEY: "nums",
-    }
+    _seed_verb_schema(
+        client,
+        "fn",
+        {
+            "type": "object",
+            "properties": {"nums": {"type": "array"}},
+            PARAMETER_ORDER_KEY: ["nums"],
+            VAR_POSITIONAL_KEY: "nums",
+        },
+    )
 
     with pytest.raises(InvalidArgument, match="positionally and by keyword"):
         client.execute("fn", 1, 2, nums=[3])
@@ -565,7 +578,10 @@ def test_remote_stub_binds_positionals_and_defaults_locally():
     assert isinstance(ai_inference, RemoteFunction)
     ai_inference("hello")
     wire = transport.invocations[0]
-    assert wire["ability"] == "er.ai_inference"
+    assert (
+        wire["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.dev-a.er.ai_inference@1.0.0"
+    )
     assert wire["args"] == {"prompt": "hello", "max_tokens": 64}
 
 
@@ -577,7 +593,10 @@ def test_remote_stub_decorator_options():
 
     fn(5)
     wire = transport.invocations[0]
-    assert wire["ability"] == "er.custom"
+    assert (
+        wire["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.gpu-1.er.custom@1.0.0"
+    )
     assert wire["callee_ura"].endswith("/device/gpu-1")
 
 
@@ -650,7 +669,10 @@ def test_round_robin_alternates_device_candidates():
         "easynet:///r/acme/ability/device.dev-b.er.fn",
     ]
     assert transport.invocations[1]["callee_ura"] == DEVICE_URA
-    assert transport.invocations[1]["ability"] == "er.fn"
+    assert (
+        transport.invocations[1]["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.dev-a.er.fn@1.0.0"
+    )
 
 
 def test_pick_random_chooses_a_known_candidate():
@@ -749,7 +771,10 @@ def test_agent_owned_candidates_are_pickable_from_canonical_ura():
         transport.invocations[1]["callee_ura"]
         == "easynet:///r/acme/agent/user-1.claude"
     )
-    assert transport.invocations[1]["ability"] == "fn"
+    assert (
+        transport.invocations[1]["descriptor_ref"]
+        == "easynet:///r/acme/ability/user-1.claude.fn@1.0.0"
+    )
     assert transport.invocations[1]["subject_ura"] == agent_candidate["qualified_name"]
 
 
@@ -770,7 +795,10 @@ def test_aio_mirror_executes_same_dispatch():
     client, transport = make_client()
     result = asyncio.run(client.aio.execute("fn", x=1))
     assert result == {"echo": True}
-    assert transport.invocations[0]["ability"] == "er.fn"
+    assert (
+        transport.invocations[0]["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.dev-a.er.fn@1.0.0"
+    )
 
 
 def test_aio_mirror_exposes_prepare_stream_and_session():
@@ -784,10 +812,16 @@ def test_aio_mirror_exposes_prepare_stream_and_session():
 
     stream = asyncio.run(client.aio.stream("fn", x=2))
     assert list(stream) == [{"echo": True}]
-    assert transport.invocations[0]["ability"] == "er.fn"
+    assert (
+        transport.invocations[0]["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.dev-a.er.fn@1.0.0"
+    )
 
     session = asyncio.run(client.aio.session("fn", x=3))
-    assert transport.invocations[1]["ability"] == "er.fn"
+    assert (
+        transport.invocations[1]["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.dev-a.er.fn@1.0.0"
+    )
     assert transport.invocations[1]["bidi_streams"][0]["stream_id"] == 0
     session.send({"payload": "hi"})
     assert transport.bidi_channel.sent == [{"payload": "hi"}]

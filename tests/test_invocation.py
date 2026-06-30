@@ -46,38 +46,39 @@ def make_tuple(**overrides):
 
 
 def test_encode_matches_ffi_golden_fixture():
+    # The golden shape is exactly what `InvocationJson::parse` reads: the
+    # ability identity rides only on `descriptor_ref`. No bare `ability`
+    # or `descriptor_version` field — the daemon would discard them.
     wire = encode_invocation(make_tuple())
     assert wire == {
         "caller_ura": "easynet:///r/test/device/caller",
         "callee_ura": "easynet:///r/test/device/callee",
-        "ability": "observe.health",
         "descriptor_ref": (
             "easynet:///r/test/ability/device.callee.observe.health@1.0.0"
         ),
         "subject_ura": "easynet:///r/test/device/callee",
         "nonce_base64": "AQIDBAUGBwgJCgsMDQ4PEA==",
         "causal_context": {"form": "none"},
-        "descriptor_version": "1.0.0",
         "args": {"ping": True},
     }
 
 
-def test_descriptor_version_defaults_and_overrides():
-    assert encode_invocation(make_tuple())["descriptor_version"] == "1.0.0"
+def test_descriptor_version_binds_into_descriptor_ref():
+    assert (
+        encode_invocation(make_tuple())["descriptor_ref"]
+        == "easynet:///r/test/ability/device.callee.observe.health@1.0.0"
+    )
     custom = encode_invocation(make_tuple(), descriptor_version="2.3.4")
-    assert custom["descriptor_version"] == "2.3.4"
     assert (
         custom["descriptor_ref"]
         == "easynet:///r/test/ability/device.callee.observe.health@2.3.4"
     )
 
 
-def test_explicit_descriptor_ref_sets_descriptor_version():
+def test_explicit_descriptor_ref_passes_through_with_its_pinned_version():
     descriptor_ref = "easynet:///r/test/ability/device.callee.observe.health@2.3.4"
     wire = encode_invocation(make_tuple(ability=descriptor_ref))
-    assert wire["ability"] == descriptor_ref
     assert wire["descriptor_ref"] == descriptor_ref
-    assert wire["descriptor_version"] == "2.3.4"
 
 
 def test_binary_arguments_use_base64_and_content_type():

@@ -267,24 +267,22 @@ def encode_invocation(
 ) -> dict[str, Any]:
     """Encode the seven-tuple (plus transport extras) to the FFI wire dict.
 
-    ``descriptor_version`` is descriptor metadata the daemon binds the
-    call against — NOT an eighth tuple field. Current CLI/Axon surfaces
-    require the descriptor-bound ``descriptor_ref``; this codec derives
-    it while preserving the inspectable tuple route name in ``ability``
-    for local fakes and diagnostics.
+    The seven-tuple's ability identity reaches the daemon only as the
+    descriptor-bound ``descriptor_ref`` (``<owner ability URA>@<version>``);
+    ``InvocationJson::parse`` reads neither a bare ``ability`` field nor a
+    separate ``descriptor_version``, so this codec emits neither.
+    ``descriptor_version`` is the version this codec binds into the ref —
+    NOT an eighth tuple field. The inspectable route name stays on the
+    in-memory ``InvocationTuple.ability`` for diagnostics.
     """
-    descriptor_ref, resolved_descriptor_version = _descriptor_ref_for_wire(
-        tuple_, descriptor_version
-    )
+    descriptor_ref = _descriptor_ref_for_wire(tuple_, descriptor_version)
     wire: dict[str, Any] = {
         "caller_ura": tuple_.caller,
         "callee_ura": tuple_.callee,
-        "ability": tuple_.ability,
         "descriptor_ref": descriptor_ref,
         "subject_ura": tuple_.subject,
         "nonce_base64": base64.b64encode(tuple_.nonce).decode("ascii"),
         "causal_context": _encode_causal(tuple_.causal),
-        "descriptor_version": resolved_descriptor_version,
     }
     if tuple_.arguments.is_json:
         wire["args"] = tuple_.arguments.json_value
@@ -304,7 +302,16 @@ def encode_invocation(
 
 def _descriptor_ref_for_wire(
     tuple_: InvocationTuple, descriptor_version: str
-) -> tuple[str, str]:
+) -> str:
+    """Derive the canonical ``descriptor_ref`` the daemon binds against.
+
+    A tuple route name (``observe.health``) is projected onto the
+    callee-owned Ability URA at ``descriptor_version``; an ability that
+    already carries an explicit descriptor ref passes through with its
+    own pinned version. The daemon independently re-derives the owner
+    from this ref and rejects it unless it matches ``callee`` — so the
+    facade never reasons about owner/callee agreement itself.
+    """
     version = descriptor_version.strip()
     if not version:
         raise InvalidArgument(
@@ -326,15 +333,12 @@ def _descriptor_ref_for_wire(
         descriptor_ref = f"{ability_ura}@{version}"
 
     try:
-        canonical_ref = canonical_ability_descriptor_ref(descriptor_ref)
+        return str(canonical_ability_descriptor_ref(descriptor_ref))
     except AxonError as exc:
         raise InvalidArgument(
             f"descriptor_ref is rejected by Axon: {exc}",
             reason="invalid_descriptor_ref",
         ) from exc
-
-    _, resolved_version = canonical_ref.rsplit("@", 1)
-    return canonical_ref, resolved_version
 
 
 class Invocation:
