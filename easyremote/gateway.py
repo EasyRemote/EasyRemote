@@ -26,16 +26,22 @@ import socket
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from . import _toml
-from ._transport import DaemonProcess
+from .daemon import DaemonHandle, DaemonStartConfig
 from .errors import InvalidArgument, Unavailable
 
 __all__ = ["Gateway", "Server", "TLSConfig"]
 
 _EASYNET_DIR = Path.home() / ".easynet"
+
+
+class _GatewayState(Enum):
+    IDLE = "idle"
+    RUNNING = "running"
 
 
 @dataclass(frozen=True)
@@ -68,7 +74,7 @@ class Server:
         realm: str = "localhost",
         tls: TLSConfig | Literal["self-signed", "acme"] = "self-signed",
         home: Path | None = None,
-        daemon_starter: Callable[[dict[str, Any]], DaemonProcess] | None = None,
+        daemon_starter: Callable[[DaemonStartConfig], DaemonHandle] | None = None,
     ) -> None:
         # DaemonMode::Both exists daemon-side, but the FFI start config
         # only accepts "device" | "hub" (ffi/daemon.rs:52) — so this
@@ -90,28 +96,33 @@ class Server:
         self._realm = realm.strip() or "localhost"
         self._tls = tls
         self._home = home or _EASYNET_DIR
-        self._daemon_starter = daemon_starter or DaemonProcess.start
-        self._daemon: DaemonProcess | None = None
+        self._daemon_starter = daemon_starter or DaemonHandle.start
+        self._daemon: DaemonHandle | None = None
         self._tls_config: TLSConfig | None = None
+        self._state = _GatewayState.IDLE
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
 
     # -- lifecycle ----------------------------------------------------------
 
     def start(self, block: bool = False) -> None:
-        self._tls_config = self._resolve_tls()
-        self._ensure_hub_config(self._tls_config)
-        self._daemon = self._daemon_starter({"mode": "hub", "realm": self._realm})
+        self._start_once()
         if block:
             try:
-                threading.Event().wait()
+                self._stop_event.wait()
             except KeyboardInterrupt:
                 pass
             finally:
                 self.stop()
 
     def stop(self) -> None:
-        if self._daemon is not None:
-            self._daemon.stop()
+        with self._lock:
+            daemon = self._daemon
             self._daemon = None
+            self._state = _GatewayState.IDLE
+            self._stop_event.set()
+        if daemon is not None:
+            daemon.stop()
 
     def __enter__(self) -> Server:
         self.start()
@@ -162,6 +173,18 @@ class Server:
         if not (cert.exists() and key.exists()):
             _generate_self_signed(cert, key)
         return TLSConfig(cert_pem=cert, key_pem=key)
+
+    def _start_once(self) -> None:
+        with self._lock:
+            if self._state is _GatewayState.RUNNING:
+                return
+            self._stop_event.clear()
+            tls = self._resolve_tls()
+            self._ensure_hub_config(tls)
+            daemon = self._daemon_starter(DaemonStartConfig.hub(self._realm))
+            self._tls_config = tls
+            self._daemon = daemon
+            self._state = _GatewayState.RUNNING
 
     def _ensure_hub_config(self, tls: TLSConfig) -> None:
         """Mirror of ``daemon_config.rs::ensure_hub_config``: create the

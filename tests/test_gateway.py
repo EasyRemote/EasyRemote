@@ -1,6 +1,8 @@
 """Gateway: config materialization, TLS resolution, operator surface."""
 
 import importlib.util
+import threading
+import time
 
 import pytest
 
@@ -55,7 +57,9 @@ def test_start_writes_pinned_hub_config_and_passes_ffi_shape(tmp_path):
     gateway, started = make_gateway(tmp_path, tls)
     gateway.start()
 
-    assert started == [{"mode": "hub", "realm": "acme"}]  # ffi/daemon.rs:52 shape
+    assert [config.to_wire() for config in started] == [
+        {"mode": "hub", "realm": "acme"}
+    ]  # ffi/daemon.rs:52 shape
 
     config = (tmp_path / "daemon-config.toml").read_text()
     assert 'mode = "hub"' in config
@@ -96,6 +100,29 @@ def test_stop_stops_daemon(tmp_path):
     daemon = gateway._daemon
     gateway.stop()
     assert daemon.stopped
+
+
+def test_start_is_idempotent_while_running(tmp_path):
+    gateway, started = make_gateway(tmp_path, write_fake_pem(tmp_path))
+    gateway.start()
+    first = gateway._daemon
+    gateway.start()
+    assert gateway._daemon is first
+    assert len(started) == 1
+
+
+def test_stop_releases_blocking_start(tmp_path):
+    gateway, _ = make_gateway(tmp_path, write_fake_pem(tmp_path))
+    worker = threading.Thread(target=lambda: gateway.start(block=True), daemon=True)
+
+    worker.start()
+    deadline = time.perf_counter() + 1.0
+    while gateway._daemon is None and time.perf_counter() < deadline:
+        time.sleep(0.01)
+
+    gateway.stop()
+    worker.join(timeout=1.0)
+    assert not worker.is_alive()
 
 
 def test_fingerprint_is_sha256_of_der(tmp_path):

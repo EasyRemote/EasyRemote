@@ -8,14 +8,17 @@ number of failed checks.
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
 from . import config
 from ._transport import abi
 from .errors import RemoteError
+from .gateway import Gateway, TLSConfig
 
 __all__ = ["main"]
 
@@ -84,10 +87,21 @@ def run_checks() -> list[Check]:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if argv[:1] != ["doctor"]:
-        print("usage: easyremote doctor", file=sys.stderr)
-        return 2
+    parser = _parser()
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        return int(exc.code) if isinstance(exc.code, int) else 2
 
+    if args.command == "doctor":
+        return _run_doctor()
+    if args.command == "hub":
+        return _run_hub(args)
+    parser.print_usage(sys.stderr)
+    return 2
+
+
+def _run_doctor() -> int:
     checks = run_checks()
     width = max(len(check.name) for check in checks)
     for check in checks:
@@ -96,6 +110,61 @@ def main(argv: list[str] | None = None) -> int:
     failed = sum(1 for check in checks if not check.ok)
     print(f"\n{len(checks) - failed}/{len(checks)} checks passed")
     return failed
+
+
+def _run_hub(args: argparse.Namespace) -> int:
+    if bool(args.cert_pem) != bool(args.key_pem):
+        print(
+            "easyremote hub: --cert-pem and --key-pem must be provided together",
+            file=sys.stderr,
+        )
+        return 2
+    tls = _tls_from_args(args)
+    gateway = Gateway(port=args.port, realm=args.realm, tls=tls)
+    gateway.start(block=False)
+    print(f"hub endpoint: {gateway.endpoint}")
+    print(f"tls fingerprint: {gateway.fingerprint}")
+    print(gateway.pairing_guidance)
+    if args.no_block:
+        return 0
+    try:
+        import threading
+
+        threading.Event().wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        gateway.stop()
+    return 0
+
+
+def _tls_from_args(args: argparse.Namespace) -> TLSConfig | Literal["self-signed"]:
+    cert = args.cert_pem
+    key = args.key_pem
+    if cert and key:
+        return TLSConfig(cert_pem=Path(cert), key_pem=Path(key))
+    return "self-signed"
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="easyremote")
+    subcommands = parser.add_subparsers(dest="command", required=True)
+
+    subcommands.add_parser("doctor", help="diagnose the local EasyNet link")
+
+    hub = subcommands.add_parser(
+        "hub", help="start this machine as an EasyNet hub daemon"
+    )
+    hub.add_argument("--port", type=int, default=8443)
+    hub.add_argument("--realm", default="localhost")
+    hub.add_argument("--cert-pem")
+    hub.add_argument("--key-pem")
+    hub.add_argument(
+        "--no-block",
+        action="store_true",
+        help="start the hub and return immediately",
+    )
+    return parser
 
 
 if __name__ == "__main__":
