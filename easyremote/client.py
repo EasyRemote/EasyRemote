@@ -34,7 +34,7 @@ import threading
 import weakref
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from easynet_axon import ura as axon_ura
 
@@ -76,6 +76,9 @@ __all__ = [
     "Stream",
     "remote",
 ]
+
+if TYPE_CHECKING:
+    from .control import AbilityControl, AgentControl
 
 
 @dataclass(frozen=True)
@@ -527,6 +530,20 @@ class Client:
     @property
     def aio(self) -> AsyncClient:
         return AsyncClient(self)
+
+    @property
+    def abilities(self) -> AbilityControl:
+        """Daemon ability install/catalogue operations for this client."""
+        from .control import AbilityControl
+
+        return AbilityControl(self)
+
+    @property
+    def agents(self) -> AgentControl:
+        """Daemon-owned agent lifecycle operations for this client."""
+        from .control import AgentControl
+
+        return AgentControl(self)
 
     def close(self) -> None:
         # Do not shutdown a libeasynet_cli handle while a timed-out unary

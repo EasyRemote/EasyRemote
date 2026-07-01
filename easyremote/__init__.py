@@ -20,6 +20,14 @@ from .client import (
 )
 from .config import configure
 from .context import Context
+from .control import (
+    AbilityControl,
+    AbilityInstallResult,
+    AbilityRecord,
+    AgentControl,
+    AgentRecord,
+    AgentStartResult,
+)
 from .daemon import DaemonHandle, DaemonStartConfig
 from .errors import (
     Cancelled,
@@ -39,6 +47,12 @@ from .pipeline import MissionRun, Pipeline
 from .receipts import InvocationState, Receipt, ReceiptChain
 
 __all__ = [
+    "AbilityControl",
+    "AbilityInstallResult",
+    "AbilityRecord",
+    "AgentControl",
+    "AgentRecord",
+    "AgentStartResult",
     "BidiSession",
     "CallTarget",
     "Cancelled",

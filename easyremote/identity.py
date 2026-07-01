@@ -28,6 +28,7 @@ __all__ = [
     "device_ability_ura",
     "device_ura",
     "hub_ura",
+    "resource_ura",
 ]
 
 
@@ -50,6 +51,22 @@ def agent_ura(realm: str, owner_token: str) -> str:
 def hub_ura(realm: str) -> str:
     """RFC-001 hub singleton shape, validated by the canonical parser."""
     return _validated(f"{axon_ura.URA_SCHEME}{realm}/hub")
+
+
+def resource_ura(realm: str, owner_id: str, path: str) -> str:
+    """Resource URA shape, validated by the canonical parser.
+
+    Axon's Python SDK does not expose a resource builder yet. Keep the
+    one local projection here, next to every other identity helper, so
+    callers never hand-roll resource URAs inline.
+    """
+    clean_path = path.strip().strip("/")
+    if not clean_path:
+        raise InternalError(
+            "resource path must not be empty",
+            reason="empty_resource_path",
+        )
+    return _validated(f"{axon_ura.URA_SCHEME}{realm}/resource/{owner_id}/{clean_path}")
 
 
 def device_ability_ura(
