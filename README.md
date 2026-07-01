@@ -82,6 +82,12 @@ easyremote doctor                            # check library / daemon / identity
 
 # On a hub/VPS, EasyRemote can start the hub daemon facade directly:
 easyremote hub --realm my-team
+
+# Ability and agent control surfaces are also available through the
+# same daemon Invocation facade:
+easyremote ability install ./my_ability
+easyremote ability list --scope realm --json
+easyremote agent add caesura --type claude-code --model sonnet
 ```
 
 Then it's the twelve lines above. `examples/` has runnable node/client pairs:
@@ -183,7 +189,9 @@ v2 is a clean reimplementation on the EasyNet stack ([EasyNet-Axon](https://gith
 | Capability | Status |
 |---|---|
 | register → deploy package generation (device abilities, warm host) | ✅ implemented in the facade and unit-tested against the host_stream contract |
-| Runtime ability deployment / hot-load | ✅ facade invokes `easynet ability deploy --node local`; live daemon hot-load is an EasyNet-Cli contract |
+| Runtime ability deployment / hot-load | ✅ facade invokes daemon `ability.deploy` through complete Invocation; live daemon hot-load is an EasyNet-Cli contract |
+| Ability catalogue / install control facade | ✅ `Client().abilities` plus `easyremote ability install/list/show`; `--scope realm` reads the hub-published network catalogue |
+| Agent lifecycle control facade | ✅ `Client().agents` plus `easyremote agent add/list/refresh` |
 | invoke closed loop against a live daemon | 🧪 integration/manual path only; CI skips without `EASYNET_CLI_LIB` + a running daemon |
 | Three-layer client / `@remote` stubs / async mirror | ✅ |
 | Pipeline → EAL → mission.run | ✅ |

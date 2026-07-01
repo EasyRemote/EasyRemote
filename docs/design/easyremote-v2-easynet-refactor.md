@@ -225,6 +225,10 @@ credentials.json 密钥自动签名。`sign=None` 表示按路径自动判定，
   存活、credentials、ABI/IPC 版本，输出逐项 ✓/✗。
 - `easyremote hub`（CLI 入口）：通过 `Gateway` facade 以 hub 模式启动本机
   daemon，打印 endpoint、TLS fingerprint 与 pairing guidance。
+- `easyremote ability install/list/show` 与 `easyremote agent add/list/refresh`
+  均为 Python control facade 的薄 CLI 包装；内部走完整 Invocation 调
+  daemon system ability，不 shell 到 `easynet` CLI。`ability list --scope realm`
+  显式读取 daemon 的 hub-published 网络目录；默认 `local` 只读本 daemon。
 - 依赖：`easynet_axon`（PyPI），不依赖 grpcio/protobuf（流量走 C ABI）。
 
 ---
@@ -583,7 +587,8 @@ easyremote.configure(
 
 零配置链路：`Client()` → control.json → daemon.sock；身份 →
 credentials.json。缺失时报错给出 `easynet pair` / `easynet start` 命令。
-CLI 入口：`easyremote doctor` / `easyremote hub`（§4.2）。
+CLI 入口：`easyremote doctor` / `easyremote hub` /
+`easyremote ability ...` / `easyremote agent ...`（§4.2）。
 
 ### 5.11 async 镜像
 
@@ -628,8 +633,8 @@ EasyNet-Cli / Axon 负责。
 | ① | 磁盘上的 release dylib 曾是 v1/v2 旧产物（只导出已弃用的 `easynet_ability_invoke` 面）；重建后 17 符号与头文件逐一对齐 | 绑定层已加固：先握手后声明全集，旧库报 `abi_mismatch`/`abi_symbol_missing` + 重建指引 |
 | ② | unary 路径 `admission_receipt = null`（此 daemon 版本不返回执摘要） | 回执链验证暂无数据源——强化缺口 4 的优先级；`Invocation.receipt` 正确返回 None |
 | ③ | ability URA 实例形状确认：`easynet:///r/localhost/ability/dev.demo.chat`（user.agent.verb 三段 owner） | `FunctionInfo.qualified_name` 透传正确 |
-| ④ | **本体修正（CTO 裁定）：node = device，不是 agent**。正确通路是 `easynet ability deploy --node local` + ability.json，URA = `easynet:///r/<realm>/ability/device.<node-id>.<ns>.<fn>` | `ComputeNode` 只打包 device-owned ability，不再写 agents.json/TOML，不再调用 agent refresh |
-| ⑤ | **闭环执行模型唯一化**：register → ability.json → `ability deploy --node local` → daemon `host_stream` executor → warm host → stream frames/terminal | `Client.call()` drains host_stream for result-first use；`Client.stream()` exposes live frames；`Client.invoke()`/`PreparedInvocation.send()` 保留给 daemon unary/system ability |
+| ④ | **本体修正（CTO 裁定）：node = device，不是 agent**。正确通路是 `ability.deploy` system ability + ability.json，URA = `easynet:///r/<realm>/ability/device.<node-id>.<ns>.<fn>` | `ComputeNode` 只打包 device-owned ability，不再写 agents.json/TOML，不再调用 agent refresh |
+| ⑤ | **闭环执行模型唯一化**：register → ability.json → Python ResourceRef → daemon `ability.deploy` Invocation → daemon `host_stream` executor → warm host → stream frames/terminal | `Client.call()` drains host_stream for result-first use；`Client.stream()` exposes live frames；`Client.invoke()`/`PreparedInvocation.send()` 保留给 daemon unary/system ability |
 | ⑥ | **无 forwarder 旁路**：warm host 路径不维护 shell forwarder / Python shim / C fast forwarder 三套实现 | latency 与正确性只看 daemon `host_stream` executor 直接连 Unix socket 的正式路径 |
 | ⑦ | gRPC / C ABI 错误折叠仍可能把 daemon 细节压进 `last_error` | facade 只做 taxonomy 映射，不发明路由语义 |
 
@@ -643,6 +648,8 @@ EasyNet-Cli / Axon 负责。
 |---|---|
 | `Server(port).start()` | 可用（别名→Gateway）；自动 TLS + 打印指纹 |
 | `easyremote hub` | 可用；CLI 走同一个 Gateway facade |
+| `easyremote ability install/list/show` | 可用；CLI 走 `AbilityControl`，支持 local/realm catalogue scope |
+| `easyremote agent add/list/refresh` | 可用；CLI 走 `AgentControl` |
 | `node.register` / `node.serve()` | 不变 |
 | `Client.execute("fn", args)` | 不变（JSON 可表达参数） |
 | pickle 参数（自定义对象） | **破坏性变更**：`InvalidArgument`，报错给出 pydantic/二进制流出路 |

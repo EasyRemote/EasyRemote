@@ -81,6 +81,11 @@ easyremote doctor                            # 逐项体检：库 / daemon / 身
 
 # 在 hub/VPS 上，EasyRemote 可直接以 hub 模式启动 daemon facade：
 easyremote hub --realm my-team
+
+# ability / agent 控制面也走同一个 daemon Invocation facade：
+easyremote ability install ./my_ability
+easyremote ability list --scope realm --json
+easyremote agent add caesura --type claude-code --model sonnet
 ```
 
 之后就是上面的 12 行。`examples/` 有可直接运行的节点、客户端、编排三个示例。
@@ -173,7 +178,9 @@ v2 是基于 EasyNet 栈（[EasyNet-Axon](https://github.com/EasyRemote/EasyNet-
 | 能力 | 状态 |
 |---|---|
 | 注册 → 部署包生成（device ability，warm 宿主） | ✅ facade 已实现，并用 host_stream 契约单测固定 |
-| 运行时 ability 部署 / hot-load | ✅ facade 会调用 `easynet ability deploy --node local`；真实 daemon hot-load 属于 EasyNet-Cli 契约 |
+| 运行时 ability 部署 / hot-load | ✅ facade 通过完整 Invocation 调 daemon `ability.deploy`；真实 daemon hot-load 属于 EasyNet-Cli 契约 |
+| ability 目录 / 安装控制面 | ✅ `Client().abilities` 与 `easyremote ability install/list/show`；`--scope realm` 读取 hub-published 网络目录 |
+| agent 生命周期控制面 | ✅ `Client().agents` 与 `easyremote agent add/list/refresh` |
 | live daemon 调用闭环 | 🧪 仅集成/手工路径；CI 在没有 `EASYNET_CLI_LIB` + 运行中 daemon 时跳过 |
 | 三层客户端 / `@remote` stub / async 镜像 | ✅ |
 | Pipeline → EAL → mission.run | ✅ |

@@ -9,6 +9,7 @@ number of failed checks.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from typing import Any, Literal
 
 from . import config
 from ._transport import abi
+from .control import AbilityControl, AgentControl
 from .errors import RemoteError
 from .gateway import Gateway, TLSConfig
 
@@ -97,6 +99,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_doctor()
     if args.command == "hub":
         return _run_hub(args)
+    if args.command == "ability":
+        return _run_ability(args)
+    if args.command == "agent":
+        return _run_agent(args)
     parser.print_usage(sys.stderr)
     return 2
 
@@ -138,6 +144,99 @@ def _run_hub(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_ability(args: argparse.Namespace) -> int:
+    control = AbilityControl()
+    if args.ability_command == "install":
+        result = control.install(args.path, node=args.node)
+        if args.json:
+            _print_json(result.raw)
+        else:
+            print(f"installed: {result.ability_ura or result.install_id or args.path}")
+            if result.state:
+                print(f"state: {result.state}")
+        return 0
+    if args.ability_command == "list":
+        records = control.list(
+            node=args.node,
+            owner_ura=args.owner_ura,
+            user_id=args.user,
+            scope=args.scope,
+        )
+        if args.json:
+            _print_json([record.raw for record in records])
+        else:
+            _print_ability_rows(records)
+        return 0
+    if args.ability_command == "show":
+        record = control.show(args.ability_ura, node=args.node, scope=args.scope)
+        if args.json:
+            _print_json(record.raw)
+        else:
+            _print_ability_rows([record])
+        return 0
+    print("easyremote ability: unknown subcommand", file=sys.stderr)
+    return 2
+
+
+def _run_agent(args: argparse.Namespace) -> int:
+    control = AgentControl()
+    if args.agent_command == "add":
+        result = control.add(
+            args.name,
+            kind=args.type,
+            model=args.model,
+            label=args.label,
+            command=args.command_path,
+            args=args.command_args,
+        )
+        if args.json:
+            _print_json(result.raw)
+        else:
+            action = "updated" if result.replaced_prior else "registered"
+            print(f"{action}: {result.name}")
+            print(f"type: {result.runtime}")
+            if result.model:
+                print(f"model: {result.model}")
+            if result.root_path:
+                print(f"root: {result.root_path}")
+        return 0
+    if args.agent_command == "list":
+        records = control.list()
+        if args.json:
+            _print_json([record.raw for record in records])
+        else:
+            for record in records:
+                model = f" model={record.model}" if record.model else ""
+                print(f"{record.name}\t{record.runtime}{model}")
+        return 0
+    if args.agent_command == "refresh":
+        response = control.refresh(args.name)
+        if args.json:
+            _print_json(response)
+        else:
+            scanned = response.get("agents_scanned", 0)
+            registered = response.get("runtime_registered", 0)
+            failed = response.get("runtime_failed", 0)
+            print(
+                "refreshed:"
+                f" scanned={scanned} registered={registered} failed={failed}"
+            )
+        return 0
+    print("easyremote agent: unknown subcommand", file=sys.stderr)
+    return 2
+
+
+def _print_json(value: Any) -> None:
+    print(json.dumps(value, indent=2, sort_keys=True))
+
+
+def _print_ability_rows(records: list[Any]) -> None:
+    for record in records:
+        owner = f" owner={record.owner_ura}" if record.owner_ura else ""
+        state = f" state={record.state}" if record.state else ""
+        print(f"{record.ability_ura or record.name}{owner}{state}")
+
+
 def _tls_from_args(args: argparse.Namespace) -> TLSConfig | Literal["self-signed"]:
     cert = args.cert_pem
     key = args.key_pem
@@ -164,6 +263,44 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="start the hub and return immediately",
     )
+
+    ability = subcommands.add_parser(
+        "ability", help="install and inspect daemon-published abilities"
+    )
+    ability_sub = ability.add_subparsers(dest="ability_command", required=True)
+    ability_install = ability_sub.add_parser(
+        "install", help="install an ability package through the daemon"
+    )
+    ability_install.add_argument("path")
+    ability_install.add_argument("--node", default="local")
+    ability_install.add_argument("--json", action="store_true")
+    ability_list = ability_sub.add_parser("list", help="list abilities")
+    ability_list.add_argument("--node")
+    ability_list.add_argument("--scope", choices=["local", "realm"], default="local")
+    ability_list.add_argument("--owner-ura")
+    ability_list.add_argument("--user")
+    ability_list.add_argument("--json", action="store_true")
+    ability_show = ability_sub.add_parser("show", help="show one ability")
+    ability_show.add_argument("ability_ura")
+    ability_show.add_argument("--node")
+    ability_show.add_argument("--scope", choices=["local", "realm"], default="local")
+    ability_show.add_argument("--json", action="store_true")
+
+    agent = subcommands.add_parser("agent", help="manage daemon-owned agents")
+    agent_sub = agent.add_subparsers(dest="agent_command", required=True)
+    agent_add = agent_sub.add_parser("add", help="register an agent")
+    agent_add.add_argument("name")
+    agent_add.add_argument("--type", required=True)
+    agent_add.add_argument("--model")
+    agent_add.add_argument("--label")
+    agent_add.add_argument("--command", dest="command_path")
+    agent_add.add_argument("--arg", dest="command_args", action="append", default=[])
+    agent_add.add_argument("--json", action="store_true")
+    agent_list = agent_sub.add_parser("list", help="list registered agents")
+    agent_list.add_argument("--json", action="store_true")
+    agent_refresh = agent_sub.add_parser("refresh", help="refresh agent runtime rows")
+    agent_refresh.add_argument("--name")
+    agent_refresh.add_argument("--json", action="store_true")
     return parser
 
 

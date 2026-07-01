@@ -75,3 +75,129 @@ def test_hub_command_starts_gateway_without_blocking(monkeypatch, capsys):
 def test_hub_command_requires_cert_key_pair(capsys):
     assert main(["hub", "--cert-pem", "cert.pem", "--no-block"]) == 2
     assert "must be provided together" in capsys.readouterr().err
+
+
+def test_ability_install_command_uses_control(monkeypatch, tmp_path, capsys):
+    calls = []
+
+    class FakeResult:
+        def __init__(self):
+            self.ability_ura = "easynet:///r/acme/ability/device.dev-a.er.fn"
+            self.install_id = "inst-1"
+            self.state = "ACTIVE"
+            self.raw = {
+                "ability_ura": self.ability_ura,
+                "install_id": self.install_id,
+                "state": self.state,
+            }
+
+    class FakeAbilityControl:
+        def install(self, path, *, node):
+            calls.append((path, node))
+            return FakeResult()
+
+    monkeypatch.setattr("easyremote._cli.AbilityControl", FakeAbilityControl)
+    package = tmp_path / "pkg"
+    package.mkdir()
+
+    assert main(["ability", "install", str(package), "--node", "local"]) == 0
+
+    assert calls == [(str(package), "local")]
+    assert (
+        "installed: easynet:///r/acme/ability/device.dev-a.er.fn"
+        in capsys.readouterr().out
+    )
+
+
+def test_ability_list_command_supports_json(monkeypatch, capsys):
+    class FakeRecord:
+        def __init__(self):
+            self.raw = {"ability_ura": "u1"}
+            self.ability_ura = "u1"
+            self.name = "fn"
+            self.owner_ura = "owner"
+            self.state = "ACTIVE"
+
+    class FakeAbilityControl:
+        def list(self, *, node, owner_ura, user_id, scope):
+            assert node == "gpu-1"
+            assert owner_ura == "owner"
+            assert user_id == "u-alice"
+            assert scope == "realm"
+            return [FakeRecord()]
+
+    monkeypatch.setattr("easyremote._cli.AbilityControl", FakeAbilityControl)
+
+    assert (
+        main(
+            [
+                "ability",
+                "list",
+                "--node",
+                "gpu-1",
+                "--owner-ura",
+                "owner",
+                "--user",
+                "u-alice",
+                "--scope",
+                "realm",
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    assert '"ability_ura": "u1"' in capsys.readouterr().out
+
+
+def test_agent_add_and_list_commands_use_control(monkeypatch, capsys):
+    calls = []
+
+    class FakeStart:
+        def __init__(self):
+            self.name = "caesura"
+            self.runtime = "claude-code"
+            self.model = "sonnet"
+            self.root_path = "/tmp/caesura"
+            self.replaced_prior = False
+            self.raw = {"name": self.name}
+
+    class FakeAgent:
+        def __init__(self):
+            self.name = "caesura"
+            self.runtime = "claude-code"
+            self.model = "sonnet"
+            self.raw = {"name": self.name}
+
+    class FakeAgentControl:
+        def add(self, name, *, kind, model, label, command, args):
+            calls.append((name, kind, model, label, command, args))
+            return FakeStart()
+
+        def list(self):
+            return [FakeAgent()]
+
+    monkeypatch.setattr("easyremote._cli.AgentControl", FakeAgentControl)
+
+    assert (
+        main(
+            [
+                "agent",
+                "add",
+                "caesura",
+                "--type",
+                "claude-code",
+                "--model",
+                "sonnet",
+                "--arg=--verbose",
+            ]
+        )
+        == 0
+    )
+    assert calls == [
+        ("caesura", "claude-code", "sonnet", None, None, ["--verbose"])
+    ]
+    assert "registered: caesura" in capsys.readouterr().out
+
+    assert main(["agent", "list"]) == 0
+    assert "caesura\tclaude-code model=sonnet" in capsys.readouterr().out
