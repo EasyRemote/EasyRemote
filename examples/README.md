@@ -14,6 +14,9 @@ easyremote doctor
 
 # Hub machines can start the hub daemon through the EasyRemote facade.
 easyremote hub --realm my-team
+
+# Existing EAL files can be submitted through the same daemon facade.
+easyremote mission run ./nightly.eal --label nightly
 ```
 
 | Example | What it shows |

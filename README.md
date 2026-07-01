@@ -88,6 +88,7 @@ easyremote hub --realm my-team
 easyremote ability install ./my_ability
 easyremote ability list --scope realm --json
 easyremote agent add caesura --type claude-code --model sonnet
+easyremote mission run ./nightly.eal --label nightly
 ```
 
 Then it's the twelve lines above. `examples/` has runnable node/client pairs:
@@ -168,6 +169,20 @@ hub.call("route", target="gpu-2")           # ad-hoc, no stub
 cross-realm owner URA is accepted but only routes where federation peers are
 configured. See [`examples/06_owner_handles.py`](examples/06_owner_handles.py).
 
+### Use-case facade map
+
+| Use case | Minimal facade |
+|---|---|
+| Start this machine as a hub | `Gateway(realm="my-team").start()` or `easyremote hub --realm my-team` |
+| Hold a raw daemon lifecycle handle | `DaemonHandle.start_hub("my-team")`, `DaemonHandle.start_device("gpu-1")` |
+| Publish local functions | `node = ComputeNode(); @node.register; node.serve()` |
+| Result-first call | `Client().execute("ai_inference", prompt="hi")` |
+| Target a device / agent / hub | `Client().device("gpu-2").call(...)`, `Client().agent("u.a").call(...)`, `Client().hub().call(...)` |
+| Inspect and send the invocation tuple | `prepared = Client().prepare(...); prepared.tuple; prepared.send()` |
+| Compose a mission in Python | `Pipeline("nightly").step(...); pipe.run()` |
+| Run existing EAL source | `Client().missions.run_eal(source, label="nightly")` or `Client().missions.run_file("nightly.eal")` |
+| Control daemon catalogues | `Client().abilities.list(scope="realm")`, `Client().agents.add(...)` |
+
 ---
 
 ## Where it fits
@@ -194,7 +209,8 @@ v2 is a clean reimplementation on the EasyNet stack ([EasyNet-Axon](https://gith
 | Agent lifecycle control facade | ✅ `Client().agents` plus `easyremote agent add/list/refresh` |
 | invoke closed loop against a live daemon | 🧪 integration/manual path only; CI skips without `EASYNET_CLI_LIB` + a running daemon |
 | Three-layer client / `@remote` stubs / async mirror | ✅ |
-| Pipeline → EAL → mission.run | ✅ |
+| Pipeline → EAL → mission.run | ✅ `Pipeline.run()` compiles EAL and delegates to `MissionControl.run_eal()` |
+| Direct Mission/EAL run facade | ✅ `Client().missions.run_eal/run_file/track/cancel` plus `easyremote mission run/track/cancel` |
 | Server (hub + self-signed TLS bootstrap) | ✅ |
 | `easyremote hub` | ✅ starts the local daemon in hub mode via the Gateway facade |
 | `easyremote doctor` | ✅ |

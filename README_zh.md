@@ -86,6 +86,7 @@ easyremote hub --realm my-team
 easyremote ability install ./my_ability
 easyremote ability list --scope realm --json
 easyremote agent add caesura --type claude-code --model sonnet
+easyremote mission run ./nightly.eal --label nightly
 ```
 
 之后就是上面的 12 行。`examples/` 有可直接运行的节点、客户端、编排三个示例。
@@ -157,6 +158,20 @@ hub.call("route", target="gpu-2")           # 临时调用，无需 stub
 会被接受并编码，但仅在 federation peers 配置下才路由。
 见 [`examples/06_owner_handles.py`](examples/06_owner_handles.py)。
 
+### 按 use case 选择 facade
+
+| Use case | 最小 facade |
+|---|---|
+| 把当前机器作为 hub 启动 | `Gateway(realm="my-team").start()` 或 `easyremote hub --realm my-team` |
+| 持有 daemon 生命周期句柄 | `DaemonHandle.start_hub("my-team")`、`DaemonHandle.start_device("gpu-1")` |
+| 发布本地函数 | `node = ComputeNode(); @node.register; node.serve()` |
+| 结果优先调用 | `Client().execute("ai_inference", prompt="hi")` |
+| 指定 device / agent / hub | `Client().device("gpu-2").call(...)`、`Client().agent("u.a").call(...)`、`Client().hub().call(...)` |
+| 发出前检视七元组 | `prepared = Client().prepare(...); prepared.tuple; prepared.send()` |
+| 在 Python 中编排 mission | `Pipeline("nightly").step(...); pipe.run()` |
+| 运行已有 EAL | `Client().missions.run_eal(source, label="nightly")` 或 `Client().missions.run_file("nightly.eal")` |
+| 管理 daemon 目录 | `Client().abilities.list(scope="realm")`、`Client().agents.add(...)` |
+
 ---
 
 ## 适用场景
@@ -183,7 +198,8 @@ v2 是基于 EasyNet 栈（[EasyNet-Axon](https://github.com/EasyRemote/EasyNet-
 | agent 生命周期控制面 | ✅ `Client().agents` 与 `easyremote agent add/list/refresh` |
 | live daemon 调用闭环 | 🧪 仅集成/手工路径；CI 在没有 `EASYNET_CLI_LIB` + 运行中 daemon 时跳过 |
 | 三层客户端 / `@remote` stub / async 镜像 | ✅ |
-| Pipeline → EAL → mission.run | ✅ |
+| Pipeline → EAL → mission.run | ✅ `Pipeline.run()` 编译 EAL 后委托 `MissionControl.run_eal()` |
+| 直接 Mission/EAL 运行 facade | ✅ `Client().missions.run_eal/run_file/track/cancel` 与 `easyremote mission run/track/cancel` |
 | Server（hub + 自签 TLS 引导） | ✅ |
 | `easyremote hub` | ✅ 通过 Gateway facade 以 hub 模式启动本机 daemon |
 | `easyremote doctor` | ✅ |

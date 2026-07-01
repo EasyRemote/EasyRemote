@@ -256,16 +256,20 @@ credentials.json 密钥自动签名。`sign=None` 表示按路径自动判定，
 __all__ = [
     # 三件套（Gateway 为 v2 首选名，Server 永久保留为别名）
     "Gateway", "Server", "ComputeNode", "Client",
+    # daemon lifecycle / control facades
+    "DaemonHandle", "DaemonStartConfig",
+    "AbilityControl", "AbilityRecord", "AbilityInstallResult",
+    "AgentControl", "AgentRecord", "AgentStartResult",
     # 调用
     "remote", "Invocation", "PreparedInvocation", "InvocationState",
     # 服务端组合
     "Context",
-    # 回执（thin wrapper over easynet_axon.invocation.audit）
-    "Receipt", "ReceiptChain", "VerifiedReceipt",
+    # 回执（C ABI receipt summary wrapper）
+    "Receipt", "ReceiptChain",
     # 流
     "Stream", "BidiSession",
     # 编排
-    "Pipeline", "MissionRun",
+    "Pipeline", "MissionControl", "MissionRun",
     # 错误
     "RemoteError", "Cancelled", "DeadlineExceeded", "Unavailable",
     "InvalidArgument", "ResourceExhausted", "PermissionDenied",
@@ -308,25 +312,25 @@ class Gateway:
         self,
         port: int = 8443,
         *,
-        realm: str | None = None,                  # None → credentials/默认 realm
+        realm: str = "localhost",
         tls: TLSConfig | Literal["self-signed", "acme"] = "self-signed",
-        mode: Literal["hub", "both"] = "hub",      # both = 同机 backend 场景
     ): ...
 
-    def start(self, block: bool = True) -> None
+    def start(self, block: bool = False) -> None
     def stop(self) -> None
 
     @property
     def endpoint(self) -> str            # 对外 TLS endpoint
     @property
-    def pairing_command(self) -> str     # 给节点复制粘贴的一行命令
+    def pairing_guidance(self) -> str    # endpoint + 指纹校验说明
     @property
     def fingerprint(self) -> str         # 自签证书指纹（带外校验）
 
 Server = Gateway   # v1 兼容别名，永久保留
 ```
 
-语义：包装 `easynet_daemon_start(DaemonStartConfig::hub() JSON)`。
+语义：包装 `DaemonHandle.start(DaemonStartConfig.hub(...))`，也可直接调用
+`DaemonHandle.start_hub(realm)` 取得底层生命周期句柄。
 `self-signed` 自动签发、指纹写进 pairing 命令（节点侧 pin）。
 **没有明文 HTTP 选项**——facade 不替底座开 Invariant 2 的口子。
 
@@ -556,14 +560,11 @@ step 可引用三种来源，组合不限于自己的函数：
 ```python
 pipe = Pipeline("nightly-report")
 
-fetch = pipe.step("teamA.fetch_sales")            # ① 别人的函数：按名字引用
-                                                  #    （run 前 discover 预检）
-@pipe.step(after=[fetch])
-def summarize(rows: list[dict]) -> str: ...       # ② 自己注册的函数
+fetch = pipe.step("teamA.fetch_sales", quarter="Q2")   # ① 别人的能力：按名字引用
+summary = pipe.step("er.summarize", rows=fetch.output) # ② 上游输出作为 dataflow
+pipe.step(publish_report, body=summary.output)         # ③ RegisteredFunction 引用
 
-publish = pipe.step(publish_report, after=[summarize])   # ③ @remote stub
-
-run: MissionRun = pipe.run(args={"date": "2026-06-11"})
+run: MissionRun = pipe.run(label="nightly")
 run.status                       # mission.track 投影
 run.cancel()
 print(pipe.to_eal())             # 可检视 EAL 源，含强制 provenance 头
@@ -572,7 +573,17 @@ print(pipe.to_eal())             # 可检视 EAL 源，含强制 provenance 头
 
 语义：编译为 EAL → `mission.run`（args `{source, label}`，返回
 `{ok, run_id, run_dir, outputs, meta}`）；每 step 是子 invocation，回执链
-完整。**facade 不自建编排运行时**；字符串引用在 `run()` 前 fail-fast 预检。
+完整。**facade 不自建编排运行时**。
+
+已有 EAL 源直接运行，不需要构造 `Pipeline`：
+
+```python
+client = Client()
+client.missions.run_eal(source, label="nightly")
+client.missions.run_file("nightly.eal")
+client.missions.track("run-1")
+client.missions.cancel("run-1")
+```
 
 ### 5.10 配置与发现
 
@@ -650,6 +661,7 @@ EasyNet-Cli / Axon 负责。
 | `easyremote hub` | 可用；CLI 走同一个 Gateway facade |
 | `easyremote ability install/list/show` | 可用；CLI 走 `AbilityControl`，支持 local/realm catalogue scope |
 | `easyremote agent add/list/refresh` | 可用；CLI 走 `AgentControl` |
+| `easyremote mission run/track/cancel` | 可用；CLI 走 `MissionControl`，运行已有 EAL 源 |
 | `node.register` / `node.serve()` | 不变 |
 | `Client.execute("fn", args)` | 不变（JSON 可表达参数） |
 | pickle 参数（自定义对象） | **破坏性变更**：`InvalidArgument`，报错给出 pydantic/二进制流出路 |
