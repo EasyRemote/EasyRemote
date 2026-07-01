@@ -223,6 +223,8 @@ credentials.json 密钥自动签名。`sign=None` 表示按路径自动判定，
   `easynet pair` 命令。
 - `easyremote doctor`（CLI 入口）：诊断 lib 加载、control.json、daemon
   存活、credentials、ABI/IPC 版本，输出逐项 ✓/✗。
+- `easyremote hub`（CLI 入口）：通过 `Gateway` facade 以 hub 模式启动本机
+  daemon，打印 endpoint、TLS fingerprint 与 pairing guidance。
 - 依赖：`easynet_axon`（PyPI），不依赖 grpcio/protobuf（流量走 C ABI）。
 
 ---
@@ -581,7 +583,7 @@ easyremote.configure(
 
 零配置链路：`Client()` → control.json → daemon.sock；身份 →
 credentials.json。缺失时报错给出 `easynet pair` / `easynet start` 命令。
-CLI 入口：`easyremote doctor`（§4.2）。
+CLI 入口：`easyremote doctor` / `easyremote hub`（§4.2）。
 
 ### 5.11 async 镜像
 
@@ -640,6 +642,7 @@ EasyNet-Cli / Axon 负责。
 | v1 写法 | v2 行为 |
 |---|---|
 | `Server(port).start()` | 可用（别名→Gateway）；自动 TLS + 打印指纹 |
+| `easyremote hub` | 可用；CLI 走同一个 Gateway facade |
 | `node.register` / `node.serve()` | 不变 |
 | `Client.execute("fn", args)` | 不变（JSON 可表达参数） |
 | pickle 参数（自定义对象） | **破坏性变更**：`InvalidArgument`，报错给出 pydantic/二进制流出路 |

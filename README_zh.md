@@ -76,7 +76,11 @@ pip install easyremote
 
 # 一次性前置（类比 ssh-keygen 的一次性成本，换来签名调用与回执链）
 easynet pair                                  # 设备配对，签发身份
+easynet start                                 # 启动设备 daemon
 easyremote doctor                            # 逐项体检：库 / daemon / 身份 / transport
+
+# 在 hub/VPS 上，EasyRemote 可直接以 hub 模式启动 daemon facade：
+easyremote hub --realm my-team
 ```
 
 之后就是上面的 12 行。`examples/` 有可直接运行的节点、客户端、编排三个示例。
@@ -99,6 +103,54 @@ prepared.tuple.subject
 # send()/invoke() 保留给 daemon unary/system ability；
 # EasyRemote-hosted ability 是 host_stream，消费面用 call()/stream()。
 ```
+
+### `@remote` 作为类属性
+
+`@remote` stub 是一个描述符——和 `property` 一样。写在类体里时，它把属性名当作
+ability 名；通过实例访问会绑定到该宿主：`self` 会从 wire 参数里剥离，并复用宿主
+自己的 client。模块级 `@remote` 用法保持不变。
+
+```python
+class GPUCluster:
+    def __init__(self, client):
+        self.client = client          # 宿主持有 client
+
+    @remote                            # ability 名 = "ai_inference"
+    def ai_inference(self, prompt: str, max_tokens: int = 64) -> str: ...
+
+GPUCluster(Client()).ai_inference("hi")   # self 被剥离，复用宿主 client
+```
+
+client 解析优先级：`@remote(client=...)` > `self.client` > `self._client`。
+见 [`examples/05_remote_on_class.py`](examples/05_remote_on_class.py)。
+
+### owner 句柄 —— `@node.register` 的镜像
+
+服务端把函数聚在 `ComputeNode` 上、用 `@node.register` 发布。客户端是对称的：
+一个指向 ability owner 的句柄持有目标身份，`@handle.remote` 声明绑定到它的 stub。
+
+```python
+# 服务端                          # 客户端（对称）
+node = ComputeNode()              gpu   = client.device("gpu-2")
+@node.register                    @gpu.remote
+def chat(...): ...                def chat(...): ...
+```
+
+```python
+gpu   = client.device("gpu-2")              # 本 realm 的一台设备
+alice = client.agent("u-alice.chatbot")     # 一个 agent：<user-id>.<agent-id>
+hub   = client.hub()                        # realm hub
+
+@alice.remote
+def chat(prompt: str) -> str: ...
+
+chat("hi")                                  # 路由到 alice
+hub.call("route", target="gpu-2")           # 临时调用，无需 stub
+```
+
+`device` / `agent` / `hub` owner 都是 daemon 一等路由。完整的跨 realm owner URA
+会被接受并编码，但仅在 federation peers 配置下才路由。
+见 [`examples/06_owner_handles.py`](examples/06_owner_handles.py)。
 
 ---
 
@@ -126,6 +178,7 @@ v2 是基于 EasyNet 栈（[EasyNet-Axon](https://github.com/EasyRemote/EasyNet-
 | 三层客户端 / `@remote` stub / async 镜像 | ✅ |
 | Pipeline → EAL → mission.run | ✅ |
 | Server（hub + 自签 TLS 引导） | ✅ |
+| `easyremote hub` | ✅ 通过 Gateway facade 以 hub 模式启动本机 daemon |
 | `easyremote doctor` | ✅ |
 | 流式 producer/consumer | ✅ host_stream 路径已实现；见 `examples/04_streaming_*.py` |
 | 服务端 Context 只读身份注入 | ✅ 从 host_stream envelope 注入 `ctx.caller` / `ctx.invocation_id` |

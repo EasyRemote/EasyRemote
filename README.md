@@ -77,7 +77,11 @@ pip install easyremote
 # One-time prerequisites (an ssh-keygen-style cost, buying you
 # signed invocations and receipt chains)
 easynet pair                                  # pair this device, issue identity
+easynet start                                 # start the device daemon
 easyremote doctor                            # check library / daemon / identity / transport
+
+# On a hub/VPS, EasyRemote can start the hub daemon facade directly:
+easyremote hub --realm my-team
 ```
 
 Then it's the twelve lines above. `examples/` has runnable node/client pairs:
@@ -108,6 +112,56 @@ prepared.tuple.subject
 # abilities are host_stream and should be consumed with call()/stream().
 ```
 
+### `@remote` as a class attribute
+
+A `@remote` stub is a descriptor — like `property`. On a class body it
+takes the attribute name as the ability name, and an instance access
+binds it to that host: `self` is stripped from the wire arguments and
+the host's own client is reused. Module-level `@remote` is unchanged.
+
+```python
+class GPUCluster:
+    def __init__(self, client):
+        self.client = client          # the host carries the client
+
+    @remote                            # ability name = "ai_inference"
+    def ai_inference(self, prompt: str, max_tokens: int = 64) -> str: ...
+
+GPUCluster(Client()).ai_inference("hi")   # self stripped, host client reused
+```
+
+Client precedence is `@remote(client=...)` > `self.client` > `self._client`.
+See [`examples/05_remote_on_class.py`](examples/05_remote_on_class.py).
+
+### Owner handles — the mirror of `@node.register`
+
+The serving side groups functions on a `ComputeNode` and publishes them with
+`@node.register`. The calling side is symmetric: a handle to an ability owner
+carries the target identity, and `@handle.remote` declares a stub bound to it.
+
+```python
+# serving side                    # calling side (symmetric)
+node = ComputeNode()              gpu   = client.device("gpu-2")
+@node.register                    @gpu.remote
+def chat(...): ...                def chat(...): ...
+```
+
+```python
+gpu   = client.device("gpu-2")              # a device in this realm
+alice = client.agent("u-alice.chatbot")     # an agent: <user-id>.<agent-id>
+hub   = client.hub()                        # the realm hub
+
+@alice.remote
+def chat(prompt: str) -> str: ...
+
+chat("hi")                                  # routed to alice
+hub.call("route", target="gpu-2")           # ad-hoc, no stub
+```
+
+`device`, `agent`, and `hub` owners are first-class daemon routes. A full
+cross-realm owner URA is accepted but only routes where federation peers are
+configured. See [`examples/06_owner_handles.py`](examples/06_owner_handles.py).
+
 ---
 
 ## Where it fits
@@ -134,6 +188,7 @@ v2 is a clean reimplementation on the EasyNet stack ([EasyNet-Axon](https://gith
 | Three-layer client / `@remote` stubs / async mirror | ✅ |
 | Pipeline → EAL → mission.run | ✅ |
 | Server (hub + self-signed TLS bootstrap) | ✅ |
+| `easyremote hub` | ✅ starts the local daemon in hub mode via the Gateway facade |
 | `easyremote doctor` | ✅ |
 | Streaming | ✅ host_stream producer/consumer implemented; see `examples/04_streaming_*.py` |
 | Async functions / generators (sync + async) | ✅ |
