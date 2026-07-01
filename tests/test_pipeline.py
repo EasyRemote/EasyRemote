@@ -122,6 +122,7 @@ def test_run_submits_source_to_mission_run():
 
     run = pipe.run()
     wire = transport.invocations[0]
+    assert transport.carriers == ["unary"]
     assert (
         wire["descriptor_ref"]
         == "easynet:///r/acme/ability/device.dev-a.mission.run@1.0.0"
@@ -145,6 +146,7 @@ def test_track_and_cancel_use_run_id():
 
     assert run.track() == {"state": "running"}
     run.cancel()
+    assert transport.carriers == ["unary", "unary", "unary"]
     assert (
         transport.invocations[1]["descriptor_ref"]
         == "easynet:///r/acme/ability/device.dev-a.mission.track@1.0.0"
@@ -158,6 +160,9 @@ def test_track_and_cancel_use_run_id():
 
 def test_mission_run_exposes_response_fields():
     client, _ = make_client()
-    run = MissionRun(client, {"run_id": "r", "run_dir": "/d", "outputs": {"x": 1}})
+    run = MissionRun(
+        client.missions,
+        {"run_id": "r", "run_dir": "/d", "outputs": {"x": 1}},
+    )
     assert run.run_dir == "/d"
     assert run.outputs == {"x": 1}

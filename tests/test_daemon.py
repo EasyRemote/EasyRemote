@@ -30,6 +30,22 @@ def test_explicit_detached_uses_ffi_field_name():
     assert "detached" not in config.to_wire()
 
 
+def test_factory_options_are_carried_in_wire(tmp_path):
+    config = DaemonStartConfig.hub(
+        "acme",
+        env={"RUST_LOG": "info"},
+        log_path=tmp_path / "daemon.log",
+        detached=True,
+    )
+    assert config.to_wire() == {
+        "mode": "hub",
+        "realm": "acme",
+        "env": {"RUST_LOG": "info"},
+        "log_path": str(tmp_path / "daemon.log"),
+        "detach": True,
+    }
+
+
 def test_explicit_foreground_is_preserved():
     assert DaemonStartConfig(
         mode="device",
@@ -71,3 +87,25 @@ def test_handle_delegates_to_process():
     assert handle.invocation_endpoint() == "daemon.sock"
     handle.stop()
     assert process.stopped
+
+
+def test_handle_convenience_start_methods(monkeypatch):
+    started = []
+
+    class FakeProcess:
+        @classmethod
+        def start(cls, config):
+            started.append(config)
+            return cls()
+
+    monkeypatch.setattr("easyremote.daemon.DaemonProcess", FakeProcess)
+
+    hub = DaemonHandle.start_hub("acme", detached=True)
+    device = DaemonHandle.start_device("dev-a")
+
+    assert isinstance(hub, DaemonHandle)
+    assert isinstance(device, DaemonHandle)
+    assert started == [
+        {"mode": "hub", "realm": "acme", "detach": True},
+        {"mode": "device", "node_id": "dev-a"},
+    ]

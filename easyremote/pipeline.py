@@ -24,16 +24,18 @@ provenance contract for EAL artifacts is a flagged P0 item.
 
 from __future__ import annotations
 
-import json
 import math
 import re
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any
 
 from ._version import __version__
-from .client import Client
 from .errors import InvalidArgument
+from .mission import MissionControl, MissionRun
 from .node import RegisteredFunction
+
+if TYPE_CHECKING:
+    from .client import Client
 
 __all__ = ["MissionRun", "Pipeline", "Step", "StepOutput"]
 
@@ -162,11 +164,10 @@ class Pipeline:
         return "\n".join(lines) + "\n"
 
     def run(self, *, label: str | None = None) -> MissionRun:
-        client = self.client or Client()
-        response = client.execute(
-            "mission.run", source=self.to_eal(), label=label or self.name
+        return MissionControl(self.client).run_eal(
+            self.to_eal(),
+            label=label or self.name,
         )
-        return MissionRun(client, response or {})
 
     # -- internals -----------------------------------------------------------
 
@@ -225,45 +226,9 @@ class Pipeline:
             return ""
 
 
-class MissionRun:
-    """Handle for a submitted mission (``mission.run`` response)."""
-
-    def __init__(self, client: Client, response: dict[str, Any]) -> None:
-        self._client = client
-        self._response = response
-
-    @property
-    def run_id(self) -> str:
-        return str(self._response.get("run_id", ""))
-
-    @property
-    def run_dir(self) -> str:
-        return str(self._response.get("run_dir", ""))
-
-    @property
-    def outputs(self) -> dict[str, Any]:
-        return dict(self._response.get("outputs") or {})
-
-    @property
-    def raw(self) -> dict[str, Any]:
-        return self._response
-
-    def track(self) -> dict[str, Any]:
-        return cast(
-            "dict[str, Any]", self._client.execute("mission.track", run_id=self.run_id)
-        )
-
-    @property
-    def status(self) -> dict[str, Any]:
-        return self.track()
-
-    def cancel(self) -> dict[str, Any]:
-        return cast(
-            "dict[str, Any]", self._client.execute("mission.cancel", run_id=self.run_id)
-        )
-
-
 def _string(value: str) -> str:
+    import json
+
     return json.dumps(value, ensure_ascii=False)
 
 

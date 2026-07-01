@@ -29,6 +29,7 @@ import base64
 import contextlib
 import functools
 import inspect
+import math
 import queue
 import threading
 import weakref
@@ -79,6 +80,7 @@ __all__ = [
 
 if TYPE_CHECKING:
     from .control import AbilityControl, AgentControl
+    from .mission import MissionControl
 
 
 @dataclass(frozen=True)
@@ -150,6 +152,14 @@ class CallTarget:
                 f"pick must be one of {sorted(PICK_POLICIES)}, got {self.pick!r}"
                 " (resource_aware needs daemon-side load metrics — Cli PR-3)",
                 reason="invalid_pick_policy",
+            )
+        if self.timeout is not None and (
+            not math.isfinite(self.timeout) or self.timeout <= 0
+        ):
+            raise InvalidArgument(
+                f"timeout must be a positive finite number of seconds,"
+                f" got {self.timeout!r}",
+                reason="invalid_timeout",
             )
         if self.metadata is not None:
             object.__setattr__(self, "metadata", dict(self.metadata))
@@ -324,6 +334,11 @@ class Client:
     ) -> None:
         self._gateway = gateway
         self._gateway_checked = False
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise InvalidArgument(
+                f"timeout must be a positive finite number of seconds, got {timeout!r}",
+                reason="invalid_timeout",
+            )
         self._timeout = timeout
         self._namespace = namespace
         self._addressing = AbilityAddressResolver(namespace)
@@ -544,6 +559,13 @@ class Client:
         from .control import AgentControl
 
         return AgentControl(self)
+
+    @property
+    def missions(self) -> MissionControl:
+        """Daemon Mission/EAL execution operations for this client."""
+        from .mission import MissionControl
+
+        return MissionControl(self)
 
     def close(self) -> None:
         # Do not shutdown a libeasynet_cli handle while a timed-out unary

@@ -26,6 +26,7 @@ from easyremote.errors import (
     Unavailable,
 )
 from easyremote.identity import LocalIdentity
+from easyremote.mission import MissionControl
 from easyremote.receipts import InvocationState
 from easyremote.schema import PARAMETER_ORDER_KEY, VAR_POSITIONAL_KEY
 
@@ -518,6 +519,16 @@ def test_sign_true_is_honest_about_pending_path():
     assert exc_info.value.reason == "signing_path_pending"
 
 
+def test_invalid_client_timeouts_are_rejected_at_facade_boundary():
+    with pytest.raises(InvalidArgument) as exc_info:
+        Client(timeout=0)
+    assert exc_info.value.reason == "invalid_timeout"
+
+    with pytest.raises(InvalidArgument) as exc_info:
+        Client.target("fn", timeout=-1)
+    assert exc_info.value.reason == "invalid_timeout"
+
+
 def test_client_wait_timeout_raises_deadline_exceeded():
     client, transport = make_client()
     transport.delay = 0.2
@@ -817,6 +828,7 @@ def test_handle_factories_return_remote_owner():
     assert isinstance(client.agent("u-alice.chatbot"), RemoteOwner)
     assert isinstance(client.device("gpu-2"), RemoteOwner)
     assert isinstance(client.hub(), RemoteOwner)
+    assert isinstance(client.missions, MissionControl)
 
 
 def test_owner_handle_accepts_full_cross_realm_ura():

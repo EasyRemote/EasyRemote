@@ -42,6 +42,7 @@ from .errors import (
 )
 from .gateway import Gateway, Server, TLSConfig
 from .invocation import Invocation, InvocationTuple, PreparedInvocation
+from .mission import MissionControl
 from .node import ComputeNode
 from .pipeline import MissionRun, Pipeline
 from .receipts import InvocationState, Receipt, ReceiptChain
@@ -68,6 +69,7 @@ __all__ = [
     "Invocation",
     "InvocationState",
     "InvocationTuple",
+    "MissionControl",
     "MissionRun",
     "PermissionDenied",
     "Pipeline",

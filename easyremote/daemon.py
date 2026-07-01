@@ -33,16 +33,42 @@ class DaemonStartConfig:
     detached: bool | None = None
 
     @classmethod
-    def hub(cls, realm: str) -> DaemonStartConfig:
+    def hub(
+        cls,
+        realm: str,
+        *,
+        env: Mapping[str, str] | None = None,
+        log_path: str | Path | None = None,
+        detached: bool | None = None,
+    ) -> DaemonStartConfig:
         realm = realm.strip()
         if not realm:
             raise InvalidArgument("hub realm must not be empty", reason="empty_realm")
-        return cls(mode="hub", realm=realm)
+        return cls(
+            mode="hub",
+            realm=realm,
+            env=env,
+            log_path=Path(log_path) if log_path is not None else None,
+            detached=detached,
+        )
 
     @classmethod
-    def device(cls, node_id: str | None = None) -> DaemonStartConfig:
+    def device(
+        cls,
+        node_id: str | None = None,
+        *,
+        env: Mapping[str, str] | None = None,
+        log_path: str | Path | None = None,
+        detached: bool | None = None,
+    ) -> DaemonStartConfig:
         node = node_id.strip() if node_id is not None else None
-        return cls(mode="device", node_id=node or None)
+        return cls(
+            mode="device",
+            node_id=node or None,
+            env=env,
+            log_path=Path(log_path) if log_path is not None else None,
+            detached=detached,
+        )
 
     def to_wire(self) -> dict[str, Any]:
         if self.mode not in ("device", "hub"):
@@ -77,6 +103,14 @@ class DaemonHandle:
     @classmethod
     def start(cls, config: DaemonStartConfig) -> DaemonHandle:
         return cls(DaemonProcess.start(config.to_wire()))
+
+    @classmethod
+    def start_hub(cls, realm: str, **kwargs: Any) -> DaemonHandle:
+        return cls.start(DaemonStartConfig.hub(realm, **kwargs))
+
+    @classmethod
+    def start_device(cls, node_id: str, **kwargs: Any) -> DaemonHandle:
+        return cls.start(DaemonStartConfig.device(node_id, **kwargs))
 
     def status(self) -> dict[str, Any]:
         return self._process.status()

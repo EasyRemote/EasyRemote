@@ -201,3 +201,68 @@ def test_agent_add_and_list_commands_use_control(monkeypatch, capsys):
 
     assert main(["agent", "list"]) == 0
     assert "caesura\tclaude-code model=sonnet" in capsys.readouterr().out
+
+
+def test_mission_run_track_cancel_commands_use_control(monkeypatch, tmp_path, capsys):
+    calls = []
+
+    class FakeRun:
+        def __init__(self):
+            self.run_id = "run-1"
+            self.run_dir = "/tmp/run-1"
+            self.raw = {"run_id": self.run_id, "run_dir": self.run_dir}
+
+    class FakeMissionControl:
+        def run_file(self, path, *, label):
+            calls.append(("run_file", path, label))
+            return FakeRun()
+
+        def run_eal(self, source, *, label):
+            calls.append(("run_eal", source, label))
+            return FakeRun()
+
+        def track(self, run_id):
+            calls.append(("track", run_id))
+            return {"state": "running"}
+
+        def cancel(self, run_id):
+            calls.append(("cancel", run_id))
+            return {"cancelled": True}
+
+    monkeypatch.setattr("easyremote._cli.MissionControl", FakeMissionControl)
+    source = tmp_path / "nightly.eal"
+    source.write_text('mission "nightly" {}\n')
+
+    assert main(["mission", "run", str(source), "--label", "nightly"]) == 0
+    assert calls[-1] == ("run_file", source, "nightly")
+    assert "run_id: run-1" in capsys.readouterr().out
+
+    assert main(["mission", "track", "run-1"]) == 0
+    assert calls[-1] == ("track", "run-1")
+    assert '"state": "running"' in capsys.readouterr().out
+
+    assert main(["mission", "cancel", "run-1"]) == 0
+    assert calls[-1] == ("cancel", "run-1")
+    assert '"cancelled": true' in capsys.readouterr().out
+
+
+def test_mission_run_accepts_stdin(monkeypatch, capsys):
+    calls = []
+
+    class FakeRun:
+        def __init__(self):
+            self.run_id = "run-stdin"
+            self.run_dir = ""
+            self.raw = {"run_id": self.run_id}
+
+    class FakeMissionControl:
+        def run_eal(self, source, *, label):
+            calls.append((source, label))
+            return FakeRun()
+
+    monkeypatch.setattr("easyremote._cli.MissionControl", FakeMissionControl)
+    monkeypatch.setattr("sys.stdin", type("Stdin", (), {"read": lambda self: "eal"})())
+
+    assert main(["mission", "run", "-", "--label", "stdin"]) == 0
+    assert calls == [("eal", "stdin")]
+    assert "run_id: run-stdin" in capsys.readouterr().out

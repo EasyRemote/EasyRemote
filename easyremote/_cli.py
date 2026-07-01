@@ -21,6 +21,7 @@ from ._transport import abi
 from .control import AbilityControl, AgentControl
 from .errors import RemoteError
 from .gateway import Gateway, TLSConfig
+from .mission import MissionControl
 
 __all__ = ["main"]
 
@@ -103,6 +104,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_ability(args)
     if args.command == "agent":
         return _run_agent(args)
+    if args.command == "mission":
+        return _run_mission(args)
     parser.print_usage(sys.stderr)
     return 2
 
@@ -226,6 +229,34 @@ def _run_agent(args: argparse.Namespace) -> int:
     return 2
 
 
+def _run_mission(args: argparse.Namespace) -> int:
+    control = MissionControl()
+    if args.mission_command == "run":
+        source = sys.stdin.read() if args.source == "-" else Path(args.source)
+        run = (
+            control.run_eal(source, label=args.label)
+            if isinstance(source, str)
+            else control.run_file(source, label=args.label)
+        )
+        if args.json:
+            _print_json(run.raw)
+        else:
+            print(f"run_id: {run.run_id}")
+            if run.run_dir:
+                print(f"run_dir: {run.run_dir}")
+        return 0
+    if args.mission_command == "track":
+        status = control.track(args.run_id)
+        _print_json(status)
+        return 0
+    if args.mission_command == "cancel":
+        result = control.cancel(args.run_id)
+        _print_json(result)
+        return 0
+    print("easyremote mission: unknown subcommand", file=sys.stderr)
+    return 2
+
+
 def _print_json(value: Any) -> None:
     print(json.dumps(value, indent=2, sort_keys=True))
 
@@ -301,6 +332,21 @@ def _parser() -> argparse.ArgumentParser:
     agent_refresh = agent_sub.add_parser("refresh", help="refresh agent runtime rows")
     agent_refresh.add_argument("--name")
     agent_refresh.add_argument("--json", action="store_true")
+
+    mission = subcommands.add_parser("mission", help="run and inspect EAL missions")
+    mission_sub = mission.add_subparsers(dest="mission_command", required=True)
+    mission_run = mission_sub.add_parser(
+        "run", help="submit an EAL mission file through the daemon"
+    )
+    mission_run.add_argument("source", help="EAL file path, or '-' for stdin")
+    mission_run.add_argument("--label")
+    mission_run.add_argument("--json", action="store_true")
+    mission_track = mission_sub.add_parser("track", help="fetch mission run status")
+    mission_track.add_argument("run_id")
+    mission_track.add_argument("--json", action="store_true")
+    mission_cancel = mission_sub.add_parser("cancel", help="cancel a mission run")
+    mission_cancel.add_argument("run_id")
+    mission_cancel.add_argument("--json", action="store_true")
     return parser
 
 
