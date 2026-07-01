@@ -14,10 +14,23 @@ from easyremote.node import ComputeNode
 
 @pytest.fixture()
 def node(tmp_path):
-    deploys = []
-    node = ComputeNode(abilities_dir=tmp_path / "abilities", cli_runner=deploys.append)
-    node.deploys = deploys
+    installer = FakeAbilityControl()
+    node = ComputeNode(
+        abilities_dir=tmp_path / "abilities", ability_control=installer
+    )
+    node.installer = installer
     return node
+
+
+class FakeAbilityControl:
+    def __init__(self):
+        self.installs = []
+        self.fail = None
+
+    def install(self, path, *, node):
+        self.installs.append((path, node))
+        if self.fail is not None:
+            raise self.fail
 
 
 def read_manifest(info):
@@ -110,7 +123,9 @@ def test_device_ontology_naming_paired(tmp_path, monkeypatch):
         json.dumps({"realm": "acme", "node_id": "dev-a", "hub_endpoint": "h:443"})
     )
     monkeypatch.setenv("EASYNET_CREDENTIALS", str(credentials))
-    node = ComputeNode(abilities_dir=tmp_path / "abilities", cli_runner=lambda _: None)
+    node = ComputeNode(
+        abilities_dir=tmp_path / "abilities", ability_control=FakeAbilityControl()
+    )
 
     @node.register
     def fn(a: int) -> int:
@@ -126,34 +141,35 @@ def test_nothing_deploys_before_start(node):
     def fn(a: int) -> int:
         return a
 
-    assert node.deploys == []
+    assert node.installer.installs == []
 
 
 def test_start_deploys_each_package_to_local_node(short_tmp):
-    deploys = []
-    node = ComputeNode(abilities_dir=short_tmp / "abilities", cli_runner=deploys.append)
+    installer = FakeAbilityControl()
+    node = ComputeNode(
+        abilities_dir=short_tmp / "abilities", ability_control=installer
+    )
 
     @node.register
     def fn(a: int) -> int:
         return a
 
     with node:
-        assert deploys == [
-            ["ability", "deploy", str(fn.info.package_dir), "--node", "local"]
-        ]
+        assert installer.installs == [(fn.info.package_dir, "local")]
 
         @node.register
         def late(b: int) -> int:
             return b
 
-        assert len(deploys) == 2  # post-start registration publishes immediately
+        assert len(installer.installs) == 2
 
 
 def test_start_rolls_back_host_when_deploy_fails(short_tmp):
-    def fail(_args):
-        raise RuntimeError("deploy failed")
-
-    node = ComputeNode(abilities_dir=short_tmp / "abilities", cli_runner=fail)
+    installer = FakeAbilityControl()
+    installer.fail = RuntimeError("deploy failed")
+    node = ComputeNode(
+        abilities_dir=short_tmp / "abilities", ability_control=installer
+    )
 
     @node.register
     def fn(a: int) -> int:
@@ -167,18 +183,17 @@ def test_start_rolls_back_host_when_deploy_fails(short_tmp):
 
 
 def test_post_start_registration_rolls_back_when_deploy_fails(short_tmp):
-    deploys = []
-    node = ComputeNode(abilities_dir=short_tmp / "abilities", cli_runner=deploys.append)
+    installer = FakeAbilityControl()
+    node = ComputeNode(
+        abilities_dir=short_tmp / "abilities", ability_control=installer
+    )
 
     @node.register
     def first(a: int) -> int:
         return a
 
     with node:
-        def fail(_args):
-            raise RuntimeError("late deploy failed")
-
-        node._run_cli = fail
+        installer.fail = RuntimeError("late deploy failed")
         with pytest.raises(RuntimeError, match="late deploy failed"):
             @node.register
             def late(b: int) -> int:
@@ -264,7 +279,9 @@ def test_gateway_param_accepted_classic_shape(tmp_path):
 
 
 def test_end_to_end_through_real_socket(short_tmp):
-    node = ComputeNode(abilities_dir=short_tmp / "abilities", cli_runner=lambda _: None)
+    node = ComputeNode(
+        abilities_dir=short_tmp / "abilities", ability_control=FakeAbilityControl()
+    )
 
     @node.register
     def greet(who: str, excited: bool = False) -> dict:

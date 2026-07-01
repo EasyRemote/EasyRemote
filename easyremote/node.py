@@ -5,8 +5,8 @@ functions become device-owned abilities —
 
     easynet:///r/<realm>/ability/device.<node-id>.<namespace>.<fn>
 
-— deployed through ``easynet ability deploy --node local`` with the
-daemon's canonical ``ability.json`` install transaction. Every
+— deployed through the Python ``AbilityControl`` facade, which invokes
+the daemon's canonical ``ability.deploy`` install transaction. Every
 EasyRemote ability binds to the daemon-owned ``host_stream`` executor:
 the daemon opens the warm host socket, sends the JSON argument object
 plus read-only caller identity, and receives one or many stream frames.
@@ -25,20 +25,20 @@ import functools
 import hashlib
 import inspect
 import re
-import subprocess
 import threading
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from ._host import HostServer
 from ._host.server import HostedFunction
 from ._json import dumps_wire
 from ._version import __version__
 from .context import Context
-from .errors import InvalidArgument, Unavailable
+from .control import AbilityControl
+from .errors import InvalidArgument
 from .schema import PARAMETER_ORDER_KEY, derive
 
 __all__ = ["AbilityInfo", "ComputeNode", "RegisteredFunction"]
@@ -46,6 +46,10 @@ __all__ = ["AbilityInfo", "ComputeNode", "RegisteredFunction"]
 _EASYREMOTE_DIR = Path.home() / ".easynet" / "easyremote"
 
 _NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+
+
+class _AbilityInstaller(Protocol):
+    def install(self, path: str | Path, *, node: str = "local") -> object: ...
 
 
 @dataclass(frozen=True)
@@ -91,7 +95,7 @@ class ComputeNode:
     from pairing. When both are known and disagree, you get a warning,
     not silent re-routing: changing hubs is `easynet pair`'s job.
 
-    ``cli_runner``/``abilities_dir`` are injectable seams (tests);
+    ``ability_control``/``abilities_dir`` are injectable seams (tests);
     production code never passes them.
     """
 
@@ -101,7 +105,7 @@ class ComputeNode:
         *,
         namespace: str = "er",
         abilities_dir: Path | None = None,
-        cli_runner: Callable[[list[str]], None] | None = None,
+        ability_control: _AbilityInstaller | None = None,
     ) -> None:
         if not _NAME_PATTERN.match(namespace):
             raise InvalidArgument(
@@ -111,7 +115,7 @@ class ComputeNode:
         self._gateway = gateway
         self._namespace = namespace
         self._abilities_dir = abilities_dir or (_EASYREMOTE_DIR / "abilities")
-        self._run_cli = cli_runner or _run_easynet
+        self._ability_control = ability_control or AbilityControl()
         self._host = HostServer(self._abilities_dir.parent / "host.sock")
         self._abilities: dict[str, AbilityInfo] = {}
         self._started = False
@@ -246,7 +250,7 @@ class ComputeNode:
 
     def _deploy(self, info: AbilityInfo) -> None:
         """Publish onto this device's own ability registry."""
-        self._run_cli(["ability", "deploy", str(info.package_dir), "--node", "local"])
+        self._ability_control.install(info.package_dir, node="local")
 
     def _write_package(
         self,
@@ -377,21 +381,3 @@ def _stable_repr(value: Any) -> str:
 def _first_doc_line(fn: Callable[..., Any]) -> str:
     doc = inspect.getdoc(fn)
     return doc.splitlines()[0].strip() if doc else ""
-
-
-def _run_easynet(args: list[str]) -> None:
-    """Run one `easynet` CLI command, folding failures into the taxonomy."""
-    try:
-        subprocess.run(["easynet", *args], capture_output=True, text=True, check=True)
-    except FileNotFoundError:
-        raise Unavailable(
-            "`easynet` CLI not found on PATH — install the EasyNet CLI to"
-            " publish abilities to the daemon",
-            reason="easynet_cli_missing",
-        ) from None
-    except subprocess.CalledProcessError as exc:
-        detail = exc.stderr.strip() or exc.stdout.strip()
-        raise Unavailable(
-            f"`easynet {' '.join(args)}` failed: {detail}",
-            reason="easynet_cli_failed",
-        ) from None
