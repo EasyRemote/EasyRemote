@@ -28,7 +28,7 @@ import json
 import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Literal
 
 from easynet_axon import ura as axon_ura
 from easynet_axon.invocation.axiom import canonical_ability_descriptor_ref
@@ -42,6 +42,7 @@ __all__ = [
     "Arguments",
     "CallerSignature",
     "CausalRef",
+    "DispatchCarrier",
     "Invocation",
     "InvocationTuple",
     "MerkleAnchor",
@@ -446,6 +447,7 @@ def _unwrap_executor_envelope(value: Any) -> Any:
     return value
 
 
+DispatchCarrier = Literal["stream", "unary"]
 Dispatcher = Callable[["PreparedInvocation"], Invocation]
 
 
@@ -462,6 +464,7 @@ class PreparedInvocation:
     tuple: InvocationTuple
     metadata: Mapping[str, str] | None = None
     sign: bool | None = None
+    call_carrier: DispatchCarrier = "unary"
     dispatcher: Dispatcher = field(repr=False, compare=False, kw_only=True)
 
     def with_subject(self, ura: str) -> PreparedInvocation:

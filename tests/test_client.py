@@ -11,7 +11,14 @@ import time
 
 import pytest
 
-from easyremote.client import Client, FunctionInfo, RemoteFunction, Stream, remote
+from easyremote.client import (
+    Client,
+    FunctionInfo,
+    RemoteFunction,
+    RemoteOwner,
+    Stream,
+    remote,
+)
 from easyremote.errors import (
     DeadlineExceeded,
     InternalError,
@@ -97,6 +104,7 @@ class _FakeBidi:
 class FakeTransport:
     def __init__(self, responses=None):
         self.invocations = []
+        self.carriers = []
         self.responses = list(responses or [])
         self.delay = 0.0
         self.closed = False
@@ -106,6 +114,7 @@ class FakeTransport:
         if self.delay:
             time.sleep(self.delay)
         self.invocations.append(wire)
+        self.carriers.append("unary")
         return self.responses.pop(0) if self.responses else ok_response({"echo": True})
 
     def stream(self, wire):
@@ -118,6 +127,7 @@ class FakeTransport:
         if self.delay:
             time.sleep(self.delay)
         self.invocations.append(wire)
+        self.carriers.append("stream")
         response = self.responses.pop(0) if self.responses else {"echo": True}
         if isinstance(response, dict) and "result_json" in response:
             result = response["result_json"]
@@ -129,6 +139,7 @@ class FakeTransport:
         if self.delay:
             time.sleep(self.delay)
         self.invocations.append(wire)
+        self.carriers.append("bidi")
         self.bidi_channel = _FakeBidi()
         return self.bidi_channel
 
@@ -139,6 +150,7 @@ class FakeTransport:
 class RouteNegativeTransport(FakeTransport):
     def invoke(self, wire):
         self.invocations.append(wire)
+        self.carriers.append("unary")
         raise InternalError(
             "easynet_invocation_invoke: daemon returned gRPC status for"
             f" {wire['descriptor_ref']}: code=FailedPrecondition,"
@@ -192,21 +204,14 @@ def test_ability_ura_projects_to_explicit_invocation_tuple():
     ability_ura = "easynet:///r/acme/ability/device.gpu-1.team.fetch_sales"
     client, transport = make_client(
         responses=[
-            ok_response(
-                {
-                    "result": {"rows": 3},
-                    "fulfilled_by": "registry_dispatch",
-                    "target": "easynet:///r/acme/device/gpu-1",
-                    "ability": "team.fetch_sales",
-                    "qualified_name": ability_ura,
-                }
-            )
+            ok_response({"rows": 3})
         ]
     )
 
     result = client.call(ability_ura, quarter="Q2")
 
     assert result == {"rows": 3}
+    assert transport.carriers == ["stream"]
     wire = transport.invocations[0]
     assert wire["callee_ura"] == "easynet:///r/acme/device/gpu-1"
     assert wire["subject_ura"] == ability_ura
@@ -226,6 +231,7 @@ def test_agent_owned_ability_ura_uses_same_daemon_invoke_path():
     )
 
     assert client.call(ability_ura, city="Singapore") == "sunny"
+    assert transport.carriers == ["unary"]
     assert (
         transport.invocations[0]["callee_ura"]
         == "easynet:///r/acme/agent/user-1.claude"
@@ -639,6 +645,214 @@ def test_remote_stub_invoke_rejects_host_stream_ability():
     assert exc_info.value.reason == "host_stream_invoke_not_supported"
 
 
+# -- @remote as a descriptor (the property playbook) ---------------------------
+
+
+def test_remote_descriptor_on_class_strips_self():
+    client, transport = make_client()
+
+    class GPUCluster:
+        def __init__(self, c):
+            self.client = c
+
+        @remote
+        def ai_inference(self, prompt: str, max_tokens: int = 64) -> str: ...
+
+    GPUCluster(client).ai_inference("hello")
+    wire = transport.invocations[0]
+    # The host instance never reaches the wire; only business args do.
+    assert wire["args"] == {"prompt": "hello", "max_tokens": 64}
+    assert (
+        wire["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.dev-a.er.ai_inference@1.0.0"
+    )
+
+
+def test_remote_descriptor_uses_declared_name():
+    client, transport = make_client()
+
+    class Cluster:
+        def __init__(self, c):
+            self.client = c
+
+        @remote  # no name= → __set_name__ adopts "ai_inference"
+        def ai_inference(self, prompt: str) -> str: ...
+
+    Cluster(client).ai_inference("hi")
+    assert (
+        transport.invocations[0]["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.dev-a.er.ai_inference@1.0.0"
+    )
+
+
+def test_remote_descriptor_explicit_name_wins_over_attribute():
+    client, transport = make_client()
+
+    class Cluster:
+        def __init__(self, c):
+            self.client = c
+
+        @remote(name="custom")
+        def ai_inference(self, prompt: str) -> str: ...
+
+    Cluster(client).ai_inference("hi")
+    assert (
+        transport.invocations[0]["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.dev-a.er.custom@1.0.0"
+    )
+
+
+def test_remote_descriptor_resolves_client_from_instance():
+    client, transport = make_client()
+
+    class Cluster:
+        def __init__(self, c):
+            self._client = c  # the ._client fallback
+
+        @remote
+        def fn(self, a: int) -> int: ...
+
+    Cluster(client).fn(5)
+    assert transport.invocations[0]["args"] == {"a": 5}
+
+
+def test_remote_descriptor_class_access_returns_descriptor():
+    class Cluster:
+        @remote
+        def fn(self, a: int) -> int: ...
+
+    assert isinstance(Cluster.fn, RemoteFunction)
+
+
+def test_remote_descriptor_binding_is_cached_per_instance():
+    client, _ = make_client()
+
+    class Cluster:
+        def __init__(self, c):
+            self.client = c
+
+        @remote
+        def fn(self, a: int) -> int: ...
+
+    host = Cluster(client)
+    assert host.fn is host.fn  # same bound object across accesses
+
+
+def test_remote_descriptor_explicit_client_overrides_instance():
+    explicit, explicit_tx = make_client()
+    other, other_tx = make_client()
+
+    class Cluster:
+        def __init__(self, c):
+            self.client = c
+
+        @remote(client=explicit)
+        def fn(self, a: int) -> int: ...
+
+    Cluster(other).fn(1)
+    assert len(explicit_tx.invocations) == 1
+    assert len(other_tx.invocations) == 0
+
+
+def test_remote_descriptor_supports_stream():
+    client, transport = make_client()
+
+    class Cluster:
+        def __init__(self, c):
+            self.client = c
+
+        @remote
+        def gen(self, n: int) -> int: ...
+
+    list(Cluster(client).gen(3))
+    assert transport.invocations[0]["args"] == {"n": 3}
+
+
+# -- owner handles (symmetric to @node.register) -------------------------------
+
+
+def test_agent_handle_remote_addresses_agent_owner():
+    client, transport = make_client()
+
+    alice = client.agent("u-alice.chatbot")
+
+    @alice.remote
+    def chat(prompt: str) -> str: ...
+
+    chat("hi")
+    wire = transport.invocations[0]
+    assert wire["callee_ura"] == "easynet:///r/acme/agent/u-alice.chatbot"
+    assert (
+        wire["descriptor_ref"]
+        == "easynet:///r/acme/ability/u-alice.chatbot.er.chat@1.0.0"
+    )
+    assert wire["args"] == {"prompt": "hi"}
+
+
+def test_device_handle_call_matches_node_target():
+    client, transport = make_client()
+    client.device("gpu-2").call("chat", prompt="hi")
+
+    other, other_tx = make_client()
+    other.call(Client.target("chat", node="gpu-2"), prompt="hi")
+
+    assert (
+        transport.invocations[0]["descriptor_ref"]
+        == other_tx.invocations[0]["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.gpu-2.er.chat@1.0.0"
+    )
+    assert transport.invocations[0]["callee_ura"] == "easynet:///r/acme/device/gpu-2"
+
+
+def test_hub_handle_addresses_realm_hub():
+    client, transport = make_client()
+    client.hub().call("route", x=1)
+    wire = transport.invocations[0]
+    assert wire["callee_ura"] == "easynet:///r/acme/hub"
+    assert wire["descriptor_ref"] == "easynet:///r/acme/ability/hub.er.route@1.0.0"
+
+
+def test_handle_factories_return_remote_owner():
+    client, _ = make_client()
+    assert isinstance(client.agent("u-alice.chatbot"), RemoteOwner)
+    assert isinstance(client.device("gpu-2"), RemoteOwner)
+    assert isinstance(client.hub(), RemoteOwner)
+
+
+def test_owner_handle_accepts_full_cross_realm_ura():
+    client, transport = make_client()
+    client.device("easynet:///r/other/device/box1").call("chat", prompt="hi")
+    wire = transport.invocations[0]
+    # The facade encodes the wire; whether it routes is daemon federation policy.
+    assert wire["callee_ura"] == "easynet:///r/other/device/box1"
+
+
+def test_owner_target_rejects_node_and_pick():
+    for kwargs in ({"node": "x"}, {"pick": "random"}):
+        with pytest.raises(InvalidArgument) as exc_info:
+            Client.target("chat", owner_ura="easynet:///r/acme/hub", **kwargs)
+        assert exc_info.value.reason == "ambiguous_target_selection"
+
+
+def test_user_owner_cannot_own_an_ability():
+    client, _ = make_client()
+    with pytest.raises(InvalidArgument) as exc_info:
+        client.call(
+            Client.target("chat", owner_ura="easynet:///r/acme/user/u-bob"),
+            prompt="hi",
+        )
+    assert exc_info.value.reason == "invalid_owner_for_ability"
+
+
+def test_agent_handle_dotted_ability_passes_through():
+    client, transport = make_client()
+    client.agent("u-alice.chatbot").call("chat.respond", prompt="hi")
+    assert (
+        transport.invocations[0]["descriptor_ref"]
+        == "easynet:///r/acme/ability/u-alice.chatbot.chat.respond@1.0.0"
+    )
+
+
 # -- pick selection ----------------------------------------------------------
 
 
@@ -663,6 +877,7 @@ def test_round_robin_alternates_device_candidates():
 
     client.execute(Client.target("fn", pick="round_robin"))
     client.execute(Client.target("fn", pick="round_robin"))
+    assert transport.carriers[1:] == ["stream", "stream"]
     selected = [w["subject_ura"] for w in transport.invocations[1:]]
     assert selected == [
         "easynet:///r/acme/ability/device.dev-a.er.fn",
@@ -682,6 +897,7 @@ def test_pick_random_chooses_a_known_candidate():
     client, transport = make_client(responses=[discover])
     client.functions()
     client.execute(Client.target("fn", pick="random"))
+    assert transport.carriers[1] == "stream"
     assert transport.invocations[1]["subject_ura"] in (
         "easynet:///r/acme/ability/device.dev-a.er.fn",
         "easynet:///r/acme/ability/device.dev-b.er.fn",
@@ -767,6 +983,7 @@ def test_agent_owned_candidates_are_pickable_from_canonical_ura():
     )
     client.functions()
     client.execute(Client.target("fn", pick="round_robin"))
+    assert transport.carriers[1] == "unary"
     assert (
         transport.invocations[1]["callee_ura"]
         == "easynet:///r/acme/agent/user-1.claude"

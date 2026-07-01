@@ -9,9 +9,18 @@ implemented and tested.
 """
 
 from ._version import __version__
-from .client import BidiSession, CallTarget, Client, RemoteFunction, Stream, remote
+from .client import (
+    BidiSession,
+    CallTarget,
+    Client,
+    RemoteFunction,
+    RemoteOwner,
+    Stream,
+    remote,
+)
 from .config import configure
 from .context import Context
+from .daemon import DaemonHandle, DaemonStartConfig
 from .errors import (
     Cancelled,
     DeadlineExceeded,
@@ -36,6 +45,8 @@ __all__ = [
     "Client",
     "ComputeNode",
     "Context",
+    "DaemonHandle",
+    "DaemonStartConfig",
     "DeadlineExceeded",
     "Gateway",
     "InternalError",
@@ -51,6 +62,7 @@ __all__ = [
     "ReceiptChain",
     "RemoteError",
     "RemoteFunction",
+    "RemoteOwner",
     "ResourceExhausted",
     "SchemaError",
     "Server",

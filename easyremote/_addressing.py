@@ -11,7 +11,7 @@ from __future__ import annotations
 import random
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from easynet_axon import ura as axon_ura
 
@@ -19,6 +19,7 @@ from .errors import InvalidArgument
 from .identity import LocalIdentity, device_ura
 
 PICK_POLICIES = frozenset({"round_robin", "random"})
+CallCarrier = Literal["stream", "unary"]
 
 
 class Candidate(Protocol):
@@ -38,6 +39,7 @@ class ResolvedAbility:
 
     callee: str
     ability: str
+    call_carrier: CallCarrier
     input_schema: dict[str, Any] | None = None
     ability_ura: str | None = None
     subject: str | None = None
@@ -156,7 +158,10 @@ class AbilityAddressResolver:
         identity: LocalIdentity,
         node: str | None,
         pick: str | None,
+        owner_ura: str | None = None,
     ) -> ResolvedAbility:
+        if owner_ura is not None:
+            return self._resolve_owner(function, owner_ura)
         function = self.namespaced(function)
         if is_ability_ura(function):
             if node is not None or pick is not None:
@@ -177,6 +182,7 @@ class AbilityAddressResolver:
             return ResolvedAbility(
                 callee=device_ura(identity.realm, node),
                 ability=ability,
+                call_carrier="stream",
                 input_schema=self.cache.schema_for_verb(verb),
                 argument_label=ability,
             )
@@ -187,8 +193,40 @@ class AbilityAddressResolver:
         return ResolvedAbility(
             callee=identity.device_ura,
             ability=ability,
+            call_carrier="stream",
             input_schema=self.cache.schema_for_verb(verb),
             argument_label=ability,
+        )
+
+    def _resolve_owner(self, function: str, owner_ura: str) -> ResolvedAbility:
+        """Resolve a function against an explicit owner handle.
+
+        A full Ability URA passes through verbatim. A short name is
+        namespaced (a bare verb gets this client's namespace, a dotted name
+        passes through) and projected onto the owner via Axon's
+        ``owner_ability_ura`` — so the callee Axon later derives from the
+        Ability URA is exactly this owner, satisfying the daemon's
+        owner == callee descriptor binding.
+        """
+        if is_ability_ura(function):
+            return self.from_ability_ura(
+                function,
+                input_schema=self.cache.schema_for_ura(function),
+                argument_label=function,
+            )
+        ability_name = function if "." in function else f"{self._namespace}.{function}"
+        ability_ura = axon_ura.owner_ability_ura(owner_ura, ability_name)
+        if not isinstance(ability_ura, str):
+            raise InvalidArgument(
+                f"owner {owner_ura!r} cannot publish abilities (users own none;"
+                " ability owners are device, agent, or hub)",
+                reason="invalid_owner_for_ability",
+            )
+        return self.from_ability_ura(
+            ability_ura,
+            input_schema=self.cache.schema_for_ura(ability_ura),
+            argument_label=ability_ura,
+            call_carrier=_call_carrier_for_owner(owner_ura),
         )
 
     @staticmethod
@@ -197,6 +235,7 @@ class AbilityAddressResolver:
         *,
         input_schema: dict[str, Any] | None = None,
         argument_label: str | None = None,
+        call_carrier: CallCarrier | None = None,
     ) -> ResolvedAbility:
         try:
             parsed = axon_ura.parse_ura(ability_ura)
@@ -230,6 +269,7 @@ class AbilityAddressResolver:
         return ResolvedAbility(
             callee=callee,
             ability=ability,
+            call_carrier=call_carrier or _call_carrier_for_owner(callee),
             input_schema=input_schema,
             ability_ura=ability_ura,
             subject=ability_ura,
@@ -252,3 +292,26 @@ class AbilityAddressResolver:
             or self.cache.schema_for_ura(info.qualified_name),
             argument_label=info.qualified_name,
         )
+
+
+def owner_kind(owner_ura: str) -> str:
+    """The canonical owner kind for a device/agent/hub owner URA."""
+    try:
+        parsed = axon_ura.parse_ura(owner_ura.strip())
+    except axon_ura.ParseError as exc:
+        raise InvalidArgument(
+            f"invalid owner URA {owner_ura!r}: {exc}",
+            reason="invalid_owner_ura",
+        ) from exc
+    kind = str(parsed.kind)
+    if kind not in {"device", "agent", "hub"}:
+        raise InvalidArgument(
+            f"owner {owner_ura!r} cannot publish abilities (users own none;"
+            " ability owners are device, agent, or hub)",
+            reason="invalid_owner_for_ability",
+        )
+    return kind
+
+
+def _call_carrier_for_owner(owner_ura: str) -> CallCarrier:
+    return "stream" if owner_kind(owner_ura) == "device" else "unary"

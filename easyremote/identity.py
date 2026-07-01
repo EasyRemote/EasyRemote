@@ -24,6 +24,7 @@ from .errors import InternalError, Unavailable
 
 __all__ = [
     "LocalIdentity",
+    "agent_ura",
     "device_ability_ura",
     "device_ura",
     "hub_ura",
@@ -33,6 +34,17 @@ __all__ = [
 def device_ura(realm: str, node_id: str) -> str:
     """RFC-001 device shape, validated by the canonical parser."""
     return _validated(f"{axon_ura.URA_SCHEME}{realm}/device/{node_id}")
+
+
+def agent_ura(realm: str, owner_token: str) -> str:
+    """RFC-001 agent owner shape, validated by the canonical parser.
+
+    ``owner_token`` is the ``<user-id>.<agent-id>`` token (the same form the
+    Ability URA carries). Axon ships no agent-owner builder yet, so this
+    renders the shape and round-trips it through ``parse_ura`` before it
+    leaves the module — flag for an Axon ``build_agent_ura`` to replace it.
+    """
+    return _validated(f"{axon_ura.URA_SCHEME}{realm}/agent/{owner_token}")
 
 
 def hub_ura(realm: str) -> str:

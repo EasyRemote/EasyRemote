@@ -31,16 +31,19 @@ import functools
 import inspect
 import queue
 import threading
+import weakref
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
+
+from easynet_axon import ura as axon_ura
 
 from . import _codec
 from ._addressing import (
     PICK_POLICIES,
     AbilityAddressResolver,
     ResolvedAbility,
-    is_ability_ura,
+    owner_kind,
 )
 from ._transport import BidiChannel, FrameStream, Transport
 from .errors import (
@@ -49,7 +52,7 @@ from .errors import (
     Unavailable,
     error_from_wire,
 )
-from .identity import LocalIdentity
+from .identity import LocalIdentity, agent_ura, device_ura, hub_ura
 from .invocation import (
     JSON_CONTENT_TYPE,
     Arguments,
@@ -69,6 +72,7 @@ __all__ = [
     "Client",
     "FunctionInfo",
     "RemoteFunction",
+    "RemoteOwner",
     "Stream",
     "remote",
 ]
@@ -118,6 +122,7 @@ class CallTarget:
     causal: Causal = None
     sign: bool | None = None
     metadata: Mapping[str, str] | None = None
+    owner_ura: str | None = None
 
     def __post_init__(self) -> None:
         if not self.function.strip():
@@ -127,6 +132,14 @@ class CallTarget:
         if self.node is not None and self.pick is not None:
             raise InvalidArgument(
                 "target cannot specify both node and pick",
+                reason="ambiguous_target_selection",
+            )
+        if self.owner_ura is not None and (
+            self.node is not None or self.pick is not None
+        ):
+            raise InvalidArgument(
+                "target cannot combine an explicit owner with node or pick"
+                " — an owner handle already names the callee",
                 reason="ambiguous_target_selection",
             )
         if self.pick is not None and self.pick not in PICK_POLICIES:
@@ -335,7 +348,7 @@ class Client:
     ) -> Any:
         target = self._target(function)
         prepared = self.prepare(target, *args, **kwargs)
-        if self._uses_ability_ura_dispatch(prepared):
+        if prepared.call_carrier == "unary":
             return prepared.send().result()
         # EasyRemote abilities register stream-mode (host_stream), so a
         # result-first call drains the frame stream. A unary function
@@ -360,15 +373,6 @@ class Client:
         wait_budget = self._timeout if timeout is None else timeout
         wire = encode_invocation(prepared.tuple, metadata=prepared.metadata)
         return Stream(self._connected().stream(wire), timeout=wait_budget)
-
-    @staticmethod
-    def _uses_ability_ura_dispatch(prepared: PreparedInvocation) -> bool:
-        args = prepared.tuple.arguments.json_value
-        return (
-            prepared.tuple.ability.endswith(".invoke")
-            and isinstance(args, dict)
-            and isinstance(args.get("ability_ura"), str)
-        ) or is_ability_ura(prepared.tuple.subject)
 
     def session(
         self,
@@ -414,7 +418,9 @@ class Client:
                 " only path wired today",
                 reason="signing_path_pending",
             )
-        resolved = self._address(target.function, target.node, target.pick)
+        resolved = self._address(
+            target.function, target.node, target.pick, target.owner_ura
+        )
         payload = self._named_arguments(resolved, args, kwargs)
         tuple_ = InvocationTuple(
             caller=self._who().device_ura,
@@ -435,6 +441,7 @@ class Client:
             tuple=tuple_,
             metadata=target.metadata,
             sign=target.sign,
+            call_carrier=resolved.call_carrier,
             dispatcher=dispatch,
         )
 
@@ -450,8 +457,13 @@ class Client:
         causal: Causal = None,
         sign: bool | None = None,
         metadata: Mapping[str, str] | None = None,
+        owner_ura: str | None = None,
     ) -> CallTarget:
-        """Build a collision-free target for one client call."""
+        """Build a collision-free target for one client call.
+
+        Prefer the ``client.device/agent/hub`` handles over a raw
+        ``owner_ura`` — they build and validate the owner URA for you.
+        """
         return CallTarget(
             function=function,
             node=node,
@@ -461,7 +473,44 @@ class Client:
             causal=causal,
             sign=sign,
             metadata=metadata,
+            owner_ura=owner_ura,
         )
+
+    # -- owner handles ---------------------------------------------------------
+
+    def device(self, device_id: str) -> RemoteOwner:
+        """A handle to a device's abilities (``@handle.remote`` / ``.call``).
+
+        ``device_id`` is a node id in this client's realm, or a full device
+        owner URA (a cross-realm URA only routes where federation is
+        configured). Symmetric to ``ComputeNode`` on the serving side.
+        """
+        return RemoteOwner(self, self._owner_ura(device_id, "device"))
+
+    def agent(self, spec: str) -> RemoteOwner:
+        """A handle to an agent's abilities.
+
+        ``spec`` is the ``<user-id>.<agent-id>`` owner token in this
+        client's realm, or a full agent owner URA. Agent callees are a
+        first-class daemon route (hosted locally or on a same-realm device).
+        """
+        return RemoteOwner(self, self._owner_ura(spec, "agent"))
+
+    def hub(self) -> RemoteOwner:
+        """A handle to the realm hub's abilities."""
+        return RemoteOwner(self, hub_ura(self._who().realm))
+
+    def _owner_ura(self, spec: str, kind: Literal["device", "agent"]) -> str:
+        if spec.startswith(axon_ura.URA_SCHEME):
+            actual = owner_kind(spec)
+            if actual != kind:
+                raise InvalidArgument(
+                    f"expected a {kind} owner URA, got {actual}: {spec}",
+                    reason="invalid_owner_kind",
+                )
+            return spec
+        realm = self._who().realm
+        return device_ura(realm, spec) if kind == "device" else agent_ura(realm, spec)
 
     # -- discovery -------------------------------------------------------------
 
@@ -582,20 +631,27 @@ class Client:
             return True
 
     def _address(
-        self, function: str, node: str | None, pick: str | None = None
+        self,
+        function: str,
+        node: str | None,
+        pick: str | None = None,
+        owner_ura: str | None = None,
     ) -> ResolvedAbility:
         """(callee URA, qualified ability name) for a function reference.
 
         Short names get this client's namespace; dotted names pass
-        through. Canonical Ability URAs are projected through the Axon URA
-        parser into explicit Invocation tuple fields; daemon route policy
-        still lives behind libeasynet_cli.
+        through. An explicit ``owner_ura`` (an owner handle) projects the
+        function onto that owner instead of the local device. Canonical
+        Ability URAs are projected through the Axon URA parser into
+        explicit Invocation tuple fields; daemon route policy still lives
+        behind libeasynet_cli.
         """
         return self._addressing.resolve(
             function,
             identity=self._who(),
             node=node,
             pick=pick,
+            owner_ura=owner_ura,
         )
 
     def _named_arguments(
@@ -770,6 +826,14 @@ class RemoteFunction:
     round-trip needed. Stubs represent EasyRemote-hosted host_stream
     abilities, so they expose result-first calls and live streams, not
     daemon unary ``invoke``.
+
+    It is also a *descriptor* (the ``property`` playbook): declared on a
+    class body, ``__set_name__`` adopts the attribute name as the ability
+    name (no second naming), and ``__get__`` binds to the host instance —
+    stripping ``self`` from the wire arguments and resolving the client
+    from ``client=`` > ``instance.client`` > ``instance._client`` > a
+    fresh ``Client()``. Used at module level (the original form),
+    ``__get__`` never fires and behaviour is unchanged.
     """
 
     def __init__(
@@ -780,12 +844,46 @@ class RemoteFunction:
         node: str | None = None,
         timeout: float | None = None,
         client: Client | None = None,
+        owner_ura: str | None = None,
     ) -> None:
         functools.update_wrapper(self, fn)
         self._signature = inspect.signature(fn)
+        self._explicit_name = name
         self._name = name or fn.__name__
-        self._target = CallTarget(self._name, node=node, timeout=timeout)
+        self._node = node
+        self._timeout = timeout
+        self._target = CallTarget(
+            self._name, node=node, timeout=timeout, owner_ura=owner_ura
+        )
         self._client = client
+        self._bound: weakref.WeakKeyDictionary[Any, _BoundRemote] = (
+            weakref.WeakKeyDictionary()
+        )
+        self._fallback_clients: weakref.WeakKeyDictionary[Any, Client] = (
+            weakref.WeakKeyDictionary()
+        )
+
+    # -- descriptor protocol -----------------------------------------------------
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        """Adopt the class-body attribute name when none was given.
+
+        Only fires for a stub declared on a class; module-level stubs keep
+        ``fn.__name__``. An explicit ``name=`` always wins.
+        """
+        if self._explicit_name is None:
+            self._name = name
+            self._target = replace(self._target, function=name)
+
+    def __get__(self, obj: Any, objtype: type | None = None) -> Any:
+        """Class access yields the descriptor; instance access binds it."""
+        if obj is None:
+            return self
+        bound = self._bound.get(obj)
+        if bound is None:
+            bound = _BoundRemote(self, obj)
+            self._bound[obj] = bound
+        return bound
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         # EasyRemote abilities register stream-mode (host_stream), so the
@@ -814,8 +912,23 @@ class RemoteFunction:
 
         return await asyncio.to_thread(self.__call__, *args, **kwargs)
 
-    def _bind(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
-        bound = self._signature.bind(*args, **kwargs)
+    def _bind(
+        self,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        *,
+        instance: Any = _NO_VALUE,
+    ) -> dict[str, Any]:
+        # Bound (descriptor) calls pass the host instance so it binds to the
+        # method's first parameter (`self`) and is then dropped — the wire
+        # carries only business arguments, never the host object.
+        skip: str | None = None
+        if instance is not _NO_VALUE:
+            params = iter(self._signature.parameters)
+            skip = next(params, None)
+            bound = self._signature.bind(instance, *args, **kwargs)
+        else:
+            bound = self._signature.bind(*args, **kwargs)
         bound.apply_defaults()
         # `signature.bind` nests a **kwargs param under its own name and a
         # *args param as a tuple. The wire shape is flat: **kwargs keys go
@@ -824,7 +937,7 @@ class RemoteFunction:
         # @remote stub sends the same args as a direct client.call.
         out: dict[str, Any] = {}
         for name, param in self._signature.parameters.items():
-            if name not in bound.arguments:
+            if name == skip or name not in bound.arguments:
                 continue
             value = bound.arguments[name]
             if param.kind is inspect.Parameter.VAR_KEYWORD:
@@ -835,10 +948,64 @@ class RemoteFunction:
                 out[name] = value
         return out
 
-    def _bound_client(self) -> Client:
-        if self._client is None:
-            self._client = Client()
+    def _bound_client(self, instance: Any = None) -> Client:
+        # Precedence: explicit client= > instance.client > instance._client
+        # > a fresh Client(). The descriptor passes the host instance.
+        if self._client is not None:
+            return self._client
+        if instance is not None:
+            host = getattr(instance, "client", None) or getattr(
+                instance, "_client", None
+            )
+            if isinstance(host, Client):
+                return host
+            # A descriptor with no client= and a host that exposes none gets a
+            # per-host fallback — never cache it on the shared descriptor, or
+            # one client-less host would poison every other host's dispatch.
+            return self._fallback_client(instance)
+        self._client = Client()
         return self._client
+
+    def _fallback_client(self, instance: Any) -> Client:
+        client = self._fallback_clients.get(instance)
+        if client is None:
+            client = Client()
+            self._fallback_clients[instance] = client
+        return client
+
+
+class _BoundRemote:
+    """A :class:`RemoteFunction` bound to its host instance.
+
+    The descriptor's ``__get__`` returns this when the stub is accessed
+    through an instance. It forwards ``__call__``/``stream``/``aio`` to the
+    descriptor, threading the host instance so ``self`` is stripped from
+    the wire arguments and the host's client is reused.
+    """
+
+    def __init__(self, fn: RemoteFunction, instance: Any) -> None:
+        self._fn = fn
+        self._instance = instance
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self._fn._bound_client(self._instance).call(
+            self._fn._target,
+            **self._fn._bind(args, kwargs, instance=self._instance),
+        )
+
+    def stream(self, *args: Any, **kwargs: Any) -> Stream:
+        return self._fn._bound_client(self._instance).stream(
+            self._fn._target,
+            **self._fn._bind(args, kwargs, instance=self._instance),
+        )
+
+    async def aio(self, *args: Any, **kwargs: Any) -> Any:
+        import asyncio
+
+        return await asyncio.to_thread(self.__call__, *args, **kwargs)
+
+    def invoke(self, *args: Any, **kwargs: Any) -> Invocation:
+        return self._fn.invoke(*args, **kwargs)
 
 
 def remote(
@@ -848,17 +1015,72 @@ def remote(
     node: str | None = None,
     timeout: float | None = None,
     client: Client | None = None,
+    owner_ura: str | None = None,
 ) -> Any:
     """Declare a typed stub for a remote capability (both decorator forms).
 
-    Multi-candidate selection (``pick`` policies) is deliberately not
-    here yet: choosing among owners requires deriving a callee from a
-    candidate's ability URA, and that owner-resolution contract is
-    pinned by P0 (resource-aware additionally needs Cli PR-3 load
-    data). One policy seam will land with verified facts, not before.
+    ``owner_ura`` targets a specific ability owner (set by
+    ``RemoteOwner.remote`` / ``client.agent(...).remote`` etc.); left unset
+    the stub addresses the local device. Multi-candidate selection
+    (``pick`` policies) is deliberately not here yet: choosing among owners
+    requires deriving a callee from a candidate's ability URA, and that
+    owner-resolution contract is pinned by P0 (resource-aware additionally
+    needs Cli PR-3 load data). One policy seam will land with verified
+    facts, not before.
     """
     if fn is None:
         return functools.partial(
-            remote, name=name, node=node, timeout=timeout, client=client
+            remote,
+            name=name,
+            node=node,
+            timeout=timeout,
+            client=client,
+            owner_ura=owner_ura,
         )
-    return RemoteFunction(fn, name=name, node=node, timeout=timeout, client=client)
+    return RemoteFunction(
+        fn, name=name, node=node, timeout=timeout, client=client, owner_ura=owner_ura
+    )
+
+
+class RemoteOwner:
+    """A handle to one ability owner — the client-side mirror of ``ComputeNode``.
+
+    ``client.device(id)`` / ``client.agent(spec)`` / ``client.hub()`` return
+    these. ``@handle.remote`` declares a typed stub bound to this owner (the
+    symmetric counterpart of ``@node.register`` on the serving side), and
+    ``call`` / ``stream`` dispatch ad-hoc without a stub. The owner identity
+    lives on the handle, so it never clutters the call site.
+    """
+
+    def __init__(self, client: Client, owner_ura: str) -> None:
+        self._client = client
+        self._owner_ura = owner_ura
+
+    @property
+    def owner_ura(self) -> str:
+        return self._owner_ura
+
+    def remote(
+        self,
+        fn: Callable[..., Any] | None = None,
+        *,
+        name: str | None = None,
+        timeout: float | None = None,
+    ) -> Any:
+        """Declare a stub bound to this owner (bare or parameterised form)."""
+        return remote(
+            fn,
+            name=name,
+            timeout=timeout,
+            client=self._client,
+            owner_ura=self._owner_ura,
+        )
+
+    def call(self, function: str, /, *args: Any, **kwargs: Any) -> Any:
+        return self._client.call(self._target(function), *args, **kwargs)
+
+    def stream(self, function: str, /, *args: Any, **kwargs: Any) -> Stream:
+        return self._client.stream(self._target(function), *args, **kwargs)
+
+    def _target(self, function: str) -> CallTarget:
+        return CallTarget(function=function, owner_ura=self._owner_ura)
