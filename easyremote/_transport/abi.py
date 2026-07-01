@@ -22,7 +22,7 @@ import sys
 import threading
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from ..config import settings
 from ..errors import Unavailable, error_from_abi
@@ -167,14 +167,15 @@ class Library:
             raise error_from_abi(code, self._last_error())
 
     def _last_error(self) -> str:
-        raw = self._lib.easynet_last_error()  # borrowed const char*, never freed
+        raw = cast(bytes | None, self._lib.easynet_last_error())
         return raw.decode("utf-8", errors="replace") if raw else ""
 
     def _read_out_string(self, out: ctypes.c_char_p) -> str:
-        if not out.value:
+        raw = out.value
+        if not raw:
             return ""
         try:
-            return out.value.decode("utf-8")
+            return raw.decode("utf-8")
         finally:
             self._lib.easynet_string_free(out)
 

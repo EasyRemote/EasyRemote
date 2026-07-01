@@ -30,7 +30,7 @@ class DaemonStartConfig:
     node_id: str | None = None
     env: Mapping[str, str] | None = None
     log_path: Path | None = None
-    detached: bool = False
+    detached: bool | None = None
 
     @classmethod
     def hub(cls, realm: str) -> DaemonStartConfig:
@@ -49,6 +49,11 @@ class DaemonStartConfig:
             raise InvalidArgument(
                 f"unsupported daemon mode {self.mode!r}", reason="invalid_daemon_mode"
             )
+        if self.mode == "device" and not self.node_id:
+            raise InvalidArgument(
+                "device daemon start requires a node_id",
+                reason="missing_node_id",
+            )
         wire: dict[str, Any] = {"mode": self.mode}
         if self.realm is not None:
             wire["realm"] = self.realm
@@ -58,8 +63,8 @@ class DaemonStartConfig:
             wire["env"] = dict(self.env)
         if self.log_path is not None:
             wire["log_path"] = str(self.log_path)
-        if self.detached:
-            wire["detached"] = True
+        if self.detached is not None:
+            wire["detach"] = self.detached
         return wire
 
 

@@ -20,6 +20,30 @@ def test_device_start_config_wire_shape():
     }
 
 
+def test_explicit_detached_uses_ffi_field_name():
+    config = DaemonStartConfig(
+        mode="device",
+        node_id="dev-a",
+        detached=True,
+    )
+    assert config.to_wire()["detach"] is True
+    assert "detached" not in config.to_wire()
+
+
+def test_explicit_foreground_is_preserved():
+    assert DaemonStartConfig(
+        mode="device",
+        node_id="dev-a",
+        detached=False,
+    ).to_wire()["detach"] is False
+
+
+def test_device_start_config_requires_node_id():
+    with pytest.raises(InvalidArgument) as exc_info:
+        DaemonStartConfig.device().to_wire()
+    assert exc_info.value.reason == "missing_node_id"
+
+
 def test_hub_realm_must_not_be_empty():
     with pytest.raises(InvalidArgument) as exc_info:
         DaemonStartConfig.hub(" ")
