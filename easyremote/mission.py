@@ -12,7 +12,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .errors import InvalidArgument
+import easynet_sdk
+
+from .errors import InternalError, InvalidArgument, RemoteError, Unavailable
 
 if TYPE_CHECKING:
     from .client import Client
@@ -25,16 +27,17 @@ class MissionControl:
 
     def __init__(self, client: Client | None = None) -> None:
         self._client = client or _new_client()
+        self._mission = easynet_sdk.EasyRemoteMissionAdapter.from_easyremote_client(
+            self._client
+        )
 
     def run_eal(self, source: str, *, label: str | None = None) -> MissionRun:
         """Submit an EAL source string to daemon ``mission.run``."""
-        source_text = _validated_source(source)
-        mission_label = _validated_optional_label(label)
-        args: dict[str, Any] = {"source": source_text}
-        if mission_label is not None:
-            args["label"] = mission_label
-        response = self._client.invoke("mission.run", **args).result()
-        return MissionRun(self, _dict(response))
+        try:
+            response = self._mission.run_eal(source, label=label)
+        except easynet_sdk.SDKError as exc:
+            raise _easyremote_mission_error(exc) from exc
+        return MissionRun(self, response.raw)
 
     def run_file(
         self,
@@ -56,16 +59,17 @@ class MissionControl:
 
     def track(self, run_id: str) -> dict[str, Any]:
         """Fetch daemon status for one mission run."""
-        response = self._client.invoke("mission.track", run_id=_run_id(run_id)).result()
-        return _dict(response)
+        try:
+            return dict(self._mission.track(run_id))
+        except easynet_sdk.SDKError as exc:
+            raise _easyremote_mission_error(exc) from exc
 
     def cancel(self, run_id: str) -> dict[str, Any]:
         """Request daemon cancellation for one mission run."""
-        response = self._client.invoke(
-            "mission.cancel",
-            run_id=_run_id(run_id),
-        ).result()
-        return _dict(response)
+        try:
+            return dict(self._mission.cancel(run_id))
+        except easynet_sdk.SDKError as exc:
+            raise _easyremote_mission_error(exc) from exc
 
 
 class MissionRun:
@@ -102,40 +106,33 @@ class MissionRun:
         return self._control.cancel(self.run_id)
 
 
-def _validated_source(source: str) -> str:
-    if not isinstance(source, str):
-        raise InvalidArgument(
-            f"EAL source must be a string, got {type(source).__name__}",
-            reason="invalid_eal_source",
-        )
-    if not source.strip():
-        raise InvalidArgument("EAL source must not be empty", reason="empty_eal_source")
-    return source
+def _easyremote_mission_error(error: easynet_sdk.SDKError) -> RemoteError:
+    if isinstance(error.cause, RemoteError):
+        return error.cause
+    message = error.message or str(error)
+    if error.code == easynet_sdk.ErrorCode.INVALID_ARGUMENT:
+        reason = _mission_invalid_reason(message)
+        return InvalidArgument(message, reason=reason)
+    if error.code in {
+        easynet_sdk.ErrorCode.ABILITY_NOT_FOUND,
+        easynet_sdk.ErrorCode.NOT_FOUND,
+        easynet_sdk.ErrorCode.DAEMON_OFFLINE,
+        easynet_sdk.ErrorCode.ROUTE_UNAVAILABLE,
+    }:
+        return Unavailable(message, reason="sdk_mission_unavailable")
+    if error.retryable:
+        return Unavailable(message, reason="sdk_mission_retryable")
+    return InternalError(message, reason="sdk_mission_internal")
 
 
-def _validated_optional_label(label: str | None) -> str | None:
-    if label is None:
-        return None
-    trimmed = label.strip()
-    if not trimmed:
-        raise InvalidArgument("mission label must not be empty", reason="empty_label")
-    return trimmed
-
-
-def _run_id(value: str) -> str:
-    run_id = value.strip()
-    if not run_id:
-        raise InvalidArgument("mission run_id must not be empty", reason="empty_run_id")
-    return run_id
-
-
-def _dict(value: Any) -> dict[str, Any]:
-    if isinstance(value, Mapping):
-        return dict(value)
-    raise InvalidArgument(
-        f"expected a JSON object, got {type(value).__name__}",
-        reason="invalid_mission_response",
-    )
+def _mission_invalid_reason(message: str) -> str:
+    if "EAL source" in message:
+        return "empty_eal_source" if "empty" in message else "invalid_eal_source"
+    if "label" in message:
+        return "empty_label"
+    if "run_id" in message:
+        return "empty_run_id"
+    return "sdk_mission_invalid_argument"
 
 
 def _new_client() -> Client:

@@ -295,7 +295,9 @@ class AgentControl:
 
     def __init__(self, client: Client | None = None) -> None:
         self._client = client or _new_client()
-        self._admin = easynet_sdk.EasyRemoteAdminAdapter(self._client)
+        self._admin = easynet_sdk.EasyRemoteAdminAdapter.from_easyremote_client(
+            self._client
+        )
 
     def add(
         self,
