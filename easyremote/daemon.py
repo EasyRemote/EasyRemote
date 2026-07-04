@@ -13,8 +13,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+import easynet_sdk
+
 from ._sdk_transport import DaemonProcess, Transport
-from .errors import InvalidArgument
+from .errors import RemoteError, error_from_sdk
 
 __all__ = ["DaemonHandle", "DaemonStartConfig"]
 
@@ -42,15 +44,15 @@ class DaemonStartConfig:
         detached: bool | None = None,
     ) -> DaemonStartConfig:
         realm = realm.strip()
-        if not realm:
-            raise InvalidArgument("hub realm must not be empty", reason="empty_realm")
-        return cls(
+        config = cls(
             mode="hub",
             realm=realm,
             env=env,
             log_path=Path(log_path) if log_path is not None else None,
             detached=detached,
         )
+        config._to_sdk()
+        return config
 
     @classmethod
     def device(
@@ -71,27 +73,20 @@ class DaemonStartConfig:
         )
 
     def to_wire(self) -> dict[str, Any]:
-        if self.mode not in ("device", "hub"):
-            raise InvalidArgument(
-                f"unsupported daemon mode {self.mode!r}", reason="invalid_daemon_mode"
+        return dict(self._to_sdk().to_wire_dict())
+
+    def _to_sdk(self) -> easynet_sdk.EasyRemoteDaemonStartConfig:
+        try:
+            return easynet_sdk.EasyRemoteDaemonStartConfig.from_legacy(
+                mode=self.mode,
+                realm=self.realm or "",
+                node_id=self.node_id or "",
+                env=self.env or {},
+                log_path=str(self.log_path) if self.log_path is not None else "",
+                detached=self.detached,
             )
-        if self.mode == "device" and not self.node_id:
-            raise InvalidArgument(
-                "device daemon start requires a node_id",
-                reason="missing_node_id",
-            )
-        wire: dict[str, Any] = {"mode": self.mode}
-        if self.realm is not None:
-            wire["realm"] = self.realm
-        if self.node_id is not None:
-            wire["node_id"] = self.node_id
-        if self.env:
-            wire["env"] = dict(self.env)
-        if self.log_path is not None:
-            wire["log_path"] = str(self.log_path)
-        if self.detached is not None:
-            wire["detach"] = self.detached
-        return wire
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
 
 
 class DaemonHandle:
@@ -102,7 +97,7 @@ class DaemonHandle:
 
     @classmethod
     def start(cls, config: DaemonStartConfig) -> DaemonHandle:
-        return cls(DaemonProcess.start(config.to_wire()))
+        return cls(_start_process(config))
 
     @classmethod
     def start_hub(cls, realm: str, **kwargs: Any) -> DaemonHandle:
@@ -129,3 +124,12 @@ class DaemonHandle:
 
     def __exit__(self, *exc_info: object) -> None:
         self.stop()
+
+
+def _start_process(config: DaemonStartConfig) -> DaemonProcess:
+    try:
+        return DaemonProcess.start(config._to_sdk())
+    except RemoteError:
+        raise
+    except easynet_sdk.SDKError as exc:
+        raise error_from_sdk(exc) from exc

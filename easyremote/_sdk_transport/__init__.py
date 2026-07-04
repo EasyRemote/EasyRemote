@@ -156,35 +156,26 @@ class FrameStream:
 class DaemonProcess:
     """Lifecycle handle wrapper over the SDK daemon facade."""
 
-    def __init__(self, handle: easynet_sdk.DaemonHandle) -> None:
+    def __init__(self, handle: easynet_sdk.EasyRemoteDaemonHandleFacade) -> None:
         self._handle = handle
 
     @classmethod
-    def start(cls, config: Mapping[str, object]) -> DaemonProcess:
+    def start(
+        cls, config: easynet_sdk.EasyRemoteDaemonStartConfig
+    ) -> DaemonProcess:
         try:
-            return cls(_environment().daemon_control().start(_start_config(config)))
+            lifecycle = easynet_sdk.EasyRemoteDaemonLifecycleFacade(
+                _environment().daemon_control()
+            )
+            return cls(lifecycle.start(config))
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
     def status(self) -> dict[str, Any]:
         try:
-            status = self._handle.status()
+            return self._handle.status_dict()
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
-        return {
-            "state": status.state.value,
-            "handle_id": status.handle_id,
-            "mode": status.mode.value if status.mode is not None else "",
-            "pid": status.pid,
-            "version": status.version,
-            "message": status.message,
-            "endpoints": {
-                "control_endpoint": status.endpoints.control_endpoint,
-                "invocation_endpoint": status.endpoints.invocation_endpoint,
-                "public_endpoint": status.endpoints.public_endpoint,
-            },
-            "diagnostics": list(status.diagnostics),
-        }
 
     def invocation_endpoint(self) -> str:
         try:
@@ -195,9 +186,7 @@ class DaemonProcess:
     def open_client(self) -> Transport:
         try:
             return Transport(
-                easynet_sdk.EasyRemoteTransportAdapter.from_runtime_client(
-                    self._handle.open_runtime()
-                )
+                self._handle.open_transport_adapter()
             )
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
@@ -225,20 +214,3 @@ def _environment() -> easynet_sdk.SdkEnvironment:
 def _library_path() -> str | None:
     path = settings().library_path
     return str(path) if path is not None else None
-
-
-def _start_config(config: Mapping[str, object]) -> easynet_sdk.StartConfig:
-    mode = easynet_sdk.DaemonMode(str(config.get("mode") or ""))
-    env_value = config.get("env")
-    env = {
-        str(key): str(value)
-        for key, value in env_value.items()
-    } if isinstance(env_value, Mapping) else {}
-    return easynet_sdk.StartConfig(
-        mode=mode,
-        realm=str(config.get("realm") or ""),
-        device_id=str(config.get("node_id") or ""),
-        log_path=str(config.get("log_path") or ""),
-        detached=bool(config.get("detach")),
-        env=env,
-    )

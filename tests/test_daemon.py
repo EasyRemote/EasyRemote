@@ -105,7 +105,7 @@ def test_handle_convenience_start_methods(monkeypatch):
 
     assert isinstance(hub, DaemonHandle)
     assert isinstance(device, DaemonHandle)
-    assert started == [
+    assert [config.to_wire_dict() for config in started] == [
         {"mode": "hub", "realm": "acme", "detach": True},
         {"mode": "device", "node_id": "dev-a"},
     ]
