@@ -25,7 +25,6 @@ import easynet_sdk
 from . import _sdk_identity
 from ._sdk_profiles import admin_facade
 from .errors import InvalidArgument, RemoteError, Unavailable, error_from_sdk
-from .identity import LocalIdentity
 
 if TYPE_CHECKING:
     from .client import Client
@@ -157,25 +156,15 @@ class AbilityControl:
 
     def __init__(self, client: Client | None = None) -> None:
         self._client = client or _new_client()
-        self._publication = easynet_sdk.EasyRemotePublicationAdapter(
+        self._publication = easynet_sdk.EasyRemotePublicationCatalogFacade(
             self._client,
             addressing=_sdk_identity.identity_facade(),
         )
 
     def install(self, path: str | Path, *, node: str = "local") -> AbilityInstallResult:
         """Install an ability package by invoking daemon `ability.deploy`."""
-        node_id = node.strip()
-        if not node_id:
-            raise InvalidArgument("install node must not be empty", reason="empty_node")
-        package = Path(path)
-        if not package.is_dir():
-            raise InvalidArgument(
-                f"ability package path is not a directory: {package}",
-                reason="ability_package_not_directory",
-            )
-
         try:
-            result = self._publication.install_ability(package, node_id=node_id)
+            result = self._publication.install(path, node=node)
         except easynet_sdk.SDKError as exc:
             raise _easyremote_publication_error(exc) from exc
         return AbilityInstallResult(
@@ -204,15 +193,6 @@ class AbilityControl:
         `agent_ura` request field. The field name is historical; the
         value is any canonical ability owner URA accepted by the daemon.
         """
-        if scope not in ("local", "realm"):
-            raise InvalidArgument(
-                f"unsupported ability list scope {scope!r}",
-                reason="invalid_ability_scope",
-            )
-        user = user_id.strip() if user_id is not None else None
-        if user_id is not None and not user:
-            raise InvalidArgument("user_id must not be empty", reason="empty_user_id")
-
         try:
             records = [
                 AbilityRecord(
@@ -225,27 +205,25 @@ class AbilityControl:
                     metadata=row.metadata,
                     raw=row.raw,
                 )
-                for row in self._publication.list_abilities(
+                for row in self._publication.list(
                     node=node,
                     owner_ura=owner_ura or "",
+                    user_id=user_id or "",
                     subject_ura=subject_ura or "",
                     scope=scope,
                 )
             ]
         except easynet_sdk.SDKError as exc:
             raise _easyremote_publication_error(exc) from exc
-        if user is None:
-            return records
-        return [record for record in records if _record_belongs_to_user(record, user)]
+        return records
 
     def list_device(self, device: str | None = None) -> builtins.list[AbilityRecord]:
         """List abilities owned by this device, or another device owner."""
-        owner = (
-            self._identity().device_ura
-            if device is None
-            else self._device_owner(device)
-        )
-        return self.list(owner_ura=owner)
+        try:
+            rows = self._publication.list_device(device)
+        except easynet_sdk.SDKError as exc:
+            raise _easyremote_publication_error(exc) from exc
+        return [_ability_record(row) for row in rows]
 
     def list_user(
         self,
@@ -254,13 +232,11 @@ class AbilityControl:
         scope: AbilityListScope = "realm",
     ) -> builtins.list[AbilityRecord]:
         """List abilities owned by this paired user across catalogue rows."""
-        user = user_id or self._identity().username
-        if not user:
-            raise InvalidArgument(
-                "user_id is required because credentials have no username",
-                reason="missing_user_id",
-            )
-        return self.list(user_id=user, scope=scope)
+        try:
+            rows = self._publication.list_user(user_id, scope=scope)
+        except easynet_sdk.SDKError as exc:
+            raise _easyremote_publication_error(exc) from exc
+        return [_ability_record(row) for row in rows]
 
     def show(
         self,
@@ -270,25 +246,17 @@ class AbilityControl:
         scope: AbilityListScope = "local",
     ) -> AbilityRecord:
         """Return one ability catalogue row by canonical Ability URA."""
-        target = ability_ura.strip()
-        if not target:
-            raise InvalidArgument(
-                "ability_ura must not be empty", reason="empty_ability_ura"
+        try:
+            return _ability_record(
+                self._publication.show(ability_ura, node=node, scope=scope)
             )
-        matches = self.list(node=node, subject_ura=target, scope=scope)
-        for record in matches:
-            if record.ability_ura == target:
-                return record
-        raise Unavailable(
-            f"ability {target!r} was not found in the daemon catalogue",
-            reason="ability_not_found",
-        )
-
-    def _device_owner(self, node: str) -> str:
-        return self._publication.device_owner_ura(node)
-
-    def _identity(self) -> LocalIdentity:
-        return self._client._who()
+        except easynet_sdk.SDKError as exc:
+            if easynet_sdk.is_code(exc, easynet_sdk.ErrorCode.ABILITY_NOT_FOUND):
+                raise Unavailable(
+                    exc.message,
+                    reason="ability_not_found",
+                ) from exc
+            raise _easyremote_publication_error(exc) from exc
 
 
 class AgentControl:
@@ -367,28 +335,17 @@ def _easyremote_admin_error(error: easynet_sdk.SDKError) -> RemoteError:
     return error_from_sdk(error)
 
 
-def _record_belongs_to_user(record: AbilityRecord, user_id: str) -> bool:
-    if any(
-        str(record.metadata.get(key) or "") == user_id
-        for key in (
-            "owner_user",
-            "owner_user_id",
-            "user_id",
-            "local_user_id",
-        )
-    ):
-        return True
-    try:
-        parsed = _sdk_identity.parse_ura(record.owner_ura)
-    except _sdk_identity.IdentityFacadeError:
-        return False
-    if str(parsed.kind) == "user":
-        return record.owner_ura.rstrip("/").endswith(f"/user/{user_id}")
-    if str(parsed.kind) != "agent":
-        return False
-    marker = "/agent/"
-    _, _, tail = record.owner_ura.partition(marker)
-    return tail.split(".", 1)[0] == user_id
+def _ability_record(row: easynet_sdk.EasyRemotePublishedAbilityRecord) -> AbilityRecord:
+    return AbilityRecord(
+        name=row.name,
+        ability_ura=row.ability_ura,
+        owner_ura=row.owner_ura,
+        description=row.description,
+        state=row.state,
+        input_schema=row.input_schema,
+        metadata=row.metadata,
+        raw=row.raw,
+    )
 
 
 def _easyremote_publication_error(error: easynet_sdk.SDKError) -> RemoteError:
