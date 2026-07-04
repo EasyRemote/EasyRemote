@@ -1,8 +1,7 @@
 """Receipt objects and invocation states (SPEC §5.7).
 
-What the daemon returns over C ABI v3 is a *receipt summary* — the
-hash-chain fields without the signed axiom binding (source:
-``EasyNet-Cli/src/ffi/invocation.rs::receipt_summary_json``). Two
+What the daemon SDK transport returns on the unary path is a *receipt
+summary*: the hash-chain fields without the signed axiom binding. Two
 consequences, kept honest here:
 
 - hash-chain continuity IS checkable (:meth:`ReceiptChain.verify_continuity`),

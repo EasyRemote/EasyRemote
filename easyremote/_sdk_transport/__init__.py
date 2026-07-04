@@ -14,15 +14,7 @@ from typing import Any
 import easynet_sdk
 
 from ..config import settings
-from ..errors import (
-    Cancelled,
-    DeadlineExceeded,
-    InternalError,
-    InvalidArgument,
-    PermissionDenied,
-    RemoteError,
-    Unavailable,
-)
+from ..errors import error_from_sdk
 
 __all__ = ["BidiChannel", "DaemonProcess", "FrameStream", "Transport"]
 
@@ -43,31 +35,31 @@ class Transport:
                 )
             )
         except easynet_sdk.SDKError as exc:
-            raise _remote_error(exc) from exc
+            raise error_from_sdk(exc) from exc
 
     def invoke(self, invocation: Mapping[str, object]) -> dict[str, Any]:
         try:
             return dict(self._adapter.invoke(invocation))
         except easynet_sdk.SDKError as exc:
-            raise _remote_error(exc) from exc
+            raise error_from_sdk(exc) from exc
 
     def stream(self, invocation: Mapping[str, object]) -> FrameStream:
         try:
             return FrameStream(self._adapter.stream(invocation))
         except easynet_sdk.SDKError as exc:
-            raise _remote_error(exc) from exc
+            raise error_from_sdk(exc) from exc
 
     def bidi(self, invocation: Mapping[str, object]) -> BidiChannel:
         try:
             return BidiChannel(self._adapter.bidi(invocation))
         except easynet_sdk.SDKError as exc:
-            raise _remote_error(exc) from exc
+            raise error_from_sdk(exc) from exc
 
     def close(self) -> None:
         try:
             self._adapter.close()
         except easynet_sdk.SDKError as exc:
-            raise _remote_error(exc) from exc
+            raise error_from_sdk(exc) from exc
 
     def __enter__(self) -> Transport:
         return self
@@ -88,13 +80,13 @@ class FrameStream:
         except StopIteration:
             return None
         except easynet_sdk.SDKError as exc:
-            raise _remote_error(exc) from exc
+            raise error_from_sdk(exc) from exc
 
     def close(self) -> None:
         try:
             self._stream.close()
         except easynet_sdk.SDKError as exc:
-            raise _remote_error(exc) from exc
+            raise error_from_sdk(exc) from exc
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
         while True:
@@ -122,7 +114,7 @@ class BidiChannel:
         try:
             self._channel.send(frame)
         except easynet_sdk.SDKError as exc:
-            raise _remote_error(exc) from exc
+            raise error_from_sdk(exc) from exc
 
     def recv(self, timeout: float | None = None) -> dict[str, Any] | None:
         try:
@@ -130,19 +122,19 @@ class BidiChannel:
         except StopIteration:
             return None
         except easynet_sdk.SDKError as exc:
-            raise _remote_error(exc) from exc
+            raise error_from_sdk(exc) from exc
 
     def close(self) -> None:
         try:
             self._channel.close()
         except easynet_sdk.SDKError as exc:
-            raise _remote_error(exc) from exc
+            raise error_from_sdk(exc) from exc
 
     def cancel(self) -> None:
         try:
             self._channel.cancel()
         except easynet_sdk.SDKError as exc:
-            raise _remote_error(exc) from exc
+            raise error_from_sdk(exc) from exc
 
     def __enter__(self) -> BidiChannel:
         return self
@@ -162,13 +154,13 @@ class DaemonProcess:
         try:
             return cls(_environment().daemon_control().start(_start_config(config)))
         except easynet_sdk.SDKError as exc:
-            raise _remote_error(exc) from exc
+            raise error_from_sdk(exc) from exc
 
     def status(self) -> dict[str, Any]:
         try:
             status = self._handle.status()
         except easynet_sdk.SDKError as exc:
-            raise _remote_error(exc) from exc
+            raise error_from_sdk(exc) from exc
         return {
             "state": status.state.value,
             "handle_id": status.handle_id,
@@ -188,7 +180,7 @@ class DaemonProcess:
         try:
             return self._handle.invocation_endpoint()
         except easynet_sdk.SDKError as exc:
-            raise _remote_error(exc) from exc
+            raise error_from_sdk(exc) from exc
 
     def open_client(self) -> Transport:
         try:
@@ -198,13 +190,13 @@ class DaemonProcess:
                 )
             )
         except easynet_sdk.SDKError as exc:
-            raise _remote_error(exc) from exc
+            raise error_from_sdk(exc) from exc
 
     def stop(self) -> None:
         try:
             self._handle.stop()
         except easynet_sdk.SDKError as exc:
-            raise _remote_error(exc) from exc
+            raise error_from_sdk(exc) from exc
 
     def __enter__(self) -> DaemonProcess:
         return self
@@ -240,27 +232,3 @@ def _start_config(config: Mapping[str, object]) -> easynet_sdk.StartConfig:
         detached=bool(config.get("detach")),
         env=env,
     )
-
-
-def _remote_error(exc: easynet_sdk.SDKError) -> RemoteError:
-    cls, reason = _ERROR_MAP.get(exc.code, (InternalError, exc.code.value.lower()))
-    return cls(exc.message or str(exc), reason=reason)
-
-
-_ERROR_MAP: dict[easynet_sdk.ErrorCode, tuple[type[RemoteError], str]] = {
-    easynet_sdk.ErrorCode.INVALID_ARGUMENT: (InvalidArgument, "invalid_argument"),
-    easynet_sdk.ErrorCode.INVALID_UTF8: (InvalidArgument, "invalid_utf8"),
-    easynet_sdk.ErrorCode.NOT_FOUND: (InvalidArgument, "not_found"),
-    easynet_sdk.ErrorCode.ABILITY_NOT_FOUND: (InvalidArgument, "ability_not_found"),
-    easynet_sdk.ErrorCode.PERMISSION_DENIED: (PermissionDenied, "permission_denied"),
-    easynet_sdk.ErrorCode.ADMISSION_DENIED: (PermissionDenied, "admission_denied"),
-    easynet_sdk.ErrorCode.TIMEOUT: (DeadlineExceeded, "timeout"),
-    easynet_sdk.ErrorCode.CANCELLED: (Cancelled, "cancelled"),
-    easynet_sdk.ErrorCode.DAEMON_OFFLINE: (Unavailable, "daemon_down"),
-    easynet_sdk.ErrorCode.NOT_INITIALIZED: (Unavailable, "not_initialized"),
-    easynet_sdk.ErrorCode.VERSION_MISMATCH: (Unavailable, "version_mismatch"),
-    easynet_sdk.ErrorCode.VERSION_INCOMPATIBLE: (Unavailable, "version_incompatible"),
-    easynet_sdk.ErrorCode.ROUTE_UNAVAILABLE: (Unavailable, "route_unavailable"),
-    easynet_sdk.ErrorCode.CONTROL_ONLY: (Unavailable, "control_only"),
-    easynet_sdk.ErrorCode.TRANSPORT: (Unavailable, "transport"),
-}

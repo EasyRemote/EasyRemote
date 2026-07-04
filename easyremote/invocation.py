@@ -2,8 +2,8 @@
 
 The seven-tuple lives here as :class:`InvocationTuple` — always
 inspectable (design invariant 2), never hidden inside a string. The
-wire encoding targets the libeasynet_cli invocation JSON exactly as
-parsed by ``EasyNet-Cli/src/ffi/invocation.rs::InvocationJson::parse``:
+wire encoding targets the EasyNet-Cli SDK invocation JSON consumed by
+easynet-daemon:
 
 - ``descriptor_ref``: ``<owner ability URA>@<descriptor version>``;
   derived from ``callee`` + ``ability`` + ``descriptor_version`` when the
@@ -493,10 +493,10 @@ def _sdk_invalid(message: str) -> easynet_sdk.SDKError:
 class Invocation:
     """A dispatched unary invocation and its daemon response.
 
-    C ABI v3 unary invoke is synchronous — by the time this object
-    exists the invocation reached a terminal state, so ``result()``
-    never blocks. The response summary shape comes from
-    ``ffi/invocation.rs::invocation_output_json``.
+    Unary invoke is synchronous at the EasyRemote facade boundary. By the
+    time this object exists the invocation reached a terminal state, so
+    ``result()`` never blocks. The response summary shape is projected by
+    the EasyNet-Cli SDK transport adapter.
     """
 
     def __init__(self, tuple_: InvocationTuple, response: dict[str, Any]) -> None:

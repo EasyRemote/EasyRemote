@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import easynet_sdk
 
-from .errors import InternalError, InvalidArgument, RemoteError, Unavailable
+from .errors import InvalidArgument, RemoteError, error_from_sdk
 
 if TYPE_CHECKING:
     from .client import Client
@@ -107,22 +107,11 @@ class MissionRun:
 
 
 def _easyremote_mission_error(error: easynet_sdk.SDKError) -> RemoteError:
-    if isinstance(error.cause, RemoteError):
-        return error.cause
-    message = error.message or str(error)
     if error.code == easynet_sdk.ErrorCode.INVALID_ARGUMENT:
+        message = error.message or str(error)
         reason = _mission_invalid_reason(message)
         return InvalidArgument(message, reason=reason)
-    if error.code in {
-        easynet_sdk.ErrorCode.ABILITY_NOT_FOUND,
-        easynet_sdk.ErrorCode.NOT_FOUND,
-        easynet_sdk.ErrorCode.DAEMON_OFFLINE,
-        easynet_sdk.ErrorCode.ROUTE_UNAVAILABLE,
-    }:
-        return Unavailable(message, reason="sdk_mission_unavailable")
-    if error.retryable:
-        return Unavailable(message, reason="sdk_mission_retryable")
-    return InternalError(message, reason="sdk_mission_internal")
+    return error_from_sdk(error)
 
 
 def _mission_invalid_reason(message: str) -> str:

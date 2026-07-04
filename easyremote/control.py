@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import easynet_sdk
 
 from . import _sdk_identity
-from .errors import InternalError, InvalidArgument, RemoteError, Unavailable
+from .errors import InvalidArgument, RemoteError, Unavailable, error_from_sdk
 from .identity import LocalIdentity
 
 if TYPE_CHECKING:
@@ -365,21 +365,7 @@ class AgentControl:
 
 
 def _easyremote_admin_error(error: easynet_sdk.SDKError) -> RemoteError:
-    if isinstance(error.cause, RemoteError):
-        return error.cause
-    message = error.message or str(error)
-    if error.code == easynet_sdk.ErrorCode.INVALID_ARGUMENT:
-        return InvalidArgument(message, reason="sdk_admin_invalid_argument")
-    if error.code in {
-        easynet_sdk.ErrorCode.ABILITY_NOT_FOUND,
-        easynet_sdk.ErrorCode.NOT_FOUND,
-        easynet_sdk.ErrorCode.DAEMON_OFFLINE,
-        easynet_sdk.ErrorCode.ROUTE_UNAVAILABLE,
-    }:
-        return Unavailable(message, reason="sdk_admin_unavailable")
-    if error.retryable:
-        return Unavailable(message, reason="sdk_admin_retryable")
-    return InternalError(message, reason="sdk_admin_internal")
+    return error_from_sdk(error)
 
 
 def _record_belongs_to_user(record: AbilityRecord, user_id: str) -> bool:
@@ -407,21 +393,7 @@ def _record_belongs_to_user(record: AbilityRecord, user_id: str) -> bool:
 
 
 def _easyremote_publication_error(error: easynet_sdk.SDKError) -> RemoteError:
-    if isinstance(error.cause, RemoteError):
-        return error.cause
-    message = error.message or str(error)
-    if error.code == easynet_sdk.ErrorCode.INVALID_ARGUMENT:
-        return InvalidArgument(message, reason="sdk_publication_invalid_argument")
-    if error.code in {
-        easynet_sdk.ErrorCode.ABILITY_NOT_FOUND,
-        easynet_sdk.ErrorCode.NOT_FOUND,
-        easynet_sdk.ErrorCode.DAEMON_OFFLINE,
-        easynet_sdk.ErrorCode.ROUTE_UNAVAILABLE,
-    }:
-        return Unavailable(message, reason="sdk_publication_unavailable")
-    if error.retryable:
-        return Unavailable(message, reason="sdk_publication_retryable")
-    return InternalError(message, reason="sdk_publication_internal")
+    return error_from_sdk(error)
 
 
 def _dict(value: Any) -> dict[str, Any]:

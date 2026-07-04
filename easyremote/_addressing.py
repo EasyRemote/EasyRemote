@@ -1,10 +1,10 @@
 """Ability addressing helpers for the Python facade.
 
 This module projects user-facing EasyRemote targets into the explicit
-Invocation tuple fields that libeasynet_cli requires. It uses the
-EasyNet-Cli SDK identity facade for URA semantics, but it must not
-consult daemon product state on disk or shell out to CLI commands; route
-policy stays inside easynet-daemon.
+Invocation tuple fields consumed by the EasyNet-Cli SDK. It uses the SDK
+identity facade for URA semantics, but it must not consult daemon product
+state on disk or shell out to CLI commands; route policy stays inside
+easynet-daemon.
 """
 
 from __future__ import annotations

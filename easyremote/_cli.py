@@ -82,7 +82,7 @@ def run_checks() -> list[Check]:
     # 5. live transport (only meaningful when everything above held)
     if sdk_ok and control is not None:
         try:
-            from ._transport import Transport
+            from ._sdk_transport import Transport
 
             with Transport.connect():
                 add("transport", True, "connected to daemon invocation endpoint")

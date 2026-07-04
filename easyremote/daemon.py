@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from ._transport import DaemonProcess, Transport
+from ._sdk_transport import DaemonProcess, Transport
 from .errors import InvalidArgument
 
 __all__ = ["DaemonHandle", "DaemonStartConfig"]

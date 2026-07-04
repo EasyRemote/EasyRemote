@@ -1,8 +1,8 @@
 """Client: addressing, argument mapping, dispatch, stubs, async mirror.
 
-A FakeTransport records the exact wire dicts the client would hand to
-libeasynet_cli — the assertions here pin the client half of the FFI
-contract the same way test_invocation pins the codec half.
+A FakeTransport records the exact wire dicts the client hands to the SDK
+transport facade. The assertions here pin the client half of the daemon
+Invocation contract the same way test_invocation pins the codec half.
 """
 
 import base64
@@ -1081,7 +1081,7 @@ def test_function_info_parses_candidate_verbatim():
 class FakeFrameStream:
     """Minimal stand-in for the transport FrameStream: a fixed list of
     chunk-envelope dicts plus a closed flag, so Stream's iteration logic
-    is testable without libeasynet_cli or a daemon."""
+    is testable without an SDK transport or a daemon."""
 
     def __init__(self, frames):
         self._frames = frames

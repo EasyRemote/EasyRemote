@@ -13,14 +13,13 @@ defaults to the local daemon's device URA, which owns routing — one
 ``_address()`` seam encodes that assumption so the P0 link
 verification adjusts exactly one place if the dispatch contract says
 otherwise. Ability URAs from `discover` are projected into explicit
-tuple fields with Axon's URA parser; daemon route policy still lives
-behind libeasynet_cli.
+tuple fields through the SDK identity facade; daemon route policy still
+lives behind easynet-daemon.
 
-Per-call timeouts are client-side only (the C ABI unary invoke is a
-blocking call with no wire-level timeout field): the caller's wait is
-bounded, while server-side execution remains governed by the manifest's
-``timeout_seconds``. Timed-out unary calls may still finish in the
-daemon; the client stops waiting.
+Per-call timeouts are client-side only: the caller's wait is bounded,
+while server-side execution remains governed by the manifest's
+``timeout_seconds``. Timed-out unary calls may still finish in the daemon;
+the client stops waiting.
 """
 
 from __future__ import annotations
@@ -44,7 +43,7 @@ from ._addressing import (
     ResolvedAbility,
     owner_kind,
 )
-from ._transport import BidiChannel, FrameStream, Transport
+from ._sdk_transport import BidiChannel, FrameStream, Transport
 from .errors import (
     DeadlineExceeded,
     InvalidArgument,
@@ -566,10 +565,10 @@ class Client:
         return MissionControl(self)
 
     def close(self) -> None:
-        # Do not shutdown a libeasynet_cli handle while a timed-out unary
-        # invoke is still running on its C stack. If a call is active, close
-        # retires the handle from reuse and lets the worker close it after
-        # the C call returns; the caller's close remains bounded.
+        # Do not close an SDK-owned daemon transport while a timed-out unary
+        # invoke is still running. If a call is active, close retires the
+        # transport from reuse and lets the worker close it after the call
+        # returns; the caller's close remains bounded.
         if self._transport_override is not None:
             return
         if self._invoke_lock.acquire(blocking=False):
@@ -648,10 +647,10 @@ class Client:
     def _retire_timed_out_transport(self, transport: Transport) -> None:
         """Remove a timed-out handle from the reuse pool without closing it.
 
-        C ABI unary invoke has no cancellation hook. Closing the handle
-        while the background thread is still inside ``invoke`` risks
-        invalid-handle races, so the worker closes this retired handle only
-        after the C call returns. The next invocation opens a fresh handle.
+        The synchronous daemon invoke path has no cancellation hook. Closing
+        the transport while the background thread is still inside ``invoke``
+        risks invalid-handle races, so the worker closes this retired transport
+        only after the call returns. The next invocation opens a fresh transport.
         """
         if self._transport_override is not None:
             return
@@ -679,9 +678,9 @@ class Client:
         Short names get this client's namespace; dotted names pass
         through. An explicit ``owner_ura`` (an owner handle) projects the
         function onto that owner instead of the local device. Canonical
-        Ability URAs are projected through the Axon URA parser into
+        Ability URAs are projected through the SDK identity facade into
         explicit Invocation tuple fields; daemon route policy still lives
-        behind libeasynet_cli.
+        behind easynet-daemon.
         """
         return self._addressing.resolve(
             function,
