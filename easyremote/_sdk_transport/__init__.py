@@ -49,6 +49,17 @@ class Transport:
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
+    def invoke_signed(
+        self,
+        invocation: Mapping[str, object],
+        *,
+        signer: easynet_sdk.Signer | None,
+    ) -> dict[str, Any]:
+        try:
+            return dict(self._adapter.invoke_signed(invocation, signer=signer))
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
+
     def stream(self, invocation: Mapping[str, object]) -> FrameStream:
         try:
             return FrameStream(self._adapter.stream(invocation))
@@ -100,6 +111,24 @@ class UnaryDispatchPool:
     ) -> dict[str, Any]:
         try:
             return dict(self._pool.invoke(invocation, timeout=timeout))
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
+
+    def invoke_signed(
+        self,
+        invocation: Mapping[str, object],
+        *,
+        signer: easynet_sdk.Signer | None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return dict(
+                self._pool.invoke_signed(
+                    invocation,
+                    signer=signer,
+                    timeout=timeout,
+                )
+            )
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 

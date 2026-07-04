@@ -147,10 +147,17 @@ def error_from_sdk(error: easynet_sdk.SDKError) -> RemoteError:
 
     if isinstance(error.cause, RemoteError):
         return error.cause
+    detail_reason = error.details.get("reason")
+    if detail_reason == "signing_path_pending":
+        return Unavailable(
+            error.message or "caller signing path is not configured",
+            reason="signing_path_pending",
+            invocation_id=error.invocation_id,
+            retry_after=_retry_after(error.details),
+        )
     cls, reason = _SDK_ERROR_MAP.get(
         error.code, (InternalError, error.code.value.lower())
     )
-    detail_reason = error.details.get("reason")
     if isinstance(detail_reason, str) and detail_reason:
         reason = detail_reason
     return cls(

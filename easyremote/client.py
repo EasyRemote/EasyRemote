@@ -251,6 +251,7 @@ class Client:
         namespace: str = "er",
         transport: Transport | None = None,
         identity: LocalIdentity | None = None,
+        signer: easynet_sdk.Signer | None = None,
     ) -> None:
         self._gateway = gateway
         self._gateway_checked = False
@@ -263,6 +264,7 @@ class Client:
         self._namespace = namespace
         self._addressing = AbilityAddressResolver(namespace)
         self._identity_override = identity
+        self._signer = signer
         self._lock = threading.Lock()
         self._unary_pool = (
             UnaryDispatchPool.from_transport(transport)
@@ -352,13 +354,6 @@ class Client:
         **kwargs: Any,
     ) -> PreparedInvocation:
         target = self._target(function)
-        if target.sign:
-            raise Unavailable(
-                "caller signing needs the pairing key material contract, which"
-                " is verified in P0 — local-fast admission (unsigned) is the"
-                " only path wired today",
-                reason="signing_path_pending",
-            )
         resolved = self._address(
             target.function, target.node, target.pick, target.owner_ura
         )
@@ -376,6 +371,8 @@ class Client:
         )
 
         def dispatch(prepared: PreparedInvocation) -> Invocation:
+            if prepared.sign:
+                return self._dispatch_signed(prepared, timeout=target.timeout)
             return self._dispatch(prepared, timeout=target.timeout)
 
         return PreparedInvocation(
@@ -507,6 +504,18 @@ class Client:
         wire = encode_invocation(prepared.tuple, metadata=prepared.metadata)
         budget = timeout if timeout is not None else self._timeout
         response = self._unary_pool.invoke(wire, timeout=budget)
+        return Invocation(prepared.tuple, response)
+
+    def _dispatch_signed(
+        self, prepared: PreparedInvocation, timeout: float | None = None
+    ) -> Invocation:
+        wire = encode_invocation(prepared.tuple, metadata=prepared.metadata)
+        budget = timeout if timeout is not None else self._timeout
+        response = self._unary_pool.invoke_signed(
+            wire,
+            signer=self._signer,
+            timeout=budget,
+        )
         return Invocation(prepared.tuple, response)
 
     def _address(

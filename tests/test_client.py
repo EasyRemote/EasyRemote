@@ -110,6 +110,7 @@ class FakeTransport:
     def __init__(self, responses=None):
         self.invocations = []
         self.carriers = []
+        self.signers = []
         self.responses = list(responses or [])
         self.delay = 0.0
         self.closed = False
@@ -120,6 +121,27 @@ class FakeTransport:
             time.sleep(self.delay)
         self.invocations.append(wire)
         self.carriers.append("unary")
+        return self.responses.pop(0) if self.responses else ok_response({"echo": True})
+
+    def invoke_signed(self, wire, *, signer=None, options=None):
+        _ = options
+        if signer is None:
+            raise easynet_sdk.SDKError(
+                code=easynet_sdk.ErrorCode.NOT_IMPLEMENTED,
+                stage="easyremote_signing",
+                retry=easynet_sdk.RetryHint.NEVER,
+                retryable=False,
+                message=(
+                    "EasyRemote signed invocation requires a daemon-authorized "
+                    "SDK Signer"
+                ),
+                details={"reason": "signing_path_pending"},
+            )
+        if self.delay:
+            time.sleep(self.delay)
+        self.invocations.append(wire)
+        self.carriers.append("signed")
+        self.signers.append(signer)
         return self.responses.pop(0) if self.responses else ok_response({"echo": True})
 
     def stream(self, wire):
@@ -165,9 +187,28 @@ class RouteNegativeTransport(FakeTransport):
 
 
 def make_client(**kwargs):
+    signer = kwargs.pop("signer", None)
     transport = FakeTransport(**kwargs)
-    client = Client(transport=transport, identity=IDENTITY)
+    client = Client(transport=transport, identity=IDENTITY, signer=signer)
     return client, transport
+
+
+def fake_signer():
+    return easynet_sdk.Signer.from_signature(
+        easynet_sdk.SignerHandle(
+            profile="identity",
+            signer_id="signer-dev-a",
+            owner_ura=DEVICE_URA,
+            key_id="dev-a-key",
+            algorithm="ed25519",
+            policy={},
+            metadata={},
+        ),
+        easynet_sdk.InvocationSignature(
+            algorithm="ed25519",
+            signature_base64="c2lnbmF0dXJl",
+        ),
+    )
 
 
 # -- identity and addressing --------------------------------------------------
@@ -541,9 +582,25 @@ def test_prepare_inspect_adjust_send():
 
 def test_sign_true_is_honest_about_pending_path():
     client, _ = make_client()
+    prepared = client.prepare(Client.target("fn", sign=True), x=1)
+    assert prepared.sign is True
+
     with pytest.raises(Unavailable) as exc_info:
-        client.invoke(Client.target("fn", sign=True), x=1)
+        prepared.send()
     assert exc_info.value.reason == "signing_path_pending"
+
+
+def test_sign_true_uses_sdk_signed_dispatch_when_signer_is_configured():
+    signer = fake_signer()
+    client, transport = make_client(signer=signer)
+
+    invocation = client.invoke(Client.target("fn", sign=True), x=1)
+
+    assert invocation.result() == {"echo": True}
+    assert transport.carriers == ["signed"]
+    assert transport.signers == [signer]
+    assert transport.invocations[0]["descriptor_ref"].endswith(".er.fn@1.0.0")
+    assert "caller_signature" not in transport.invocations[0]
 
 
 def test_invalid_client_timeouts_are_rejected_at_facade_boundary():
