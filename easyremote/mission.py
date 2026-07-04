@@ -1,7 +1,8 @@
 """Mission/EAL execution facade over daemon system abilities.
 
 This module is deliberately small: it submits already-compiled EAL to
-``mission.run`` and wraps ``mission.track`` / ``mission.cancel``. The
+``mission.run`` and wraps ``mission.track`` / ``mission.cancel`` /
+``mission.events``. The
 daemon remains the only Mission/EAL runtime; Python owns no planner,
 scheduler, retry engine, or receipt policy.
 """
@@ -70,6 +71,25 @@ class MissionControl:
         except easynet_sdk.SDKError as exc:
             raise _easyremote_mission_error(exc) from exc
 
+    def events(
+        self,
+        run_id: str,
+        *,
+        cursor_sequence: int = 0,
+        limit: int = 0,
+    ) -> dict[str, Any]:
+        """Fetch a daemon-projected event page for one mission run."""
+        try:
+            return dict(
+                self._mission.events(
+                    run_id,
+                    cursor_sequence=cursor_sequence,
+                    limit=limit,
+                )
+            )
+        except easynet_sdk.SDKError as exc:
+            raise _easyremote_mission_error(exc) from exc
+
 
 class MissionRun:
     """Handle for a submitted mission run."""
@@ -104,6 +124,17 @@ class MissionRun:
     def cancel(self) -> dict[str, Any]:
         return self._control.cancel(self.run_id)
 
+    def events(
+        self,
+        *,
+        cursor_sequence: int = 0,
+        limit: int = 0,
+    ) -> dict[str, Any]:
+        return self._control.events(
+            self.run_id,
+            cursor_sequence=cursor_sequence,
+            limit=limit,
+        )
 
 def _easyremote_mission_error(error: easynet_sdk.SDKError) -> RemoteError:
     if error.code == easynet_sdk.ErrorCode.INVALID_ARGUMENT:

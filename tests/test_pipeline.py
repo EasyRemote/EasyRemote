@@ -158,6 +158,43 @@ def test_track_and_cancel_use_run_id():
     )
 
 
+def test_pipeline_run_handle_fetches_events():
+    client, transport = make_client(
+        responses=[
+            ok_response({"ok": True, "run_id": "run-9"}),
+            ok_response(
+                {
+                    "cursor_sequence": 0,
+                    "next_cursor_sequence": 1,
+                    "has_more": False,
+                    "dropped_count": 0,
+                    "events": [
+                        {
+                            "sequence": 0,
+                            "event_type": "completed",
+                            "occurred_unix_ms": 1_700_000_000_000,
+                            "terminal": True,
+                            "payload": {"reply": "done"},
+                        }
+                    ],
+                }
+            ),
+        ]
+    )
+    pipe = Pipeline("p", client=client)
+    pipe.step("er.fn")
+    run = pipe.run()
+
+    page = run.events()
+
+    assert page["events"][0]["payload"] == {"reply": "done"}
+    assert transport.carriers == ["unary", "unary"]
+    assert (
+        transport.invocations[1]["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.dev-a.mission.events@1.0.0"
+    )
+
+
 def test_mission_run_exposes_response_fields():
     client, _ = make_client()
     run = MissionRun(

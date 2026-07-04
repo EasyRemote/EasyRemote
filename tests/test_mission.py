@@ -67,6 +67,55 @@ def test_track_and_cancel_validate_run_id_and_use_unary():
     assert exc_info.value.reason == "empty_run_id"
 
 
+def test_events_fetches_mission_event_page():
+    page_response = {
+        "cursor_sequence": 4,
+        "next_cursor_sequence": 5,
+        "has_more": False,
+        "dropped_count": 0,
+        "events": [
+            {
+                "sequence": 4,
+                "event_type": "completed",
+                "occurred_unix_ms": 1_700_000_000_000,
+                "terminal": True,
+                "payload": {"ok": True},
+                "receipt": {"receipt_ura": "easynet:///r/acme/receipt/r-1"},
+            }
+        ],
+    }
+    client, transport = make_client(
+        responses=[
+            ok_response(page_response),
+            ok_response({"run_id": "run-9"}),
+            ok_response(page_response | {"next_cursor_sequence": 6}),
+        ]
+    )
+    control = MissionControl(client)
+
+    page = control.events("run-9", cursor_sequence=4, limit=50)
+    handle_page = control.run_eal('mission "nightly" {}\n').events(cursor_sequence=5)
+
+    assert page["next_cursor_sequence"] == 5
+    assert page["events"][0]["event_type"] == "completed"
+    assert handle_page["next_cursor_sequence"] == 6
+    assert transport.invocations[0]["descriptor_ref"].endswith(
+        "/ability/device.dev-a.mission.events@1.0.0"
+    )
+    assert transport.invocations[0]["args"] == {
+        "run_id": "run-9",
+        "cursor_sequence": 4,
+        "limit": 50,
+    }
+    assert transport.invocations[1]["args"] == {
+        "source": 'mission "nightly" {}\n',
+    }
+    assert transport.invocations[2]["args"] == {
+        "run_id": "run-9",
+        "cursor_sequence": 5,
+    }
+
+
 def test_invalid_eal_inputs_are_rejected():
     client, _ = make_client()
     control = MissionControl(client)

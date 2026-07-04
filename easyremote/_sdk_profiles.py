@@ -12,7 +12,6 @@ import base64
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
 
 import easynet_sdk
 
@@ -27,6 +26,7 @@ _AGENT_REFRESH = easynet_sdk.AdminSystemAbility.AGENT_REFRESH
 _MISSION_RUN = easynet_sdk.MissionSystemAbility.RUN
 _MISSION_TRACK = easynet_sdk.MissionSystemAbility.TRACK
 _MISSION_CANCEL = easynet_sdk.MissionSystemAbility.CANCEL
+_MISSION_EVENTS = easynet_sdk.MissionSystemAbility.EVENTS
 
 
 def admin_facade(client: object) -> EasyRemoteAdminFacade:
@@ -99,6 +99,19 @@ class EasyRemoteMissionFacade:
     def cancel(self, run_id: str) -> Mapping[str, object]:
         return _raw_result(self._adapter().cancel(run_id))
 
+    def events(
+        self,
+        run_id: str,
+        *,
+        cursor_sequence: int = 0,
+        limit: int = 0,
+    ) -> Mapping[str, object]:
+        return self._adapter().events(
+            run_id,
+            cursor_sequence=cursor_sequence,
+            limit=limit,
+        )
+
     def _adapter(self) -> easynet_sdk.EasyRemoteMissionAdapter:
         return easynet_sdk.EasyRemoteMissionAdapter(
             easynet_sdk.MissionClient(_EasyRemoteMissionTransport(self._client)),
@@ -117,6 +130,24 @@ class EasyRemoteMissionRunProjection:
 class _EasyRemoteAdminTransport:
     def __init__(self, client: object) -> None:
         self._client = client
+
+    def build_agent_list_invocation(self, request_json: bytes) -> bytes:
+        return _unsupported_admin_profile("build_agent_list_invocation")
+
+    def build_agent_start_invocation(self, request_json: bytes) -> bytes:
+        return _unsupported_admin_profile("build_agent_start_invocation")
+
+    def build_agent_stop_invocation(self, request_json: bytes) -> bytes:
+        return _unsupported_admin_profile("build_agent_stop_invocation")
+
+    def build_agent_refresh_invocation(self, request_json: bytes) -> bytes:
+        return _unsupported_admin_profile("build_agent_refresh_invocation")
+
+    def build_session_list_invocation(self, request_json: bytes) -> bytes:
+        return _unsupported_admin_profile("build_session_list_invocation")
+
+    def gateway_status(self, request_json: bytes) -> bytes:
+        return _unsupported_admin_profile("gateway_status")
 
     def list_agents(self, request_json: bytes) -> bytes:
         _json_object(request_json, "EasyRemote agent list request")
@@ -167,6 +198,39 @@ class _EasyRemoteAdminTransport:
         response = self._invoke(_AGENT_REFRESH, **payload)
         return _admin_result_json(_AGENT_REFRESH, response)
 
+    def agent_stop(self, request_json: bytes) -> bytes:
+        return _unsupported_admin_profile("agent_stop")
+
+    def list_device_sessions(self, request_json: bytes) -> bytes:
+        return _unsupported_admin_profile("list_device_sessions")
+
+    def join_hub(self, request_json: bytes) -> bytes:
+        return _unsupported_admin_profile("join_hub")
+
+    def leave_hub(self, request_json: bytes) -> bytes:
+        return _unsupported_admin_profile("leave_hub")
+
+    def pairing_preflight(self, request_json: bytes) -> bytes:
+        return _unsupported_admin_profile("pairing_preflight")
+
+    def validate_pairing(self, request_json: bytes) -> bytes:
+        return _unsupported_admin_profile("validate_pairing")
+
+    def verify_device_credential(self, request_json: bytes) -> bytes:
+        return _unsupported_admin_profile("verify_device_credential")
+
+    def create_pairing(self, request_json: bytes) -> bytes:
+        return _unsupported_admin_profile("create_pairing")
+
+    def revoke_device(self, request_json: bytes) -> bytes:
+        return _unsupported_admin_profile("revoke_device")
+
+    def create_device_session(self, request_json: bytes) -> bytes:
+        return _unsupported_admin_profile("create_device_session")
+
+    def delete_device_session(self, request_json: bytes) -> bytes:
+        return _unsupported_admin_profile("delete_device_session")
+
     def close(self) -> None:
         return None
 
@@ -181,25 +245,56 @@ class _EasyRemoteMissionTransport:
     def __init__(self, client: object) -> None:
         self._client = client
 
+    def build_run_eal_invocation(self, request_json: bytes) -> bytes:
+        return _unsupported_mission_profile("build_run_eal_invocation")
+
+    def build_run_file_invocation(self, request_json: bytes) -> bytes:
+        return _unsupported_mission_profile("build_run_file_invocation")
+
+    def build_track_invocation(self, request_json: bytes) -> bytes:
+        return _unsupported_mission_profile("build_track_invocation")
+
+    def build_cancel_invocation(self, request_json: bytes) -> bytes:
+        return _unsupported_mission_profile("build_cancel_invocation")
+
     def run_eal(self, request_json: bytes) -> bytes:
         request = _json_object(request_json, "EasyRemote mission run request")
-        payload: dict[str, object] = {"source": _required_string(request, "source")}
+        payload: dict[str, object] = {
+            "source": _required_mission_string(request, "source")
+        }
         if request.get("label"):
-            payload["label"] = _required_string(request, "label")
+            payload["label"] = _required_mission_string(request, "label")
         response = self._invoke(_MISSION_RUN, **payload)
         return _mission_status_json(_MISSION_RUN, response)
 
     def track(self, request_json: bytes) -> bytes:
         request = _json_object(request_json, "EasyRemote mission track request")
-        run_id = _required_string(request, "mission_id")
+        run_id = _required_mission_string(request, "mission_id")
         response = self._invoke(_MISSION_TRACK, run_id=run_id)
         return _mission_status_json(_MISSION_TRACK, response, mission_id=run_id)
 
     def cancel(self, request_json: bytes) -> bytes:
         request = _json_object(request_json, "EasyRemote mission cancel request")
-        run_id = _required_string(request, "mission_id")
+        run_id = _required_mission_string(request, "mission_id")
         response = self._invoke(_MISSION_CANCEL, run_id=run_id)
         return _mission_status_json(_MISSION_CANCEL, response, mission_id=run_id)
+
+    def run_file(self, request_json: bytes) -> bytes:
+        return _unsupported_mission_profile("run_file")
+
+    def events(self, request_json: bytes) -> bytes:
+        request = _json_object(request_json, "EasyRemote mission events request")
+        run_id = _required_mission_string(request, "mission_id")
+        payload: dict[str, object] = {
+            "run_id": run_id,
+            "cursor_sequence": _non_negative_int(
+                request.get("cursor_sequence", 0), "cursor_sequence"
+            ),
+        }
+        if "limit" in request:
+            payload["limit"] = _non_negative_int(request.get("limit"), "limit")
+        response = self._invoke(_MISSION_EVENTS, **payload)
+        return _mission_event_page_json(response, mission_id=run_id)
 
     def close(self) -> None:
         return None
@@ -241,7 +336,9 @@ def _device_ura(client: object) -> str:
     identity = _call_method(client, "_who")
     candidate = getattr(identity, "device_ura", None)
     if not isinstance(candidate, str) or not candidate.strip():
-        raise _invalid_admin("EasyRemote client identity field 'device_ura' is required")
+        raise _invalid_admin(
+            "EasyRemote client identity field 'device_ura' is required"
+        )
     return candidate
 
 
@@ -294,11 +391,15 @@ def _agent_record(value: object) -> dict[str, object]:
         "agent_ura": raw.get("agent_ura"),
         "owner_ura": raw.get("owner_ura"),
         "device_ura": raw.get("device_ura"),
-        "state": raw.get("state") if isinstance(raw.get("state"), str) else "registered",
+        "state": raw.get("state")
+        if isinstance(raw.get("state"), str)
+        else "registered",
         "runtime": runtime,
         "model": raw.get("model"),
         "label": raw.get("label"),
-        "abilities": raw.get("abilities") if isinstance(raw.get("abilities"), list) else [],
+        "abilities": raw.get("abilities")
+        if isinstance(raw.get("abilities"), list)
+        else [],
         "metadata": metadata,
     }
 
@@ -312,7 +413,7 @@ def _mission_status_json(
     raw = dict(response)
     metadata: dict[str, object] = {
         "profile": _MISSION_PROFILE,
-                "source": source.value,
+        "source": source.value,
         "raw_result": raw,
     }
     run_dir = raw.get("run_dir")
@@ -345,6 +446,64 @@ def _mission_status_json(
             "metadata": metadata,
         }
     )
+
+
+def _mission_event_page_json(
+    response: Mapping[str, object], *, mission_id: str
+) -> bytes:
+    raw = dict(response)
+    events = raw.get("events")
+    if not isinstance(events, list):
+        raise _invalid_mission(
+            "mission events response field 'events' must be an array"
+        )
+    cursor_sequence = _non_negative_int(
+        raw.get("cursor_sequence", 0), "cursor_sequence"
+    )
+    next_cursor_sequence = _non_negative_int(
+        raw.get("next_cursor_sequence", cursor_sequence + len(events)),
+        "next_cursor_sequence",
+    )
+    return _json_bytes(
+        {
+            "profile": _MISSION_PROFILE,
+            "kind": "mission_event_page",
+            "mission_id": mission_id,
+            "cursor_sequence": cursor_sequence,
+            "next_cursor_sequence": next_cursor_sequence,
+            "has_more": _bool_value(raw.get("has_more", False), "has_more"),
+            "dropped_count": _non_negative_int(
+                raw.get("dropped_count", 0), "dropped_count"
+            ),
+            "events": [_mission_event(row, mission_id) for row in events],
+            "metadata": {
+                **_mapping_or_empty(raw.get("metadata")),
+                "profile": _MISSION_PROFILE,
+                "source": _MISSION_EVENTS.value,
+                "raw_result": raw,
+            },
+        }
+    )
+
+
+def _mission_event(value: object, mission_id: str) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise _invalid_mission("mission event item must be an object")
+    raw = dict(value)
+    return {
+        "profile": _MISSION_PROFILE,
+        "kind": "mission_event",
+        "mission_id": mission_id,
+        "sequence": _non_negative_int(raw.get("sequence"), "sequence"),
+        "event_type": _required_mission_string(raw, "event_type"),
+        "occurred_unix_ms": _non_negative_int(
+            raw.get("occurred_unix_ms"), "occurred_unix_ms"
+        ),
+        "terminal": _bool_value(raw.get("terminal"), "terminal"),
+        "payload": raw.get("payload"),
+        "receipt": _mapping_or_empty(raw.get("receipt")),
+        "metadata": _mapping_or_empty(raw.get("metadata")),
+    }
 
 
 def _mission_id(
@@ -419,7 +578,7 @@ def _output_refs(raw: Mapping[str, object]) -> list[dict[str, object]]:
                 raise _invalid_mission("output_refs items must be objects")
             refs.append(
                 {
-                    "kind": _required_string(item, "kind"),
+                    "kind": _required_mission_string(item, "kind"),
                     "path": _optional_string(item.get("path"), "path") or "",
                     "metadata": _optional_mapping(item.get("metadata"), "metadata")
                     or {},
@@ -465,7 +624,7 @@ def _call_method(
         raise easynet_sdk.SDKError(
             code=easynet_sdk.ErrorCode.TRANSPORT,
             stage="easyremote_profile",
-            retry=easynet_sdk.RetryHint.SAME_HANDLE,
+            retry=easynet_sdk.RetryHint.SAFE,
             retryable=True,
             message=f"EasyRemote client {method_name}() failed: {exc}",
             cause=exc,
@@ -489,6 +648,15 @@ def _required_string(value: Mapping[str, object], field_name: str) -> str:
     return raw
 
 
+def _required_mission_string(
+    value: Mapping[str, object], field_name: str
+) -> str:
+    raw = value.get(field_name)
+    if not isinstance(raw, str) or not raw.strip():
+        raise _invalid_mission(f"{field_name} is required")
+    return raw
+
+
 def _optional_string(value: object, field_name: str) -> str | None:
     if value is None:
         return None
@@ -502,6 +670,18 @@ def _optional_bool(value: object, field_name: str) -> bool | None:
         return None
     if not isinstance(value, bool):
         raise _invalid_admin(f"{field_name} must be a boolean")
+    return value
+
+
+def _bool_value(value: object, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise _invalid_mission(f"{field_name} must be a boolean")
+    return value
+
+
+def _non_negative_int(value: object, field_name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise _invalid_mission(f"{field_name} must be a non-negative integer")
     return value
 
 
@@ -538,4 +718,34 @@ def _invalid_mission(message: str) -> easynet_sdk.SDKError:
         retry=easynet_sdk.RetryHint.NEVER,
         retryable=False,
         message=message,
+    )
+
+
+def _unsupported_admin_profile(method_name: str) -> bytes:
+    raise easynet_sdk.SDKError(
+        code=easynet_sdk.ErrorCode.NOT_IMPLEMENTED,
+        stage="easyremote_admin_profile",
+        retry=easynet_sdk.RetryHint.NEVER,
+        retryable=False,
+        message=(
+            f"EasyRemote Admin transport does not support SDK profile method "
+            f"{method_name}; use the EasyNet-Cli SDK/Admin backend facade for "
+            "Hub, pairing, session, gateway, and invocation-builder operations"
+        ),
+        details={"profile_method": method_name},
+    )
+
+
+def _unsupported_mission_profile(method_name: str) -> bytes:
+    raise easynet_sdk.SDKError(
+        code=easynet_sdk.ErrorCode.NOT_IMPLEMENTED,
+        stage="easyremote_mission_profile",
+        retry=easynet_sdk.RetryHint.NEVER,
+        retryable=False,
+        message=(
+            f"EasyRemote Mission transport does not support SDK profile method "
+            f"{method_name}; use the EasyNet-Cli SDK/Mission backend facade for "
+            "file execution, event pages, and invocation-builder operations"
+        ),
+        details={"profile_method": method_name},
     )
