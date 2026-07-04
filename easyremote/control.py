@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import easynet_sdk
 
 from . import _sdk_identity
+from ._sdk_profiles import admin_facade
 from .errors import InvalidArgument, RemoteError, Unavailable, error_from_sdk
 from .identity import LocalIdentity
 
@@ -295,9 +296,7 @@ class AgentControl:
 
     def __init__(self, client: Client | None = None) -> None:
         self._client = client or _new_client()
-        self._admin = easynet_sdk.EasyRemoteAdminAdapter.from_easyremote_client(
-            self._client
-        )
+        self._admin = admin_facade(self._client)
 
     def add(
         self,

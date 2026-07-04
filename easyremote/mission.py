@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import easynet_sdk
 
+from ._sdk_profiles import mission_facade
 from .errors import InvalidArgument, RemoteError, error_from_sdk
 
 if TYPE_CHECKING:
@@ -27,9 +28,7 @@ class MissionControl:
 
     def __init__(self, client: Client | None = None) -> None:
         self._client = client or _new_client()
-        self._mission = easynet_sdk.EasyRemoteMissionAdapter.from_easyremote_client(
-            self._client
-        )
+        self._mission = mission_facade(self._client)
 
     def run_eal(self, source: str, *, label: str | None = None) -> MissionRun:
         """Submit an EAL source string to daemon ``mission.run``."""
