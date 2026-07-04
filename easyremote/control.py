@@ -295,6 +295,7 @@ class AgentControl:
 
     def __init__(self, client: Client | None = None) -> None:
         self._client = client or _new_client()
+        self._admin = easynet_sdk.EasyRemoteAdminAdapter(self._client)
 
     def add(
         self,
@@ -317,41 +318,66 @@ class AgentControl:
                 "agent type must not be empty", reason="empty_agent_type"
             )
 
-        response = self._client.invoke(
-            "agent.start",
-            name=agent_name,
-            agent_type=runtime,
-            model=model,
-            model_present=True,
-            label=label,
-            command=command,
-            command_args=list(args),
-            materialize_directory=True,
-            update_existing_spec=False,
-            project_workspace=True,
-        ).result()
-        return AgentStartResult.from_wire(
-            _dict(response), name=agent_name, runtime=runtime
+        try:
+            result = self._admin.start_agent(
+                agent_name,
+                kind=runtime,
+                model=model,
+                label=label,
+                command=command,
+                args=args,
+            )
+        except easynet_sdk.SDKError as exc:
+            raise _easyremote_admin_error(exc) from exc
+        return AgentStartResult(
+            name=result.name,
+            runtime=result.runtime,
+            model=result.model,
+            root_path=result.root_path,
+            replaced_prior=result.replaced_prior,
+            raw=result.raw,
         )
 
     def list(self) -> builtins.list[AgentRecord]:
-        response = _dict(self._client.invoke("agent.list").result())
-        agents = response.get("agents") or []
-        if not isinstance(agents, list):
-            raise InvalidArgument(
-                "agent.list response field 'agents' is not a list",
-                reason="invalid_agent_list_response",
-            )
-        return [AgentRecord.from_wire(_dict(row)) for row in agents]
+        try:
+            return [
+                AgentRecord(
+                    name=row.name,
+                    runtime=row.runtime,
+                    model=row.model,
+                    root_path=row.root_path,
+                    timeout_secs=row.timeout_secs,
+                    root_exists=row.root_exists,
+                    raw=row.raw,
+                )
+                for row in self._admin.list_agents()
+            ]
+        except easynet_sdk.SDKError as exc:
+            raise _easyremote_admin_error(exc) from exc
 
     def refresh(self, name: str | None = None) -> Mapping[str, Any]:
-        agent_name = name.strip() if name is not None else None
-        if name is not None and not agent_name:
-            raise InvalidArgument(
-                "agent name must not be empty", reason="empty_agent_name"
-            )
-        payload = {"name": agent_name} if agent_name else {}
-        return _dict(self._client.invoke("agent.refresh", **payload).result())
+        try:
+            return dict(self._admin.refresh_agents(name))
+        except easynet_sdk.SDKError as exc:
+            raise _easyremote_admin_error(exc) from exc
+
+
+def _easyremote_admin_error(error: easynet_sdk.SDKError) -> RemoteError:
+    if isinstance(error.cause, RemoteError):
+        return error.cause
+    message = error.message or str(error)
+    if error.code == easynet_sdk.ErrorCode.INVALID_ARGUMENT:
+        return InvalidArgument(message, reason="sdk_admin_invalid_argument")
+    if error.code in {
+        easynet_sdk.ErrorCode.ABILITY_NOT_FOUND,
+        easynet_sdk.ErrorCode.NOT_FOUND,
+        easynet_sdk.ErrorCode.DAEMON_OFFLINE,
+        easynet_sdk.ErrorCode.ROUTE_UNAVAILABLE,
+    }:
+        return Unavailable(message, reason="sdk_admin_unavailable")
+    if error.retryable:
+        return Unavailable(message, reason="sdk_admin_retryable")
+    return InternalError(message, reason="sdk_admin_internal")
 
 
 def _record_belongs_to_user(record: AbilityRecord, user_id: str) -> bool:
