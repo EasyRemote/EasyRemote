@@ -17,10 +17,13 @@ callers do not lose the daemon's original ``raw`` value.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
+
+import easynet_sdk
 
 from .errors import InternalError, Unavailable
 
@@ -116,17 +119,18 @@ class Receipt:
     def verify(self, resolver: object | None = None) -> None:
         """Cryptographically verify this receipt — not yet possible.
 
-        C ABI v3 delivers receipt *summaries* without the signed axiom
-        binding, so there is nothing here to verify a signature against.
-        The full-receipt fetch path is the flagged SPEC §6 gap; until it
-        lands, failing loudly beats pretending to verify.
+        The SDK Receipt profile is the verification boundary. Local daemon
+        summaries project as summary-only evidence and therefore cannot satisfy
+        Axon-backed cryptographic verification.
         """
-        raise Unavailable(
-            "cryptographic receipt verification needs the full receipt body,"
-            " which C ABI v3 does not deliver (summaries only) — tracked as"
-            " SPEC §6 'receipt body' gap",
-            reason="full_receipt_unavailable",
-        )
+        try:
+            _receipt_client().verify(_receipt_json(self)).require_cryptographic()
+        except easynet_sdk.SDKError as exc:
+            raise Unavailable(
+                "cryptographic receipt verification needs the full receipt body,"
+                " which the local summary does not provide",
+                reason="full_receipt_unavailable",
+            ) from exc
 
 
 class ReceiptChain(Sequence[Receipt]):
@@ -151,15 +155,29 @@ class ReceiptChain(Sequence[Receipt]):
         :class:`InternalError` (reason ``receipt_chain_broken``) at the
         first broken link.
         """
-        for position in range(1, len(self._receipts)):
-            previous, current = self._receipts[position - 1], self._receipts[position]
-            if current.prev_receipt_hash != previous.self_hash:
-                raise InternalError(
-                    f"receipt chain broken at index {current.index}:"
-                    " prev_receipt_hash does not match predecessor's self_hash",
-                    reason="receipt_chain_broken",
-                    invocation_id=current.invocation_id,
+        if len(self._receipts) < 2:
+            return
+        try:
+            verification = _receipt_client().verify_chain(
+                easynet_sdk.ReceiptChainVerificationRequest(
+                    receipts=tuple(_receipt_json(receipt) for receipt in self._receipts)
                 )
+            )
+        except easynet_sdk.SDKError as exc:
+            raise InternalError(str(exc), reason="receipt_chain_broken") from exc
+        if verification.continuous:
+            return
+        broken = next(
+            (item for item in verification.items if not item.continuous), None
+        )
+        index = broken.index if broken is not None else 0
+        invocation_id = broken.invocation_id if broken is not None else None
+        raise InternalError(
+            f"receipt chain broken at index {index}:"
+            " prev_receipt_hash does not match predecessor's self_hash",
+            reason="receipt_chain_broken",
+            invocation_id=invocation_id,
+        )
 
 
 def _parse_state(value: Any) -> InvocationState:
@@ -173,3 +191,13 @@ def _parse_state(value: Any) -> InvocationState:
         # A state this package doesn't know yet must not crash receipt
         # parsing — preserve it as UNSPECIFIED; `raw` keeps the number.
         return InvocationState.UNSPECIFIED
+
+
+def _receipt_client() -> easynet_sdk.ReceiptClient:
+    return easynet_sdk.ReceiptClient(easynet_sdk.LocalReceiptTransport())
+
+
+def _receipt_json(receipt: Receipt) -> bytes:
+    return json.dumps(receipt.raw, separators=(",", ":"), sort_keys=True).encode(
+        "utf-8"
+    )
