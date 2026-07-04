@@ -29,9 +29,11 @@ from typing import Any
 import easynet_sdk
 
 from .. import _codec
+from .._context_dispatch import dispatcher_from_parent_receipt
 from .._json import dumps_wire
-from ..context import Context
+from ..context import Context, ContextChildDispatcher
 from ..errors import InternalError, InvalidArgument, RemoteError
+from ..receipts import Receipt
 from ..schema import PARAMETER_ORDER_KEY, VAR_POSITIONAL_KEY, DerivedSignature
 
 __all__ = ["HostServer", "HostedFunction"]
@@ -183,12 +185,23 @@ class HostServer:
     incoming request and emits its stream frames.
     """
 
-    def __init__(self, socket_path: Path) -> None:
+    def __init__(
+        self,
+        socket_path: Path,
+        *,
+        context_dispatcher_factory: Callable[
+            [Receipt | None], ContextChildDispatcher | None
+        ]
+        | None = None,
+    ) -> None:
         self._socket_path = socket_path
         self._functions: dict[str, HostedFunction] = {}
         self._listener: socket.socket | None = None
         self._accept_thread: threading.Thread | None = None
         self._stopping = threading.Event()
+        self._context_dispatcher_factory = (
+            context_dispatcher_factory or dispatcher_from_parent_receipt
+        )
         self._host_binding = easynet_sdk.HostBindingClient(
             easynet_sdk.LocalHostBindingTransport()
         )
@@ -343,10 +356,7 @@ class HostServer:
         # Build the injected Context from the envelope the daemon relays.
         context = None
         if sig.takes_context:
-            context = Context(
-                invocation_id=request.call_id,
-                caller=request.caller,
-            )
+            context = self._context_for_request(request)
 
         try:
             frames = (
@@ -376,7 +386,24 @@ class HostServer:
                 f"{type(exc).__name__}: {exc}",
             )
             return
+        finally:
+            if context is not None:
+                context.close()
         self._send_frame(connection, session.finish())
+
+    def _context_for_request(
+        self, request: easynet_sdk.HostStreamRequest
+    ) -> Context:
+        parent = (
+            Receipt.from_wire(dict(request.parent_receipt))
+            if request.parent_receipt is not None
+            else None
+        )
+        return Context(
+            invocation_id=request.call_id,
+            caller=request.caller,
+            _child_dispatcher=self._context_dispatcher_factory(parent),
+        )
 
 
 def _host_error(kind: str, reason: str, message: str) -> easynet_sdk.SDKError:

@@ -35,10 +35,12 @@ def stream_request(
     *,
     caller="easynet:///r/acme/device/test-caller",
     call_id="t",
+    parent_receipt=None,
 ):
-    request = {
-        "request": {"fn": fn, "args": args, "caller": caller, "call_id": call_id}
-    }
+    body = {"fn": fn, "args": args, "caller": caller, "call_id": call_id}
+    if parent_receipt is not None:
+        body["parent_receipt"] = parent_receipt
+    request = {"request": body}
     return _socket_frames(host, json.dumps(request))
 
 
@@ -295,6 +297,83 @@ def test_stream_context_function_reads_caller_each_frame(host):
     assert stream_items(frames) == [
         {"i": i, "by": "easynet:///r/acme/device/bob"} for i in range(3)
     ]
+
+
+def test_context_child_call_uses_parent_receipt_dispatcher(short_tmp):
+    from easyremote import Context
+    from easyremote._host.server import HostServer
+
+    seen = {}
+
+    class FakeDispatcher:
+        def __init__(self, receipt):
+            self.receipt = receipt
+            self.closed = False
+
+        def call(self, function, /, *args, **kwargs):
+            seen["receipt_ura"] = self.receipt.raw["receipt_ura"]
+            seen["function"] = function
+            seen["args"] = args
+            seen["kwargs"] = kwargs
+            return {"child": function, "receipt": self.receipt.raw["receipt_ura"]}
+
+        def invoke(self, function, /, *args, **kwargs):
+            raise AssertionError("unexpected invoke")
+
+        def stream(self, function, /, *args, **kwargs):
+            raise AssertionError("unexpected stream")
+
+        def close(self):
+            seen["closed"] = True
+            self.closed = True
+
+    def factory(receipt):
+        assert receipt is not None
+        return FakeDispatcher(receipt)
+
+    def parent(ctx: Context, q: str):
+        return ctx.call("er.child", q=q)
+
+    parent_receipt = {
+        "index": 0,
+        "invocation_id": "inv-parent-1",
+        "receipt_type": "completed",
+        "state": "completed",
+        "timestamp_unix_ms": 1_700_000_000_000,
+        "prev_receipt_hash_hex": "00" * 32,
+        "self_hash_hex": "aa" * 32,
+        "receipt_ura": "easynet:///r/example/receipt/parent-1",
+        "payload_content_type": "application/json",
+        "cleanup_complete": True,
+        "reason": "",
+        "child_invocation_id": "",
+    }
+
+    with HostServer(
+        short_tmp / "host.sock", context_dispatcher_factory=factory
+    ) as server:
+        server.add(hosted(parent))
+        frames = stream_request(
+            server,
+            "er.parent",
+            {"q": "hi"},
+            call_id="inv-parent-1",
+            parent_receipt=parent_receipt,
+        )
+
+    assert stream_items(frames) == [
+        {
+            "child": "er.child",
+            "receipt": "easynet:///r/example/receipt/parent-1",
+        }
+    ]
+    assert seen == {
+        "receipt_ura": "easynet:///r/example/receipt/parent-1",
+        "function": "er.child",
+        "args": (),
+        "kwargs": {"q": "hi"},
+        "closed": True,
+    }
 
 
 def test_rolling_hash_matches_daemon_golden_vector():
