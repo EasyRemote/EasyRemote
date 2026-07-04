@@ -30,6 +30,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
+import easynet_sdk
+
 from . import _sdk_identity
 from ._json import dumps_wire
 from .errors import InternalError, InvalidArgument
@@ -273,76 +275,219 @@ def encode_invocation(
     NOT an eighth tuple field. The inspectable route name stays on the
     in-memory ``InvocationTuple.ability`` for diagnostics.
     """
-    descriptor_ref = _descriptor_ref_for_wire(tuple_, descriptor_version)
-    wire: dict[str, Any] = {
-        "caller_ura": tuple_.caller,
-        "callee_ura": tuple_.callee,
-        "descriptor_ref": descriptor_ref,
-        "subject_ura": tuple_.subject,
-        "nonce_base64": base64.b64encode(tuple_.nonce).decode("ascii"),
-        "causal_context": _encode_causal(tuple_.causal),
-    }
-    if tuple_.arguments.is_json:
-        wire["args"] = tuple_.arguments.json_value
-    else:
-        wire["arguments_base64"] = base64.b64encode(tuple_.arguments.raw or b"").decode(
-            "ascii"
-        )
-        wire["content_type"] = tuple_.arguments.content_type
-    if metadata:
-        wire["metadata"] = dict(metadata)
-    if caller_signature is not None:
-        wire["caller_signature"] = caller_signature.to_wire()
-    if bidi_streams:
-        wire["bidi_streams"] = [stream.to_wire() for stream in bidi_streams]
-    return wire
-
-
-def _descriptor_ref_for_wire(
-    tuple_: InvocationTuple, descriptor_version: str
-) -> str:
-    """Derive the canonical ``descriptor_ref`` the daemon binds against.
-
-    A tuple route name (``observe.health``) is projected onto the
-    callee-owned Ability URA at ``descriptor_version``; an ability that
-    already carries an explicit descriptor ref passes through with its
-    own pinned version. The daemon independently re-derives the owner
-    from this ref and rejects it unless it matches ``callee`` — so the
-    facade never reasons about owner/callee agreement itself.
-    """
-    version = descriptor_version.strip()
-    if not version:
-        raise InvalidArgument(
-            "descriptor_version must not be empty",
-            reason="empty_descriptor_version",
-        )
-
-    ability = tuple_.ability.strip()
     try:
-        descriptor_ref = _sdk_identity.canonical_ability_descriptor_ref(ability)
-    except _sdk_identity.IdentityFacadeError as exc:
-        if not exc.invalid_argument:
-            raise InvalidArgument(
-                f"descriptor_ref canonicalization failed: {exc}",
-                reason="invalid_descriptor_ref",
-            ) from exc
-        try:
-            ability_ura = _sdk_identity.owner_ability_ura(tuple_.callee, ability)
-        except _sdk_identity.IdentityFacadeError as owner_exc:
-            raise InvalidArgument(
-                "cannot derive descriptor_ref from callee/ability:"
-                f" callee={tuple_.callee!r}, ability={ability!r}",
-                reason="descriptor_ref_derivation_failed",
-            ) from owner_exc
-        descriptor_ref = f"{ability_ura}@{version}"
-
-    try:
-        return _sdk_identity.canonical_ability_descriptor_ref(descriptor_ref)
-    except _sdk_identity.IdentityFacadeError as exc:
+        wire = _easyremote_invocation_adapter().to_wire_dict(
+            tuple_,
+            metadata=metadata,
+            caller_signature=caller_signature,
+            bidi_streams=bidi_streams,
+            descriptor_version=descriptor_version,
+        )
+    except easynet_sdk.SDKError as exc:
         raise InvalidArgument(
-            f"descriptor_ref is rejected by SDK identity facade: {exc}",
+            f"SDK invocation adapter rejected the invocation: {exc}",
             reason="invalid_descriptor_ref",
         ) from exc
+    return _legacy_wire_projection(wire, tuple_, metadata, bidi_streams)
+
+
+def _easyremote_invocation_adapter() -> easynet_sdk.EasyRemoteInvocationAdapter:
+    return easynet_sdk.EasyRemoteInvocationAdapter(
+        easynet_sdk.AbilityInvocationClient(
+            runtime=easynet_sdk.RuntimeClient(_EncodeOnlyRuntimeTransport()),
+            addressing=easynet_sdk.AddressingClient(
+                _EasyRemoteSdkAddressingTransport()
+            ),
+        )
+    )
+
+
+def _legacy_wire_projection(
+    wire: dict[str, Any],
+    tuple_: InvocationTuple,
+    metadata: Mapping[str, str] | None,
+    bidi_streams: Sequence[StreamSpec] | None,
+) -> dict[str, Any]:
+    """Preserve EasyRemote's public wire shape over the SDK DTO.
+
+    The SDK's standard Invocation DTO always carries `content_type` and an
+    empty `metadata` object. The historical EasyRemote daemon payload omits
+    those keys for JSON arguments and empty metadata; callers and golden tests
+    rely on that thinner shape.
+    """
+
+    value = dict(wire)
+    if tuple_.arguments.is_json and value.get("content_type") == JSON_CONTENT_TYPE:
+        value.pop("content_type", None)
+    if not metadata and value.get("metadata") == {}:
+        value.pop("metadata", None)
+    if bidi_streams:
+        value["bidi_streams"] = [stream.to_wire() for stream in bidi_streams]
+    return value
+
+
+class _EasyRemoteSdkAddressingTransport:
+    """SDK AddressingTransport backed by EasyRemote's injected SDK facade."""
+
+    def project_descriptor_ref(self, request_json: bytes) -> bytes:
+        request = _json_request(request_json)
+        descriptor_ref = _required_wire_string(request, "descriptor_ref")
+        try:
+            canonical = _sdk_identity.canonical_ability_descriptor_ref(descriptor_ref)
+        except _sdk_identity.IdentityFacadeError as exc:
+            raise _sdk_identity_error(exc) from exc
+        return _descriptor_projection_json(canonical)
+
+    def build_descriptor_ref(self, request_json: bytes) -> bytes:
+        request = _json_request(request_json)
+        ability_ura = _required_wire_string(request, "ability_ura")
+        descriptor_version = _required_wire_string(request, "descriptor_version")
+        try:
+            descriptor_ref = _sdk_identity.canonical_ability_descriptor_ref(
+                ability_ura,
+                descriptor_version,
+            )
+        except _sdk_identity.IdentityFacadeError as exc:
+            raise _sdk_identity_error(exc) from exc
+        return _descriptor_projection_json(descriptor_ref)
+
+    def project_identity(self, request_json: bytes) -> bytes:
+        request = _json_request(request_json)
+        try:
+            projection = _sdk_identity.parse_ura(_required_wire_string(request, "ura"))
+        except _sdk_identity.IdentityFacadeError as exc:
+            raise _sdk_identity_error(exc) from exc
+        return _identity_projection_json(projection)
+
+    def build_ura(self, request_json: bytes) -> bytes:
+        request = _json_request(request_json)
+        kind = _required_wire_string(request, "kind")
+        if kind != "ability":
+            raise _sdk_invalid(f"unsupported EasyRemote URA build kind {kind!r}")
+        try:
+            ability_ura = _sdk_identity.owner_ability_ura(
+                _required_wire_string(request, "owner_ura"),
+                _required_wire_string(request, "ability_name"),
+            )
+            projection = _sdk_identity.parse_ura(ability_ura)
+        except _sdk_identity.IdentityFacadeError as exc:
+            raise _sdk_identity_error(exc) from exc
+        return _identity_projection_json(projection)
+
+
+class _EncodeOnlyRuntimeTransport:
+    """RuntimeTransport placeholder; encode_invocation never dispatches."""
+
+    def invoke(self, draft_json: bytes) -> bytes:
+        raise _sdk_invalid("encode-only invocation adapter cannot dispatch")
+
+    def open_stream(self, draft_json: bytes) -> tuple[Any, bytes]:
+        raise _sdk_invalid("encode-only invocation adapter cannot open streams")
+
+    def open_bidi(self, draft_json: bytes, streams_json: bytes) -> tuple[Any, bytes]:
+        raise _sdk_invalid("encode-only invocation adapter cannot open bidi sessions")
+
+    def prepare(self, draft_json: bytes, options_json: bytes) -> bytes:
+        raise _sdk_invalid("encode-only invocation adapter cannot prepare")
+
+    def submit_signed(self, signed_json: bytes) -> bytes:
+        raise _sdk_invalid("encode-only invocation adapter cannot submit signed calls")
+
+    def await_handle(self, handle_id: int) -> bytes:
+        raise _sdk_invalid("encode-only invocation adapter cannot await handles")
+
+    def cancel_handle(self, handle_id: int, reason: str) -> bytes:
+        raise _sdk_invalid("encode-only invocation adapter cannot cancel handles")
+
+    def handle_events(self, handle_id: int) -> bytes:
+        raise _sdk_invalid("encode-only invocation adapter cannot read handle events")
+
+    def free_handle(self, handle_id: int) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+def _json_request(raw: bytes) -> Mapping[str, Any]:
+    try:
+        decoded = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise _sdk_invalid(f"invalid SDK addressing request JSON: {exc}") from exc
+    if not isinstance(decoded, Mapping):
+        raise _sdk_invalid("SDK addressing request must be an object")
+    return decoded
+
+
+def _required_wire_string(request: Mapping[str, Any], field_name: str) -> str:
+    value = request.get(field_name)
+    if not isinstance(value, str) or value.strip() == "":
+        raise _sdk_invalid(f"{field_name} is required")
+    if value.strip() != value:
+        raise _sdk_invalid(f"{field_name} must not contain surrounding whitespace")
+    return value
+
+
+def _descriptor_projection_json(descriptor_ref: str) -> bytes:
+    ability_ura, separator, descriptor_version = descriptor_ref.rpartition("@")
+    if not separator or not ability_ura or not descriptor_version:
+        raise _sdk_invalid("descriptor_ref must contain an Ability URA and version")
+    try:
+        owner_ura = _sdk_identity.owner_ura_for_ability(ability_ura)
+    except _sdk_identity.IdentityFacadeError:
+        owner_ura = ""
+    return _json_response(
+        {
+            "kind": "descriptor_ref",
+            "valid": True,
+            "profile": "easynet-strict-v2",
+            "components": {"owner_ura": owner_ura} if owner_ura else {},
+            "metadata": {"grammar_owner": "axon"},
+            "descriptor_ref": descriptor_ref,
+            "ability_ura": ability_ura,
+            "descriptor_version": descriptor_version,
+        }
+    )
+
+
+def _identity_projection_json(projection: _sdk_identity.UraProjection) -> bytes:
+    return _json_response(
+        {
+            "kind": projection.kind,
+            "valid": True,
+            "profile": "easynet-strict-v2",
+            "components": dict(projection.components or {}),
+            "metadata": {"grammar_owner": "axon"},
+            "ura": projection.ura,
+            "realm": projection.realm,
+        }
+    )
+
+
+def _json_response(value: Mapping[str, Any]) -> bytes:
+    return json.dumps(value, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def _sdk_identity_error(exc: _sdk_identity.IdentityFacadeError) -> easynet_sdk.SDKError:
+    if exc.invalid_argument:
+        return _sdk_invalid(str(exc))
+    return easynet_sdk.SDKError(
+        code=easynet_sdk.ErrorCode.TRANSPORT,
+        stage="directory_identity",
+        retry=easynet_sdk.RetryHint.SAFE,
+        retryable=True,
+        message=str(exc),
+    )
+
+
+def _sdk_invalid(message: str) -> easynet_sdk.SDKError:
+    return easynet_sdk.SDKError(
+        code=easynet_sdk.ErrorCode.INVALID_ARGUMENT,
+        stage="directory_identity",
+        retry=easynet_sdk.RetryHint.NEVER,
+        retryable=False,
+        message=message,
+    )
 
 
 class Invocation:
