@@ -17,9 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import inspect
-import json
 import socket
 import threading
 import typing
@@ -27,6 +25,8 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+import easynet_sdk
 
 from .. import _codec
 from .._json import dumps_wire
@@ -189,6 +189,9 @@ class HostServer:
         self._listener: socket.socket | None = None
         self._accept_thread: threading.Thread | None = None
         self._stopping = threading.Event()
+        self._host_binding = easynet_sdk.HostBindingClient(
+            easynet_sdk.LocalHostBindingTransport()
+        )
 
     @property
     def socket_path(self) -> Path:
@@ -268,38 +271,40 @@ class HostServer:
             if not line:
                 return
             try:
-                envelope = json.loads(line)
-            except json.JSONDecodeError as exc:
-                self._send_line(
+                session = self._host_binding.open_session(
+                    easynet_sdk.HostStreamEnvelope.from_json(line)
+                )
+            except easynet_sdk.SDKError as exc:
+                self._send_error(
                     connection,
-                    _stream_error(
-                        InvalidArgument.KIND,
-                        "bad_request",
-                        f"{type(exc).__name__}: {exc}",
-                    ),
+                    InvalidArgument.KIND,
+                    "bad_request",
+                    exc.message,
                 )
                 return
-            if not isinstance(envelope, dict) or not isinstance(
-                envelope.get("request"), dict
-            ):
-                self._send_line(
-                    connection,
-                    _stream_error(
-                        InvalidArgument.KIND,
-                        "bad_request",
-                        "host_stream envelope must be a JSON object with a"
-                        " request object",
-                    ),
-                )
-                return
-            self._serve_stream(connection, envelope["request"])
+            self._serve_stream(connection, session)
 
-    def _send_line(self, connection: socket.socket, frame: dict[str, Any]) -> None:
+    def _send_frame(
+        self, connection: socket.socket, frame: easynet_sdk.HostStreamFrame
+    ) -> None:
         connection.sendall(
-            (dumps_wire(frame, what="host_stream frame") + "\n").encode("utf-8")
+            (
+                dumps_wire(frame.to_host_wire_dict(), what="host_stream frame")
+                + "\n"
+            ).encode("utf-8")
         )
 
-    def _serve_stream(self, connection: socket.socket, request: dict[str, Any]) -> None:
+    def _send_error(
+        self, connection: socket.socket, kind: str, reason: str, message: str
+    ) -> None:
+        self._send_frame(
+            connection,
+            self._host_binding.encode_error(_host_error(kind, reason, message)),
+        )
+
+    def _serve_stream(
+        self, connection: socket.socket, session: easynet_sdk.HostStreamSession
+    ) -> None:
         """Stream a generator ability's frames per the host_stream wire.
 
         Emits `{"stream_item", "seq"}` per frame with a rolling hash
@@ -308,17 +313,16 @@ class HostServer:
         the ability is missing, mis-typed, or raises. terminal and error
         are mutually exclusive and each sent at most once.
         """
-        name = request.get("fn")
-        args = request.get("args", {})
+        request = session.request
+        name = request.function
+        args = request.args
         hosted = self._functions.get(name) if isinstance(name, str) else None
         if hosted is None:
-            self._send_line(
+            self._send_error(
                 connection,
-                _stream_error(
-                    InvalidArgument.KIND,
-                    "not_found",
-                    f"no function '{name}' on this node",
-                ),
+                InvalidArgument.KIND,
+                "not_found",
+                f"no function '{name}' on this node",
             )
             return
         # The host_stream wire serves EVERY ability: generators stream
@@ -328,13 +332,11 @@ class HostServer:
         # carry arbitrary JSON args or the caller identity.
         sig = hosted.signature
         if not isinstance(args, dict):
-            self._send_line(
+            self._send_error(
                 connection,
-                _stream_error(
-                    InvalidArgument.KIND,
-                    "bad_request",
-                    "args must be a JSON object",
-                ),
+                InvalidArgument.KIND,
+                "bad_request",
+                "args must be a JSON object",
             )
             return
 
@@ -342,12 +344,10 @@ class HostServer:
         context = None
         if sig.takes_context:
             context = Context(
-                invocation_id=str(request.get("call_id") or ""),
-                caller=str(request.get("caller") or ""),
+                invocation_id=request.call_id,
+                caller=request.caller,
             )
 
-        rolling = _RollingHash()
-        seq = 0
         try:
             frames = (
                 hosted.stream(args, context=context)
@@ -355,29 +355,31 @@ class HostServer:
                 else iter([hosted.call(args, context=context)])
             )
             for frame in frames:
-                self._send_line(connection, {"stream_item": frame, "seq": seq})
-                rolling.fold(seq, frame)
-                seq += 1
-        except RemoteError as exc:
-            self._send_line(connection, _stream_error(exc.kind, exc.reason, str(exc)))
-            return
-        except Exception as exc:
-            self._send_line(
+                self._send_frame(connection, session.emit(frame))
+        except easynet_sdk.SDKError as exc:
+            details = dict(exc.details)
+            self._send_error(
                 connection,
-                _stream_error(
-                    InternalError.KIND,
-                    "function_raised",
-                    f"{type(exc).__name__}: {exc}",
-                ),
+                str(details.get("kind") or InternalError.KIND),
+                str(details.get("reason") or exc.stage),
+                exc.message,
             )
             return
-        self._send_line(
-            connection,
-            {"terminal": {"output_hash": rolling.finish(), "frames": seq}},
-        )
+        except RemoteError as exc:
+            self._send_error(connection, exc.kind, exc.reason, str(exc))
+            return
+        except Exception as exc:
+            self._send_error(
+                connection,
+                InternalError.KIND,
+                "function_raised",
+                f"{type(exc).__name__}: {exc}",
+            )
+            return
+        self._send_frame(connection, session.finish())
 
 
-def _stream_error(kind: str, reason: str, message: str) -> dict[str, Any]:
+def _host_error(kind: str, reason: str, message: str) -> easynet_sdk.SDKError:
     """A single terminal `error` frame for the host_stream wire.
 
     Mutually exclusive with `terminal` and sent at most once — the
@@ -385,44 +387,19 @@ def _stream_error(kind: str, reason: str, message: str) -> dict[str, Any]:
     (`STREAM_TRUNCATED` / `function_raised` / `not_found` …), never a
     clean end-of-stream.
     """
-    return {"error": {"kind": kind, "reason": reason, "message": message}}
-
-
-class _RollingHash:
-    """Rolling output hash over emitted stream frames.
-
-    Folds each frame in `seq` order:
-        output_hash = H(prev_hash || seq || canonical_json(frame))
-    seeded from the empty-string hash. The terminal frame carries the
-    final digest as `sha256:<hex>`; the daemon recomputes it the same
-    way and a mismatch is a truncation failure. The canonical form MUST
-    match the daemon's: compact, sorted keys
-    (`json.dumps(value, sort_keys=True, separators=(",", ":"))`).
-    """
-
-    def __init__(self) -> None:
-        self._prev = hashlib.sha256(b"").digest()
-
-    def fold(self, seq: int, frame: Any) -> None:
-        hasher = hashlib.sha256()
-        hasher.update(self._prev)
-        hasher.update(seq.to_bytes(8, "big"))
-        hasher.update(_canonical_json(frame).encode("utf-8"))
-        self._prev = hasher.digest()
-
-    def finish(self) -> str:
-        return "sha256:" + self._prev.hex()
-
-
-def _canonical_json(value: Any) -> str:
-    """Deterministic byte image of `value` shared with the daemon.
-
-    `ensure_ascii=False` so non-ASCII characters stay as UTF-8 bytes —
-    matching `serde_json`'s output. With the default (`\\uXXXX` escapes)
-    a frame containing any non-ASCII text would hash differently on the
-    two sides and the daemon would wrongly flag `STREAM_TRUNCATED`.
-    """
-    return dumps_wire(value, what="host_stream hash frame", sort_keys=True)
+    code = (
+        easynet_sdk.ErrorCode.INVALID_ARGUMENT
+        if kind == InvalidArgument.KIND
+        else easynet_sdk.ErrorCode.GENERIC
+    )
+    return easynet_sdk.SDKError(
+        code=code,
+        stage="easyremote_host",
+        retry=easynet_sdk.RetryHint.NEVER,
+        retryable=False,
+        message=message,
+        details={"kind": kind, "reason": reason},
+    )
 
 
 def _drain_async_gen(gen: Any) -> Iterator[Any]:

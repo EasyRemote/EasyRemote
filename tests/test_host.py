@@ -298,12 +298,14 @@ def test_rolling_hash_matches_daemon_golden_vector():
     # reject otherwise-valid streams as STREAM_TRUNCATED. Verified
     # byte-identical against a standalone Rust replica using the same
     # sha2 / serde_json versions.
-    from easyremote._host.server import _RollingHash
+    import easynet_sdk
 
-    h = _RollingHash()
-    for seq, frame in enumerate(["a:hi", "b:hi", "c:hi"]):
-        h.fold(seq, frame)
+    writer = easynet_sdk.HostBindingClient(
+        easynet_sdk.LocalHostBindingTransport()
+    ).open_frame_writer()
+    for frame in ["a:hi", "b:hi", "c:hi"]:
+        writer.write_item(frame)
     assert (
-        h.finish()
+        writer.output_hash
         == "sha256:653e1bed022d2aa75fba7d09f92bb1d1db86c3caffb89cf54e6f7556ff3e3183"
     )
