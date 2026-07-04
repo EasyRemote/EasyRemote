@@ -150,6 +150,9 @@ def error_from_sdk(error: easynet_sdk.SDKError) -> RemoteError:
     cls, reason = _SDK_ERROR_MAP.get(
         error.code, (InternalError, error.code.value.lower())
     )
+    detail_reason = error.details.get("reason")
+    if isinstance(detail_reason, str) and detail_reason:
+        reason = detail_reason
     return cls(
         error.message or _SDK_HINTS.get(reason, reason),
         reason=reason,

@@ -25,11 +25,9 @@ the client stops waiting.
 from __future__ import annotations
 
 import base64
-import contextlib
 import functools
 import inspect
 import math
-import queue
 import threading
 import weakref
 from collections.abc import Callable, Iterator, Mapping
@@ -43,7 +41,7 @@ from ._addressing import (
     ResolvedAbility,
     owner_kind,
 )
-from ._sdk_transport import BidiChannel, FrameStream, Transport
+from ._sdk_transport import BidiChannel, FrameStream, Transport, UnaryDispatchPool
 from .errors import (
     DeadlineExceeded,
     InvalidArgument,
@@ -339,12 +337,13 @@ class Client:
         self._timeout = timeout
         self._namespace = namespace
         self._addressing = AbilityAddressResolver(namespace)
-        self._transport_override = transport
         self._identity_override = identity
         self._lock = threading.Lock()
-        self._invoke_lock = threading.Lock()
-        self._transport: Transport | None = None
-        self._retired_transports: set[Transport] = set()
+        self._unary_pool = (
+            UnaryDispatchPool.from_transport(transport)
+            if transport is not None
+            else UnaryDispatchPool.connect()
+        )
         self._identity: LocalIdentity | None = None
 
     # -- L0 ------------------------------------------------------------------
@@ -565,32 +564,7 @@ class Client:
         return MissionControl(self)
 
     def close(self) -> None:
-        # Do not close an SDK-owned daemon transport while a timed-out unary
-        # invoke is still running. If a call is active, close retires the
-        # transport from reuse and lets the worker close it after the call
-        # returns; the caller's close remains bounded.
-        if self._transport_override is not None:
-            return
-        if self._invoke_lock.acquire(blocking=False):
-            try:
-                self._close_idle_transport()
-            finally:
-                self._invoke_lock.release()
-            return
-        self._retire_active_transport_for_close()
-
-    def _close_idle_transport(self) -> None:
-        with self._lock:
-            transport = self._transport
-            self._transport = None
-        if transport is not None:
-            transport.close()
-
-    def _retire_active_transport_for_close(self) -> None:
-        with self._lock:
-            if self._transport is not None:
-                self._retired_transports.add(self._transport)
-                self._transport = None
+        self._unary_pool.close()
 
     def __enter__(self) -> Client:
         return self
@@ -605,66 +579,8 @@ class Client:
     ) -> Invocation:
         wire = encode_invocation(prepared.tuple, metadata=prepared.metadata)
         budget = timeout if timeout is not None else self._timeout
-        transport = self._connected()
-        result: queue.Queue[tuple[bool, dict[str, Any] | BaseException]] = queue.Queue(
-            maxsize=1
-        )
-        timed_out = threading.Event()
-
-        def invoke_on_transport() -> None:
-            try:
-                with self._invoke_lock:
-                    result.put((True, transport.invoke(wire)))
-            except BaseException as exc:
-                result.put((False, exc))
-            finally:
-                retired = self._take_retired_transport(transport)
-                if self._transport_override is None and (timed_out.is_set() or retired):
-                    with contextlib.suppress(BaseException):
-                        transport.close()
-
-        threading.Thread(
-            target=invoke_on_transport,
-            name="easyremote-unary-invoke",
-            daemon=True,
-        ).start()
-        try:
-            ok, payload = result.get(timeout=budget)
-        except queue.Empty:
-            timed_out.set()
-            self._retire_timed_out_transport(transport)
-            raise DeadlineExceeded(
-                f"no response within {budget}s — the server-side execution"
-                " is still governed by the ability's timeout_seconds",
-                reason="client_wait_timeout",
-            ) from None
-        if not ok:
-            assert isinstance(payload, BaseException)
-            raise payload
-        response = cast("dict[str, Any]", payload)
+        response = self._unary_pool.invoke(wire, timeout=budget)
         return Invocation(prepared.tuple, response)
-
-    def _retire_timed_out_transport(self, transport: Transport) -> None:
-        """Remove a timed-out handle from the reuse pool without closing it.
-
-        The synchronous daemon invoke path has no cancellation hook. Closing
-        the transport while the background thread is still inside ``invoke``
-        risks invalid-handle races, so the worker closes this retired transport
-        only after the call returns. The next invocation opens a fresh transport.
-        """
-        if self._transport_override is not None:
-            return
-        with self._lock:
-            if self._transport is transport:
-                self._transport = None
-            self._retired_transports.add(transport)
-
-    def _take_retired_transport(self, transport: Transport) -> bool:
-        with self._lock:
-            if transport not in self._retired_transports:
-                return False
-            self._retired_transports.remove(transport)
-            return True
 
     def _address(
         self,
@@ -782,12 +698,11 @@ class Client:
             )
 
     def _connected(self) -> Transport:
-        if self._transport_override is not None:
-            return self._transport_override
-        with self._lock:
-            if self._transport is None:
-                self._transport = Transport.connect()
-            return self._transport
+        return self._unary_pool.connected_transport()
+
+    @property
+    def _transport(self) -> Transport | None:
+        return self._unary_pool.current_transport
 
 
 class AsyncClient:

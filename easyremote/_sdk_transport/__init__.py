@@ -9,14 +9,20 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import easynet_sdk
 
 from ..config import settings
 from ..errors import error_from_sdk
 
-__all__ = ["BidiChannel", "DaemonProcess", "FrameStream", "Transport"]
+__all__ = [
+    "BidiChannel",
+    "DaemonProcess",
+    "FrameStream",
+    "Transport",
+    "UnaryDispatchPool",
+]
 
 
 class Transport:
@@ -66,6 +72,49 @@ class Transport:
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
+
+
+class UnaryDispatchPool:
+    """EasyRemote error-mapping wrapper over the SDK unary dispatch pool."""
+
+    def __init__(self, pool: easynet_sdk.EasyRemoteUnaryDispatchPool) -> None:
+        self._pool = pool
+
+    @classmethod
+    def connect(cls) -> UnaryDispatchPool:
+        def factory() -> easynet_sdk.EasyRemoteUnaryTransport:
+            return cast(easynet_sdk.EasyRemoteUnaryTransport, Transport.connect())
+
+        return cls(easynet_sdk.EasyRemoteUnaryDispatchPool(factory))
+
+    @classmethod
+    def from_transport(cls, transport: Transport) -> UnaryDispatchPool:
+        return cls(
+            easynet_sdk.EasyRemoteUnaryDispatchPool.from_transport(
+                cast(easynet_sdk.EasyRemoteUnaryTransport, transport)
+            )
+        )
+
+    def invoke(
+        self, invocation: Mapping[str, object], *, timeout: float | None = None
+    ) -> dict[str, Any]:
+        try:
+            return dict(self._pool.invoke(invocation, timeout=timeout))
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
+
+    def close(self) -> None:
+        try:
+            self._pool.close()
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
+
+    @property
+    def current_transport(self) -> Transport | None:
+        return cast(Transport | None, self._pool.current_transport)
+
+    def connected_transport(self) -> Transport:
+        return cast(Transport, self._pool.connected_transport())
 
 
 @dataclass

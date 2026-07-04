@@ -533,10 +533,11 @@ def test_client_wait_timeout_raises_deadline_exceeded():
     client, transport = make_client()
     transport.delay = 0.2
     started = time.perf_counter()
-    with pytest.raises(DeadlineExceeded, match="timeout_seconds"):
+    with pytest.raises(DeadlineExceeded, match="timeout_seconds") as exc_info:
         client.invoke(Client.target("fn", timeout=0.01), x=1)
     elapsed = time.perf_counter() - started
     assert elapsed < 0.1, "client-side deadline must bound caller wait time"
+    assert exc_info.value.reason == "client_wait_timeout"
 
 
 def test_context_manager_exit_after_timeout_is_bounded(monkeypatch):
