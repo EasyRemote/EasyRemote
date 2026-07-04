@@ -24,7 +24,6 @@ the client stops waiting.
 
 from __future__ import annotations
 
-import base64
 import functools
 import inspect
 import math
@@ -33,6 +32,8 @@ import weakref
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, cast
+
+import easynet_sdk
 
 from . import _codec, _sdk_identity
 from ._addressing import (
@@ -43,14 +44,12 @@ from ._addressing import (
 )
 from ._sdk_transport import BidiChannel, FrameStream, Transport, UnaryDispatchPool
 from .errors import (
-    DeadlineExceeded,
     InvalidArgument,
     Unavailable,
-    error_from_wire,
+    error_from_sdk,
 )
 from .identity import LocalIdentity, agent_ura, device_ura, hub_ura
 from .invocation import (
-    JSON_CONTENT_TYPE,
     Arguments,
     Causal,
     Invocation,
@@ -163,94 +162,24 @@ class CallTarget:
 class Stream:
     """Frames from a server-stream invocation.
 
-    Yields each ability frame's decoded result value until the terminal
-    frame arrives, then closes the underlying transport stream and stops
-    iteration. Recognising the terminal frame is the stream consumer's
-    job (the daemon keeps the carrier open after the last chunk), so this
-    layer — not the raw frame queue — owns end-of-stream detection.
-
-    A terminal frame with an error surfaces as :class:`RemoteError`; a
-    clean terminal frame (the daemon's end-of-stream marker) simply ends
-    iteration. Empty-payload terminal frames are not yielded.
+    The SDK Runtime Core transport adapter owns daemon frame projection,
+    timeout, terminal, and wire-error semantics. This product facade exposes
+    Python iteration and maps SDK errors into EasyRemote's public taxonomy.
     """
 
     def __init__(self, frames: FrameStream, *, timeout: float | None = None) -> None:
         self._frames = frames
-        self._timeout = timeout
+        self._adapter = easynet_sdk.EasyRemoteStreamAdapter(
+            frames,
+            timeout=timeout,
+        )
 
     def __iter__(self) -> Iterator[Any]:
         try:
-            for frame in self._raw_frames():
-                # Transport-level error on the chunk envelope.
-                error = frame.get("error")
-                if error:
-                    raise error_from_wire(error)
-                value = self._frame_value(frame)
-                # Ability-level stream error: a generator that raised is
-                # propagated by the warm host as a single `{"error": {...}}`
-                # payload frame (host_stream wire), which the daemon relays
-                # as the chunk's value rather than on the envelope. Detect
-                # that exact shape and raise instead of yielding it as data.
-                stream_err = _stream_error_payload(value)
-                if stream_err is not None:
-                    raise error_from_wire(stream_err)
-                if value is not _NO_VALUE:
-                    yield value
-                if frame.get("terminal"):
-                    return
-        finally:
-            self.close()
-
-    def _raw_frames(self) -> Iterator[dict[str, Any]]:
-        """Yield daemon chunk frames with an optional per-frame idle bound.
-
-        A stream may be long-lived; the client timeout therefore limits
-        how long the consumer waits for the next frame, not total stream
-        lifetime. ``FrameStream`` provides ``recv(timeout=...)`` while
-        simple tests may only implement iteration.
-        """
-        recv = getattr(self._frames, "recv", None)
-        if not callable(recv):
-            yield from self._frames
-            return
-
-        while True:
-            try:
-                frame = recv(timeout=self._timeout)
-            except TimeoutError:
-                raise DeadlineExceeded(
-                    f"no stream frame within {self._timeout}s — the server-side"
-                    " execution is still governed by the ability's timeout_seconds",
-                    reason="client_wait_timeout",
-                ) from None
-            if frame is None:
-                return
-            yield frame
-
-    @staticmethod
-    def _frame_value(frame: dict[str, Any]) -> Any:
-        """The ability's emitted value for one chunk frame.
-
-        Prefers the daemon's decoded ``payload_json``; falls back to
-        base64 payload bytes. A terminal frame that carries no payload
-        (the bare end-of-stream marker) yields the sentinel so the
-        consumer does not see a spurious ``None`` frame.
-        """
-        if (
-            frame.get("terminal")
-            and frame.get("payload_json") is None
-            and not frame.get("payload_base64")
-        ):
-            return _NO_VALUE
-        if "payload_json" in frame and (
-            frame.get("payload_json") is not None
-            or frame.get("content_type") == JSON_CONTENT_TYPE
-        ):
-            return frame["payload_json"]
-        encoded = frame.get("payload_base64")
-        if encoded:
-            return base64.b64decode(encoded)
-        return _NO_VALUE
+            for item in self._adapter:
+                yield item.value
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
 
     def close(self) -> None:
         self._frames.close()
@@ -262,28 +191,8 @@ class Stream:
         self.close()
 
 
-_NO_VALUE = object()  # sentinel: a frame carried no payload value
+_NO_VALUE = object()  # descriptor sentinel for "no bound instance"
 _DEFAULT_TIMEOUT = object()  # sentinel: use Client._timeout
-
-
-def _stream_error_payload(value: Any) -> dict[str, Any] | None:
-    """Return the wire error dict iff `value` is a host stream-error frame.
-
-    The warm host emits a raised generator's failure as exactly
-    ``{"error": {"kind", "reason", "message"}}`` (see
-    ``_host.server._stream_error``). Matching that precise shape — a
-    single ``error`` key whose value is a dict carrying a ``kind`` — keeps
-    ordinary ability output that merely *contains* an ``error`` field from
-    being mistaken for a stream failure.
-    """
-    if (
-        isinstance(value, dict)
-        and set(value) == {"error"}
-        and isinstance(value["error"], dict)
-        and "kind" in value["error"]
-    ):
-        return value["error"]
-    return None
 
 
 class BidiSession:

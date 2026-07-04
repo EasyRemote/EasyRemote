@@ -1154,8 +1154,9 @@ def test_stream_decodes_non_json_payload_bytes():
 
 def test_stream_idle_timeout_closes_and_raises_deadline():
     fs = TimeoutFrameStream()
-    with pytest.raises(DeadlineExceeded, match="no stream frame"):
+    with pytest.raises(DeadlineExceeded, match="no stream frame") as exc_info:
         list(Stream(fs, timeout=0.01))
+    assert exc_info.value.reason == "client_wait_timeout"
     assert fs.closed
 
 
@@ -1179,10 +1180,11 @@ def test_stream_raises_on_host_propagated_error_frame():
     }
     fs = FakeFrameStream([chunk(0), chunk(1), chunk(err)])
     out = []
-    with pytest.raises(InternalError, match="boom"):
+    with pytest.raises(InternalError, match="boom") as exc_info:
         for v in Stream(fs):
             out.append(v)
     assert out == [0, 1], "values before the error are still delivered"
+    assert exc_info.value.reason == "function_raised"
     assert fs.closed
 
 
