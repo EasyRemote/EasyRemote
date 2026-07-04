@@ -177,6 +177,22 @@ def test_agent_add_and_list_commands_use_control(monkeypatch, capsys):
         def list(self):
             return [FakeAgent()]
 
+        def stop(self, name):
+            calls.append(("stop", name))
+
+            class FakeStop:
+                def __init__(self):
+                    self.stopped = True
+                    self.name = "caesura"
+                    self.agent_ura = "easynet:///r/acme/agent/caesura"
+                    self.raw = {
+                        "name": self.name,
+                        "stopped": self.stopped,
+                        "agent_ura": self.agent_ura,
+                    }
+
+            return FakeStop()
+
     monkeypatch.setattr("easyremote._cli.AgentControl", FakeAgentControl)
 
     assert (
@@ -201,6 +217,12 @@ def test_agent_add_and_list_commands_use_control(monkeypatch, capsys):
 
     assert main(["agent", "list"]) == 0
     assert "caesura\tclaude-code model=sonnet" in capsys.readouterr().out
+
+    assert main(["agent", "stop", "caesura"]) == 0
+    assert ("stop", "caesura") in calls
+    stop_out = capsys.readouterr().out
+    assert "stopped: caesura" in stop_out
+    assert "agent_ura: easynet:///r/acme/agent/caesura" in stop_out
 
 
 def test_mission_run_track_cancel_commands_use_control(monkeypatch, tmp_path, capsys):

@@ -36,6 +36,7 @@ __all__ = [
     "AgentControl",
     "AgentRecord",
     "AgentStartResult",
+    "AgentStopResult",
 ]
 
 AbilityListScope = Literal["local", "realm"]
@@ -143,6 +144,27 @@ class AgentStartResult:
             root_path=_optional_str(value.get("root_path")),
             replaced_prior=bool(value.get("replaced_prior", False)),
             raw=dict(value),
+        )
+
+
+@dataclass(frozen=True)
+class AgentStopResult:
+    """Daemon response from `agent.stop`."""
+
+    name: str
+    agent_ura: str | None
+    stopped: bool
+    raw: Mapping[str, Any] = field(default_factory=dict, repr=False)
+
+    @classmethod
+    def from_sdk(
+        cls, value: easynet_sdk.EasyRemoteAgentStopProjection
+    ) -> AgentStopResult:
+        return cls(
+            name=value.name,
+            agent_ura=value.agent_ura,
+            stopped=value.stopped,
+            raw=value.raw,
         )
 
 
@@ -321,6 +343,12 @@ class AgentControl:
                 )
                 for row in self._admin.list_agents()
             ]
+        except easynet_sdk.SDKError as exc:
+            raise _easyremote_admin_error(exc) from exc
+
+    def stop(self, name: str) -> AgentStopResult:
+        try:
+            return AgentStopResult.from_sdk(self._admin.stop_agent(name))
         except easynet_sdk.SDKError as exc:
             raise _easyremote_admin_error(exc) from exc
 

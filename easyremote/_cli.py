@@ -221,6 +221,16 @@ def _run_agent(args: argparse.Namespace) -> int:
                 model = f" model={record.model}" if record.model else ""
                 print(f"{record.name}\t{record.runtime}{model}")
         return 0
+    if args.agent_command == "stop":
+        stop_result = control.stop(args.name)
+        if args.json:
+            _print_json(stop_result.raw)
+        else:
+            status = "stopped" if stop_result.stopped else "stop requested"
+            print(f"{status}: {stop_result.name}")
+            if stop_result.agent_ura:
+                print(f"agent_ura: {stop_result.agent_ura}")
+        return 0
     if args.agent_command == "refresh":
         response = control.refresh(args.name)
         if args.json:
@@ -338,6 +348,9 @@ def _parser() -> argparse.ArgumentParser:
     agent_add.add_argument("--json", action="store_true")
     agent_list = agent_sub.add_parser("list", help="list registered agents")
     agent_list.add_argument("--json", action="store_true")
+    agent_stop = agent_sub.add_parser("stop", help="stop a registered agent")
+    agent_stop.add_argument("name")
+    agent_stop.add_argument("--json", action="store_true")
     agent_refresh = agent_sub.add_parser("refresh", help="refresh agent runtime rows")
     agent_refresh.add_argument("--name")
     agent_refresh.add_argument("--json", action="store_true")

@@ -225,7 +225,7 @@ credentials.json 密钥自动签名。`sign=None` 表示按路径自动判定，
   存活、credentials、ABI/IPC 版本，输出逐项 ✓/✗。
 - `easyremote hub`（CLI 入口）：通过 `Gateway` facade 以 hub 模式启动本机
   daemon，打印 endpoint、TLS fingerprint 与 pairing guidance。
-- `easyremote ability install/list/show` 与 `easyremote agent add/list/refresh`
+- `easyremote ability install/list/show` 与 `easyremote agent add/list/stop/refresh`
   均为 Python control facade 的薄 CLI 包装；内部走完整 Invocation 调
   daemon system ability，不 shell 到 `easynet` CLI。`ability list --scope realm`
   显式读取 daemon 的 hub-published 网络目录；默认 `local` 只读本 daemon。
@@ -259,7 +259,7 @@ __all__ = [
     # daemon lifecycle / control facades
     "DaemonHandle", "DaemonStartConfig",
     "AbilityControl", "AbilityRecord", "AbilityInstallResult",
-    "AgentControl", "AgentRecord", "AgentStartResult",
+    "AgentControl", "AgentRecord", "AgentStartResult", "AgentStopResult",
     # 调用
     "remote", "Invocation", "PreparedInvocation", "InvocationState",
     # 服务端组合
@@ -660,7 +660,7 @@ EasyNet-Cli / Axon 负责。
 | `Server(port).start()` | 可用（别名→Gateway）；自动 TLS + 打印指纹 |
 | `easyremote hub` | 可用；CLI 走同一个 Gateway facade |
 | `easyremote ability install/list/show` | 可用；CLI 走 `AbilityControl`，支持 local/realm catalogue scope |
-| `easyremote agent add/list/refresh` | 可用；CLI 走 `AgentControl` |
+| `easyremote agent add/list/stop/refresh` | 可用；CLI 走 `AgentControl` |
 | `easyremote mission run/track/cancel` | 可用；CLI 走 `MissionControl`，运行已有 EAL 源 |
 | `node.register` / `node.serve()` | 不变 |
 | `Client.execute("fn", args)` | 不变（JSON 可表达参数） |

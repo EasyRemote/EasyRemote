@@ -27,6 +27,7 @@ from .control import (
     AgentControl,
     AgentRecord,
     AgentStartResult,
+    AgentStopResult,
 )
 from .daemon import DaemonHandle, DaemonStartConfig
 from .errors import (
@@ -54,6 +55,7 @@ __all__ = [
     "AgentControl",
     "AgentRecord",
     "AgentStartResult",
+    "AgentStopResult",
     "BidiSession",
     "CallTarget",
     "Cancelled",

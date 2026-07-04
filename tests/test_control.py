@@ -180,14 +180,24 @@ def test_agent_add_and_list_use_daemon_system_abilities():
                 ]
             }
         ),
+        ok_response(
+            {
+                "stopped": True,
+                "agent_ura": "easynet:///r/acme/agent/caesura",
+            }
+        ),
     )
     control = AgentControl(client)
 
     added = control.add("caesura", kind="claude-code", model="sonnet")
     listed = control.list()
+    stopped = control.stop("caesura")
 
     assert added.name == "caesura"
     assert listed[0].runtime == "claude-code"
+    assert stopped.name == "caesura"
+    assert stopped.stopped is True
+    assert stopped.agent_ura == "easynet:///r/acme/agent/caesura"
     assert transport.invocations[0]["descriptor_ref"].endswith(
         "/ability/device.dev-a.agent.start@1.0.0"
     )
@@ -196,6 +206,10 @@ def test_agent_add_and_list_use_daemon_system_abilities():
     assert transport.invocations[1]["descriptor_ref"].endswith(
         "/ability/device.dev-a.agent.list@1.0.0"
     )
+    assert transport.invocations[2]["descriptor_ref"].endswith(
+        "/ability/device.dev-a.agent.stop@1.0.0"
+    )
+    assert transport.invocations[2]["args"] == {"name": "caesura"}
 
 
 def test_agent_refresh_accepts_optional_name():
