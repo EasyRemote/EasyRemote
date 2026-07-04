@@ -22,8 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from easynet_axon import ura as axon_ura
-
+from . import _sdk_identity
 from .errors import InvalidArgument, Unavailable
 from .identity import LocalIdentity, resource_ura
 
@@ -436,8 +435,8 @@ def _validate_relative_resource_path(value: str) -> None:
 def _validated_ability_ura(value: str) -> str:
     trimmed = _validated_non_empty_ura(value, "ability_ura")
     try:
-        parsed = axon_ura.parse_ura(trimmed)
-    except axon_ura.ParseError as exc:
+        parsed = _sdk_identity.parse_ura(trimmed)
+    except _sdk_identity.IdentityFacadeError as exc:
         raise InvalidArgument(
             f"invalid Ability URA {trimmed!r}: {exc}",
             reason="invalid_ability_ura",
@@ -453,8 +452,8 @@ def _validated_ability_ura(value: str) -> str:
 def _validated_owner_ura(value: str) -> str:
     trimmed = _validated_non_empty_ura(value, "owner_ura")
     try:
-        parsed = axon_ura.parse_ura(trimmed)
-    except axon_ura.ParseError as exc:
+        parsed = _sdk_identity.parse_ura(trimmed)
+    except _sdk_identity.IdentityFacadeError as exc:
         raise InvalidArgument(
             f"invalid owner URA {trimmed!r}: {exc}",
             reason="invalid_owner_ura",
@@ -496,8 +495,8 @@ def _record_belongs_to_user(record: AbilityRecord, user_id: str) -> bool:
     ):
         return True
     try:
-        parsed = axon_ura.parse_ura(record.owner_ura)
-    except axon_ura.ParseError:
+        parsed = _sdk_identity.parse_ura(record.owner_ura)
+    except _sdk_identity.IdentityFacadeError:
         return False
     if str(parsed.kind) == "user":
         return record.owner_ura.rstrip("/").endswith(f"/user/{user_id}")

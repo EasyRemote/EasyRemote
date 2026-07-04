@@ -1,8 +1,8 @@
 """URA discipline: everything we emit round-trips the canonical parser."""
 
 import pytest
-from easynet_axon.ura import parse_ura
 
+from easyremote import _sdk_identity
 from easyremote.errors import InternalError
 from easyremote.identity import (
     LocalIdentity,
@@ -13,13 +13,13 @@ from easyremote.identity import (
 
 
 def test_device_and_hub_shapes_round_trip():
-    assert parse_ura(device_ura("acme", "dev-a")).kind == "device"
-    assert parse_ura(hub_ura("acme")).kind == "hub"
+    assert _sdk_identity.parse_ura(device_ura("acme", "dev-a")).kind == "device"
+    assert _sdk_identity.parse_ura(hub_ura("acme")).kind == "hub"
 
 
-def test_ability_ura_comes_from_the_axon_builder():
+def test_ability_ura_comes_from_the_sdk_builder():
     ura = device_ability_ura("acme", "dev-a", "er", "hello")
-    parsed = parse_ura(ura)
+    parsed = _sdk_identity.parse_ura(ura)
     assert parsed.kind == "ability"
     assert ura == "easynet:///r/acme/ability/device.dev-a.er.hello"
 
@@ -28,7 +28,7 @@ def test_identity_properties_are_validated():
     identity = LocalIdentity(
         realm="acme", node_id="dev-a", username=None, hub_endpoint=""
     )
-    assert parse_ura(identity.device_ura).kind == "device"
+    assert _sdk_identity.parse_ura(identity.device_ura).kind == "device"
 
 
 def test_corrupt_credentials_fail_the_round_trip_loudly():

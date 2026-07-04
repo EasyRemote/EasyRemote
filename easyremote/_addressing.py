@@ -1,9 +1,10 @@
 """Ability addressing helpers for the Python facade.
 
 This module projects user-facing EasyRemote targets into the explicit
-Invocation tuple fields that libeasynet_cli requires. It may use Axon's
-canonical URA parser, but it must not consult daemon product state on disk
-or shell out to CLI commands; route policy stays inside easynet-daemon.
+Invocation tuple fields that libeasynet_cli requires. It uses the
+EasyNet-Cli SDK identity facade for URA semantics, but it must not
+consult daemon product state on disk or shell out to CLI commands; route
+policy stays inside easynet-daemon.
 """
 
 from __future__ import annotations
@@ -13,8 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-from easynet_axon import ura as axon_ura
-
+from . import _sdk_identity
 from .errors import InvalidArgument
 from .identity import LocalIdentity, device_ura
 
@@ -110,16 +110,16 @@ class DiscoveryCache:
 def is_ability_ura(value: str) -> bool:
     """Return true only for canonical EasyNet Ability URAs."""
     try:
-        parsed = axon_ura.parse_ura(value.strip())
-    except axon_ura.ParseError:
+        parsed = _sdk_identity.parse_ura(value.strip())
+    except _sdk_identity.IdentityFacadeError:
         return False
     return str(parsed.kind) == "ability"
 
 
 def _is_owner_ura(value: str) -> bool:
     try:
-        parsed = axon_ura.parse_ura(value.strip())
-    except axon_ura.ParseError:
+        parsed = _sdk_identity.parse_ura(value.strip())
+    except _sdk_identity.IdentityFacadeError:
         return False
     return str(parsed.kind) in {"agent", "device", "hub"}
 
@@ -141,13 +141,17 @@ class AbilityAddressResolver:
         if is_ability_ura(function) or "." in function:
             return function
         if _is_owner_ura(self._namespace):
-            ability_ura = axon_ura.owner_ability_ura(self._namespace, function)
-            if not isinstance(ability_ura, str):
+            try:
+                ability_ura = _sdk_identity.owner_ability_ura(
+                    self._namespace,
+                    function,
+                )
+            except _sdk_identity.IdentityFacadeError as exc:
                 raise InvalidArgument(
                     f"cannot derive Ability URA for owner namespace {self._namespace!r}"
                     f" and function {function!r}",
                     reason="invalid_owner_namespace",
-                )
+                ) from exc
             return ability_ura
         return f"{self._namespace}.{function}"
 
@@ -203,10 +207,8 @@ class AbilityAddressResolver:
 
         A full Ability URA passes through verbatim. A short name is
         namespaced (a bare verb gets this client's namespace, a dotted name
-        passes through) and projected onto the owner via Axon's
-        ``owner_ability_ura`` — so the callee Axon later derives from the
-        Ability URA is exactly this owner, satisfying the daemon's
-        owner == callee descriptor binding.
+        passes through) and projected onto the owner via the SDK identity
+        facade. The daemon later checks owner == callee descriptor binding.
         """
         if is_ability_ura(function):
             return self.from_ability_ura(
@@ -215,13 +217,14 @@ class AbilityAddressResolver:
                 argument_label=function,
             )
         ability_name = function if "." in function else f"{self._namespace}.{function}"
-        ability_ura = axon_ura.owner_ability_ura(owner_ura, ability_name)
-        if not isinstance(ability_ura, str):
+        try:
+            ability_ura = _sdk_identity.owner_ability_ura(owner_ura, ability_name)
+        except _sdk_identity.IdentityFacadeError as exc:
             raise InvalidArgument(
                 f"owner {owner_ura!r} cannot publish abilities (users own none;"
                 " ability owners are device, agent, or hub)",
                 reason="invalid_owner_for_ability",
-            )
+            ) from exc
         return self.from_ability_ura(
             ability_ura,
             input_schema=self.cache.schema_for_ura(ability_ura),
@@ -238,13 +241,13 @@ class AbilityAddressResolver:
         call_carrier: CallCarrier | None = None,
     ) -> ResolvedAbility:
         try:
-            parsed = axon_ura.parse_ura(ability_ura)
-        except axon_ura.ParseError as exc:
+            parsed = _sdk_identity.parse_ura(ability_ura)
+        except _sdk_identity.IdentityFacadeError as exc:
             raise InvalidArgument(
                 f"invalid Ability URA {ability_ura!r}: {exc}",
                 reason="invalid_ability_ura",
             ) from exc
-        if parsed.kind != "ability" or parsed.ability is None:
+        if parsed.kind != "ability":
             raise InvalidArgument(
                 f"expected an Ability URA, got {ability_ura!r}",
                 reason="invalid_ability_ura",
@@ -254,18 +257,20 @@ class AbilityAddressResolver:
         # is the same `AbilitySelector::owner_ura()` the daemon uses to
         # check owner == callee); the facade must not re-derive it from
         # owner kinds, or the two could disagree as Axon owners evolve.
-        callee = axon_ura.owner_ura_for_ability(ability_ura)
-        if callee is None:  # pragma: no cover - parse already proved ability
+        try:
+            callee = _sdk_identity.owner_ura_for_ability(ability_ura)
+        except _sdk_identity.IdentityFacadeError as exc:
             raise InvalidArgument(
                 f"cannot derive callee owner for Ability URA {ability_ura!r}",
                 reason="unsupported_ability_owner",
-            )
+            ) from exc
 
-        ability = (
-            f"{parsed.ability.namespace}.{parsed.ability.local_name}"
-            if parsed.ability.namespace
-            else parsed.ability.local_name
-        )
+        ability = parsed.public_name or _public_name_from_projection(parsed)
+        if not ability:
+            raise InvalidArgument(
+                f"cannot derive public ability name for Ability URA {ability_ura!r}",
+                reason="invalid_ability_ura",
+            )
         return ResolvedAbility(
             callee=callee,
             ability=ability,
@@ -297,8 +302,8 @@ class AbilityAddressResolver:
 def owner_kind(owner_ura: str) -> str:
     """The canonical owner kind for a device/agent/hub owner URA."""
     try:
-        parsed = axon_ura.parse_ura(owner_ura.strip())
-    except axon_ura.ParseError as exc:
+        parsed = _sdk_identity.parse_ura(owner_ura.strip())
+    except _sdk_identity.IdentityFacadeError as exc:
         raise InvalidArgument(
             f"invalid owner URA {owner_ura!r}: {exc}",
             reason="invalid_owner_ura",
@@ -315,3 +320,9 @@ def owner_kind(owner_ura: str) -> str:
 
 def _call_carrier_for_owner(owner_ura: str) -> CallCarrier:
     return "stream" if owner_kind(owner_ura) == "device" else "unary"
+
+
+def _public_name_from_projection(projection: _sdk_identity.UraProjection) -> str:
+    if projection.namespace and projection.local_name:
+        return f"{projection.namespace}.{projection.local_name}"
+    return projection.local_name

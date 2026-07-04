@@ -4,21 +4,18 @@ Source of truth is the pairing-issued ``~/.easynet/credentials.json``
 (``EasyNet-Cli/src/persistence/config.rs::Credentials``: ``node_id``,
 ``realm``, ``hub_endpoint``, optional ``username``).
 
-URA policy (ura-discipline): **Axon owns URA truth.** Ability URAs are
-built by ``easynet_axon.ura.build_device_ability_ura``; the device and
-hub shapes — which the Python SDK has no builder for yet — are rendered
-here and then **round-tripped through ``easynet_axon.ura.parse_ura``**
-before they ever leave this module, so nothing this package emits can
-disagree with the canonical parser. No other module renders URAs.
+URA policy (ura-discipline): **the EasyNet-Cli SDK owns URA truth**.
+All builders below delegate through ``easyremote._sdk_identity`` so
+EasyRemote does not carry Axon parser or builder imports in product code.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from easynet_axon import ura as axon_ura
-
+from . import _sdk_identity
 from .config import read_credentials
 from .errors import InternalError, Unavailable
 
@@ -33,62 +30,76 @@ __all__ = [
 
 
 def device_ura(realm: str, node_id: str) -> str:
-    """RFC-001 device shape, validated by the canonical parser."""
-    return _validated(f"{axon_ura.URA_SCHEME}{realm}/device/{node_id}")
+    """RFC-001 device shape, built by the SDK identity facade."""
+    return _validated_build(lambda: _sdk_identity.device_ura(realm, node_id))
 
 
 def agent_ura(realm: str, owner_token: str) -> str:
-    """RFC-001 agent owner shape, validated by the canonical parser.
+    """RFC-001 agent owner shape, built by the SDK identity facade.
 
     ``owner_token`` is the ``<user-id>.<agent-id>`` token (the same form the
-    Ability URA carries). Axon ships no agent-owner builder yet, so this
-    renders the shape and round-trips it through ``parse_ura`` before it
-    leaves the module — flag for an Axon ``build_agent_ura`` to replace it.
+    Ability URA carries).
     """
-    return _validated(f"{axon_ura.URA_SCHEME}{realm}/agent/{owner_token}")
+    return _validated_build(lambda: _sdk_identity.agent_ura(realm, owner_token))
 
 
 def hub_ura(realm: str) -> str:
-    """RFC-001 hub singleton shape, validated by the canonical parser."""
-    return _validated(f"{axon_ura.URA_SCHEME}{realm}/hub")
+    """RFC-001 hub singleton shape, built by the SDK identity facade."""
+    return _validated_build(lambda: _sdk_identity.hub_ura(realm))
 
 
 def resource_ura(realm: str, owner_id: str, path: str) -> str:
-    """Resource URA shape, validated by the canonical parser.
-
-    Axon's Python SDK does not expose a resource builder yet. Keep the
-    one local projection here, next to every other identity helper, so
-    callers never hand-roll resource URAs inline.
-    """
+    """Resource URA shape, built by the SDK identity facade."""
     clean_path = path.strip().strip("/")
     if not clean_path:
         raise InternalError(
             "resource path must not be empty",
             reason="empty_resource_path",
         )
-    return _validated(f"{axon_ura.URA_SCHEME}{realm}/resource/{owner_id}/{clean_path}")
+    return _validated_build(
+        lambda: _sdk_identity.resource_ura(realm, owner_id, clean_path)
+    )
 
 
 def device_ability_ura(
     realm: str, node_id: str, namespace: str, local_name: str
 ) -> str:
-    """Device-owned ability URA — straight from the Axon builder."""
-    return _validated(
-        axon_ura.build_device_ability_ura(realm, node_id, namespace, local_name)
+    """Device-owned ability URA, built by the SDK identity facade."""
+    return _validated_build(
+        lambda: _sdk_identity.device_ability_ura(
+            realm,
+            node_id,
+            namespace,
+            local_name,
+        )
     )
 
 
-def _validated(candidate: str) -> str:
-    """AXIOM 22.2: every URA must round-trip through the canonical parser."""
+def _validated_build(build: Callable[[], str]) -> str:
     try:
-        axon_ura.parse_ura(candidate)
-    except axon_ura.ParseError as exc:
-        raise InternalError(
-            f"constructed URA {candidate!r} is rejected by the canonical parser"
-            f" ({exc}) — likely corrupt credentials; re-pair with `easynet pair`",
-            reason="ura_round_trip_failed",
+        return _validated(build())
+    except _sdk_identity.IdentityFacadeError as exc:
+        raise _identity_internal_error(
+            f"SDK identity facade rejected constructed URA ({exc}) — likely"
+            " corrupt credentials; re-pair with `easynet pair`"
+        ) from exc
+
+
+def _validated(candidate: str) -> str:
+    """AXIOM 22.2: every URA must round-trip through the SDK facade."""
+    try:
+        _sdk_identity.parse_ura(candidate)
+    except _sdk_identity.IdentityFacadeError as exc:
+        raise _identity_internal_error(
+            f"constructed URA {candidate!r} is rejected by the SDK identity"
+            f" facade ({exc}) — likely corrupt credentials; re-pair with"
+            " `easynet pair`",
         ) from exc
     return candidate
+
+
+def _identity_internal_error(message: str) -> InternalError:
+    return InternalError(message, reason="ura_round_trip_failed")
 
 
 @dataclass(frozen=True)

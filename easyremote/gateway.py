@@ -245,7 +245,7 @@ def _generate_self_signed(cert_path: Path, key_path: Path) -> None:
 
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "easyremote-gateway")])
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     certificate = (
         x509.CertificateBuilder()
         .subject_name(name)

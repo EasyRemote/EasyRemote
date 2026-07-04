@@ -37,9 +37,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from easynet_axon import ura as axon_ura
-
-from . import _codec
+from . import _codec, _sdk_identity
 from ._addressing import (
     PICK_POLICIES,
     AbilityAddressResolver,
@@ -519,7 +517,7 @@ class Client:
         return RemoteOwner(self, hub_ura(self._who().realm))
 
     def _owner_ura(self, spec: str, kind: Literal["device", "agent"]) -> str:
-        if spec.startswith(axon_ura.URA_SCHEME):
+        if _sdk_identity.is_easynet_ura_text(spec):
             actual = owner_kind(spec)
             if actual != kind:
                 raise InvalidArgument(

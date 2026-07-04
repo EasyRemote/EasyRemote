@@ -30,10 +30,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
-from easynet_axon import ura as axon_ura
-from easynet_axon.invocation.axiom import canonical_ability_descriptor_ref
-from easynet_axon.invocation.error import AxonError
-
+from . import _sdk_identity
 from ._json import dumps_wire
 from .errors import InternalError, InvalidArgument
 from .receipts import InvocationState, Receipt, ReceiptChain
@@ -187,7 +184,7 @@ def _encode_causal(causal: Causal) -> dict[str, Any]:
 class CallerSignature:
     """An already-produced Ed25519 signature carried on the envelope.
 
-    Producing signatures is easynet_axon's job (canonical bytes +
+    Producing signatures belongs to the SDK/Axon identity boundary (canonical bytes +
     signing); this type only transports the result.
     """
 
@@ -322,22 +319,28 @@ def _descriptor_ref_for_wire(
 
     ability = tuple_.ability.strip()
     try:
-        descriptor_ref = canonical_ability_descriptor_ref(ability)
-    except AxonError:
-        ability_ura = axon_ura.owner_ability_ura(tuple_.callee, ability)
-        if ability_ura is None:
+        descriptor_ref = _sdk_identity.canonical_ability_descriptor_ref(ability)
+    except _sdk_identity.IdentityFacadeError as exc:
+        if not exc.invalid_argument:
+            raise InvalidArgument(
+                f"descriptor_ref canonicalization failed: {exc}",
+                reason="invalid_descriptor_ref",
+            ) from exc
+        try:
+            ability_ura = _sdk_identity.owner_ability_ura(tuple_.callee, ability)
+        except _sdk_identity.IdentityFacadeError as owner_exc:
             raise InvalidArgument(
                 "cannot derive descriptor_ref from callee/ability:"
                 f" callee={tuple_.callee!r}, ability={ability!r}",
                 reason="descriptor_ref_derivation_failed",
-            ) from None
+            ) from owner_exc
         descriptor_ref = f"{ability_ura}@{version}"
 
     try:
-        return str(canonical_ability_descriptor_ref(descriptor_ref))
-    except AxonError as exc:
+        return _sdk_identity.canonical_ability_descriptor_ref(descriptor_ref)
+    except _sdk_identity.IdentityFacadeError as exc:
         raise InvalidArgument(
-            f"descriptor_ref is rejected by Axon: {exc}",
+            f"descriptor_ref is rejected by SDK identity facade: {exc}",
             reason="invalid_descriptor_ref",
         ) from exc
 
