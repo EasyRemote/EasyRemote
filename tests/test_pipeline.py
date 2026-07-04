@@ -1,5 +1,6 @@
 """Pipeline: EAL compilation (grammar-pinned), validation, mission calls."""
 
+import easynet_sdk
 import pytest
 from test_client import IDENTITY, FakeTransport, ok_response  # shared fakes
 
@@ -100,6 +101,65 @@ def test_empty_pipeline_cannot_compile():
 
 def test_step_output_render():
     assert StepOutput("fetch").render() == "fetch.output"
+
+
+def test_child_invocation_intents_are_sdk_owned():
+    pipe = Pipeline("p")
+    first = pipe.step("observe.health")
+    pipe.step("notify.user", msg=first.output, on_failure="continue", optional=True)
+
+    intents = pipe.child_invocation_intents()
+
+    assert [(intent.step_id, intent.ability) for intent in intents] == [
+        ("health", "observe.health"),
+        ("user", "notify.user"),
+    ]
+    assert intents[1].optional is True
+
+
+def test_pipeline_validates_daemon_child_invocation_facts():
+    pipe = Pipeline("p")
+    pipe.step("observe.health")
+    status = easynet_sdk.MissionStatus.from_json(
+        b"""{
+          "profile": "mission",
+          "kind": "mission_status",
+          "mission_id": "run-1",
+          "state": "completed",
+          "terminal": true,
+          "partial_failures": 0,
+          "cancelled": false,
+          "parent_invocation_id": "invoke-run-1",
+          "parent_receipt_ura": null,
+          "parent_invocation": null,
+          "child_invocations": [
+            {
+              "step_id": "health",
+              "request_id": "req-1",
+              "trace_id": "run-1",
+              "ability": "observe.health",
+              "invocation_ura": "easynet:///r/acme/invocation/req-1",
+              "caller_ura": "easynet:///r/acme/device/dev-a",
+              "callee_ura": "easynet:///r/acme/device/dev-a",
+              "subject_ura": "easynet:///r/acme/device/dev-a",
+              "metadata_state": "receipt_backed",
+              "ledger_state": "completed",
+              "receipt": {
+                "receipt_ura": "easynet:///r/acme/receipt/r-1",
+                "receipt_hash": "aa"
+              }
+            }
+          ],
+          "child_receipts": [],
+          "output_refs": [],
+          "metadata": {"profile": "mission"}
+        }"""
+    )
+
+    conformance = pipe.validate_child_invocations(status)
+
+    assert conformance.passed is True
+    assert conformance.receipt_backed_steps == ("health",)
 
 
 def test_created_by_header_uses_identity():
