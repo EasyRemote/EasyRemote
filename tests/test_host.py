@@ -28,7 +28,14 @@ def hosted(fn, name=None):
     )
 
 
-def stream_request(host, fn, args, *, caller="", call_id="t"):
+def stream_request(
+    host,
+    fn,
+    args,
+    *,
+    caller="easynet:///r/acme/device/test-caller",
+    call_id="t",
+):
     request = {
         "request": {"fn": fn, "args": args, "caller": caller, "call_id": call_id}
     }

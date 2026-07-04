@@ -15,16 +15,16 @@ The important separation is:
 from __future__ import annotations
 
 import builtins
-import tempfile
-import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+import easynet_sdk
+
 from . import _sdk_identity
-from .errors import InvalidArgument, Unavailable
-from .identity import LocalIdentity, resource_ura
+from .errors import InternalError, InvalidArgument, RemoteError, Unavailable
+from .identity import LocalIdentity
 
 if TYPE_CHECKING:
     from .client import Client
@@ -38,9 +38,6 @@ __all__ = [
     "AgentStartResult",
 ]
 
-_RESOURCE_NAMESPACE_FS = "fs"
-_RESOURCE_REF_REVISION = "fs-local-mapping-v1"
-_RESOURCE_REF_TTL_MS = 5 * 60 * 1000
 AbilityListScope = Literal["local", "realm"]
 
 
@@ -159,6 +156,10 @@ class AbilityControl:
 
     def __init__(self, client: Client | None = None) -> None:
         self._client = client or _new_client()
+        self._publication = easynet_sdk.EasyRemotePublicationAdapter(
+            self._client,
+            addressing=_sdk_identity.identity_facade(),
+        )
 
     def install(self, path: str | Path, *, node: str = "local") -> AbilityInstallResult:
         """Install an ability package by invoking daemon `ability.deploy`."""
@@ -172,16 +173,17 @@ class AbilityControl:
                 reason="ability_package_not_directory",
             )
 
-        ref = LocalFilesystemResourceRefFactory(self._identity()).for_path(
-            package,
-            capability="read",
+        try:
+            result = self._publication.install_ability(package, node_id=node_id)
+        except easynet_sdk.SDKError as exc:
+            raise _easyremote_publication_error(exc) from exc
+        return AbilityInstallResult(
+            install_id=result.install_id,
+            ability_ura=result.ability_ura,
+            state=result.state,
+            node_id=result.node_id,
+            raw=result.raw,
         )
-        response = self._client.invoke(
-            self._client.target("ability.deploy", subject=ref["resource_ura"]),
-            resource_ref=ref,
-            node_id=node_id,
-        ).result()
-        return AbilityInstallResult.from_wire(_dict(response), node_id=node_id)
 
     def list(
         self,
@@ -206,26 +208,31 @@ class AbilityControl:
                 f"unsupported ability list scope {scope!r}",
                 reason="invalid_ability_scope",
             )
-        if owner_ura is not None:
-            owner_ura = _validated_owner_ura(owner_ura)
-        if subject_ura is not None:
-            subject_ura = _validated_non_empty_ura(subject_ura, "subject_ura")
         user = user_id.strip() if user_id is not None else None
         if user_id is not None and not user:
             raise InvalidArgument("user_id must not be empty", reason="empty_user_id")
 
-        request: dict[str, Any] = {}
-        if scope == "realm":
-            request["scope"] = scope
-        if owner_ura is not None:
-            request["agent_ura"] = owner_ura
-        if subject_ura is not None:
-            request["subject_ura"] = subject_ura
-
-        records = [
-            AbilityRecord.from_wire(row)
-            for row in _list_payload(self._invoke_catalogue(node=node, request=request))
-        ]
+        try:
+            records = [
+                AbilityRecord(
+                    name=row.name,
+                    ability_ura=row.ability_ura,
+                    owner_ura=row.owner_ura,
+                    description=row.description,
+                    state=row.state,
+                    input_schema=row.input_schema,
+                    metadata=row.metadata,
+                    raw=row.raw,
+                )
+                for row in self._publication.list_abilities(
+                    node=node,
+                    owner_ura=owner_ura or "",
+                    subject_ura=subject_ura or "",
+                    scope=scope,
+                )
+            ]
+        except easynet_sdk.SDKError as exc:
+            raise _easyremote_publication_error(exc) from exc
         if user is None:
             return records
         return [record for record in records if _record_belongs_to_user(record, user)]
@@ -262,7 +269,11 @@ class AbilityControl:
         scope: AbilityListScope = "local",
     ) -> AbilityRecord:
         """Return one ability catalogue row by canonical Ability URA."""
-        target = _validated_ability_ura(ability_ura)
+        target = ability_ura.strip()
+        if not target:
+            raise InvalidArgument(
+                "ability_ura must not be empty", reason="empty_ability_ura"
+            )
         matches = self.list(node=node, subject_ura=target, scope=scope)
         for record in matches:
             if record.ability_ura == target:
@@ -272,19 +283,8 @@ class AbilityControl:
             reason="ability_not_found",
         )
 
-    def _invoke_catalogue(
-        self, *, node: str | None, request: Mapping[str, Any]
-    ) -> Mapping[str, Any]:
-        target = self._system_target("meta.list_abilities", node=node)
-        return _dict(self._client.invoke(target, **dict(request)).result())
-
-    def _system_target(self, ability: str, *, node: str | None) -> Any:
-        if node is None or node.strip() == "" or node.strip() == "local":
-            return self._client.target(ability)
-        return self._client.target(ability, owner_ura=self._device_owner(node))
-
     def _device_owner(self, node: str) -> str:
-        return self._client.device(node).owner_ura
+        return self._publication.device_owner_ura(node)
 
     def _identity(self) -> LocalIdentity:
         return self._client._who()
@@ -354,135 +354,6 @@ class AgentControl:
         return _dict(self._client.invoke("agent.refresh", **payload).result())
 
 
-class LocalFilesystemResourceRefFactory:
-    """Mint short-lived daemon-local filesystem ResourceRefs.
-
-    This is the Python equivalent of EasyNet-Cli
-    `resource_ref_for_local_path`. It is intentionally narrow: only the
-    `ability.deploy` read path uses it today.
-    """
-
-    def __init__(self, identity: LocalIdentity) -> None:
-        self._identity = identity
-
-    def for_path(self, path: Path, *, capability: str) -> dict[str, Any]:
-        virtual_root, relative = _map_local_path(path)
-        expires = int(time.time() * 1000) + _RESOURCE_REF_TTL_MS
-        owner = self._identity.device_ura
-        resource = resource_ura(
-            self._identity.realm,
-            f"device.{self._identity.node_id}",
-            f"{_RESOURCE_NAMESPACE_FS}/{virtual_root}/{relative}",
-        )
-        return {
-            "resource_ura": resource,
-            "owner_ura": owner,
-            "namespace": _RESOURCE_NAMESPACE_FS,
-            "display_path": f"{virtual_root}/{relative}",
-            "capability": capability,
-            "expires_unix_ms": expires,
-            "revision": _RESOURCE_REF_REVISION,
-        }
-
-
-def _map_local_path(path: Path) -> tuple[str, str]:
-    absolute = path if path.is_absolute() else Path.cwd() / path
-    try:
-        resolved = absolute.resolve(strict=True)
-    except FileNotFoundError as exc:
-        raise InvalidArgument(
-            f"resource path does not exist: {path}",
-            reason="resource_path_missing",
-        ) from exc
-
-    roots = (
-        ("workspace", Path.cwd()),
-        ("tmp", Path(tempfile.gettempdir())),
-        ("home", Path.home()),
-    )
-    for label, root in roots:
-        try:
-            root_resolved = root.resolve(strict=True)
-        except FileNotFoundError:
-            continue
-        try:
-            relative = resolved.relative_to(root_resolved)
-        except ValueError:
-            continue
-        wire = relative.as_posix()
-        _validate_relative_resource_path(wire)
-        return label, wire
-    raise InvalidArgument(
-        f"resource path {path} is outside workspace, temp, and home roots",
-        reason="resource_path_outside_virtual_roots",
-    )
-
-
-def _validate_relative_resource_path(value: str) -> None:
-    if not value or value.startswith("/") or "\\" in value:
-        raise InvalidArgument(
-            f"invalid resource relative path {value!r}",
-            reason="invalid_resource_path",
-        )
-    parts = value.split("/")
-    if any(part in {"", ".", ".."} for part in parts):
-        raise InvalidArgument(
-            f"invalid resource relative path {value!r}",
-            reason="invalid_resource_path",
-        )
-
-
-def _validated_ability_ura(value: str) -> str:
-    trimmed = _validated_non_empty_ura(value, "ability_ura")
-    try:
-        parsed = _sdk_identity.parse_ura(trimmed)
-    except _sdk_identity.IdentityFacadeError as exc:
-        raise InvalidArgument(
-            f"invalid Ability URA {trimmed!r}: {exc}",
-            reason="invalid_ability_ura",
-        ) from exc
-    if str(parsed.kind) != "ability":
-        raise InvalidArgument(
-            f"expected an Ability URA, got {trimmed!r}",
-            reason="invalid_ability_ura",
-        )
-    return trimmed
-
-
-def _validated_owner_ura(value: str) -> str:
-    trimmed = _validated_non_empty_ura(value, "owner_ura")
-    try:
-        parsed = _sdk_identity.parse_ura(trimmed)
-    except _sdk_identity.IdentityFacadeError as exc:
-        raise InvalidArgument(
-            f"invalid owner URA {trimmed!r}: {exc}",
-            reason="invalid_owner_ura",
-        ) from exc
-    if str(parsed.kind) not in {"device", "agent", "hub", "user"}:
-        raise InvalidArgument(
-            f"expected an owner URA, got {trimmed!r}",
-            reason="invalid_owner_ura",
-        )
-    return trimmed
-
-
-def _validated_non_empty_ura(value: str, label: str) -> str:
-    trimmed = value.strip()
-    if not trimmed:
-        raise InvalidArgument(f"{label} must not be empty", reason=f"empty_{label}")
-    return trimmed
-
-
-def _list_payload(response: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    abilities = response.get("abilities") or []
-    if not isinstance(abilities, list):
-        raise InvalidArgument(
-            "meta.list_abilities response field 'abilities' is not a list",
-            reason="invalid_ability_list_response",
-        )
-    return [_dict(row) for row in abilities]
-
-
 def _record_belongs_to_user(record: AbilityRecord, user_id: str) -> bool:
     if any(
         str(record.metadata.get(key) or "") == user_id
@@ -505,6 +376,24 @@ def _record_belongs_to_user(record: AbilityRecord, user_id: str) -> bool:
     marker = "/agent/"
     _, _, tail = record.owner_ura.partition(marker)
     return tail.split(".", 1)[0] == user_id
+
+
+def _easyremote_publication_error(error: easynet_sdk.SDKError) -> RemoteError:
+    if isinstance(error.cause, RemoteError):
+        return error.cause
+    message = error.message or str(error)
+    if error.code == easynet_sdk.ErrorCode.INVALID_ARGUMENT:
+        return InvalidArgument(message, reason="sdk_publication_invalid_argument")
+    if error.code in {
+        easynet_sdk.ErrorCode.ABILITY_NOT_FOUND,
+        easynet_sdk.ErrorCode.NOT_FOUND,
+        easynet_sdk.ErrorCode.DAEMON_OFFLINE,
+        easynet_sdk.ErrorCode.ROUTE_UNAVAILABLE,
+    }:
+        return Unavailable(message, reason="sdk_publication_unavailable")
+    if error.retryable:
+        return Unavailable(message, reason="sdk_publication_retryable")
+    return InternalError(message, reason="sdk_publication_internal")
 
 
 def _dict(value: Any) -> dict[str, Any]:

@@ -38,7 +38,14 @@ def read_manifest(info):
 
 
 def host_stream_frames(socket_path, fn, args):
-    request = {"request": {"fn": fn, "args": args, "caller": "", "call_id": "t"}}
+    request = {
+        "request": {
+            "fn": fn,
+            "args": args,
+            "caller": "easynet:///r/acme/device/test-caller",
+            "call_id": "t",
+        }
+    }
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         connection.connect(str(socket_path))
         connection.sendall((json.dumps(request) + "\n").encode())
