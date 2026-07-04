@@ -16,8 +16,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+import easynet_sdk
+
 from . import config
-from ._transport import abi
 from .control import AbilityControl, AgentControl
 from .errors import RemoteError
 from .gateway import Gateway, TLSConfig
@@ -39,14 +40,17 @@ def run_checks() -> list[Check]:
     def add(name: str, ok: bool, detail: str) -> None:
         checks.append(Check(name=name, ok=ok, detail=detail))
 
-    # 1. library + ABI handshake
+    # 1. SDK facade handshake
     try:
-        abi.library()
-        add("libeasynet_cli", True, f"loaded, ABI v{abi.ABI_VERSION}")
-        library_ok = True
-    except RemoteError as exc:
-        add("libeasynet_cli", False, str(exc))
-        library_ok = False
+        feature_set = easynet_sdk.SdkEnvironment(
+            library_path=_library_path(),
+            control_path=str(config.settings().control_path),
+        ).feature_set()
+        add("easynet-sdk", True, f"ABI v{feature_set.abi_version}")
+        sdk_ok = True
+    except (RemoteError, easynet_sdk.SDKError) as exc:
+        add("easynet-sdk", False, str(exc))
+        sdk_ok = False
 
     # 2. daemon discovery file
     control: dict[str, Any] | None = None
@@ -76,7 +80,7 @@ def run_checks() -> list[Check]:
         add("identity", False, str(exc))
 
     # 5. live transport (only meaningful when everything above held)
-    if library_ok and control is not None:
+    if sdk_ok and control is not None:
         try:
             from ._transport import Transport
 
@@ -86,6 +90,11 @@ def run_checks() -> list[Check]:
             add("transport", False, str(exc))
 
     return checks
+
+
+def _library_path() -> str | None:
+    path = config.settings().library_path
+    return str(path) if path is not None else None
 
 
 def main(argv: list[str] | None = None) -> int:

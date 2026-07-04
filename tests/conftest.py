@@ -10,7 +10,12 @@ from easyremote import _sdk_identity
 
 
 @pytest.fixture(autouse=True)
-def sdk_identity_facade():
+def sdk_identity_facade(request):
+    if request.node.get_closest_marker("integration") is not None:
+        _sdk_identity.reset_identity_facade_for_tests()
+        yield None
+        _sdk_identity.reset_identity_facade_for_tests()
+        return
     facade = InMemorySdkIdentityFacade()
     _sdk_identity.set_identity_facade_for_tests(facade)
     yield facade

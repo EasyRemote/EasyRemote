@@ -1,9 +1,9 @@
-"""Daemon lifecycle facade over libeasynet_cli.
+"""Daemon lifecycle facade over the EasyNet-Cli SDK.
 
 This module is the public EasyRemote boundary for starting and holding an
 ``easynet-daemon`` process. It owns lifecycle shape only. Protocol
 semantics, invocation routing, admission, and receipts stay below this
-facade in ``libeasynet_cli`` / easynet-daemon / Axon.
+facade in the SDK / easynet-daemon / Axon.
 """
 
 from __future__ import annotations

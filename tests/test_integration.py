@@ -5,7 +5,7 @@ registers or mutates daemon state — the register→invoke loop is part
 of the (manual, cleaned-up) P0 probe, not CI.
 
 Activation requires all of:
-- EASYNET_CLI_LIB pointing at a v3 libeasynet_cli, and
+- EASYNET_CLI_LIB pointing at a compatible EasyNet-Cli SDK native library, and
 - a running daemon (~/.easynet/control.json + live pid).
 
 Otherwise every test here skips with the reason shown.
@@ -16,8 +16,8 @@ import os
 from pathlib import Path
 
 import pytest
-from easynet_axon import ura as axon_ura
 
+from easyremote import _sdk_identity
 from easyremote.receipts import InvocationState
 
 
@@ -58,8 +58,9 @@ def _an_agent_ura() -> str:
 
 
 def _agent_ability_ura(agent_ura: str, ability: str) -> str:
-    ability_ura = axon_ura.owner_ability_ura(agent_ura, ability)
-    if ability_ura is None:
+    try:
+        ability_ura = _sdk_identity.owner_ability_ura(agent_ura, ability)
+    except _sdk_identity.IdentityFacadeError:
         pytest.skip(f"cannot build Ability URA for {agent_ura}#{ability}")
     return ability_ura
 
@@ -72,16 +73,13 @@ def client():
         yield live
 
 
-def test_abi_handshake():
-    from easyremote._transport import ABI_VERSION, abi
+def test_sdk_transport_connects_to_live_daemon():
+    import easynet_sdk
 
-    abi.library()  # raises on version mismatch
-    assert ABI_VERSION == 3
-
-
-def test_transport_connects_to_live_daemon():
     from easyremote._transport import Transport
 
+    feature_set = easynet_sdk.SdkEnvironment().feature_set()
+    assert feature_set.abi_version >= 4
     with Transport.connect():
         pass
 
