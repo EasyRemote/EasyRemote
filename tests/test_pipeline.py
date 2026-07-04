@@ -195,6 +195,71 @@ def test_pipeline_run_handle_fetches_events():
     )
 
 
+def test_pipeline_run_handle_tails_events_until_terminal():
+    client, transport = make_client(
+        responses=[
+            ok_response({"ok": True, "run_id": "run-9"}),
+            ok_response(
+                {
+                    "cursor_sequence": 0,
+                    "next_cursor_sequence": 1,
+                    "has_more": True,
+                    "dropped_count": 0,
+                    "events": [
+                        {
+                            "sequence": 0,
+                            "event_type": "progress",
+                            "occurred_unix_ms": 1_700_000_000_000,
+                            "terminal": False,
+                            "payload": {"step": "fetch"},
+                            "receipt": {},
+                            "metadata": {"step_id": "fetch"},
+                        }
+                    ],
+                }
+            ),
+            ok_response(
+                {
+                    "cursor_sequence": 1,
+                    "next_cursor_sequence": 2,
+                    "has_more": False,
+                    "dropped_count": 0,
+                    "events": [
+                        {
+                            "sequence": 1,
+                            "event_type": "completed",
+                            "occurred_unix_ms": 1_700_000_000_001,
+                            "terminal": True,
+                            "payload": {"reply": "done"},
+                            "receipt": {"receipt_ura": "easynet:///r/acme/receipt/r-1"},
+                            "metadata": {},
+                        }
+                    ],
+                }
+            ),
+        ]
+    )
+    pipe = Pipeline("p", client=client)
+    pipe.step("er.fn")
+    run = pipe.run()
+
+    events = list(run.tail_events(limit=1))
+
+    assert [event["event_type"] for event in events] == ["progress", "completed"]
+    assert events[1]["payload"] == {"reply": "done"}
+    assert transport.carriers == ["unary", "unary", "unary"]
+    assert transport.invocations[1]["args"] == {
+        "run_id": "run-9",
+        "cursor_sequence": 0,
+        "limit": 1,
+    }
+    assert transport.invocations[2]["args"] == {
+        "run_id": "run-9",
+        "cursor_sequence": 1,
+        "limit": 1,
+    }
+
+
 def test_mission_run_exposes_response_fields():
     client, _ = make_client()
     run = MissionRun(

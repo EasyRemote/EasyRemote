@@ -90,6 +90,27 @@ class MissionControl:
         except easynet_sdk.SDKError as exc:
             raise _easyremote_mission_error(exc) from exc
 
+    def tail_events(
+        self,
+        run_id: str,
+        *,
+        cursor_sequence: int = 0,
+        limit: int = 0,
+        max_empty_pages: int = 0,
+        poll_interval_seconds: float = 0.0,
+    ) -> easynet_sdk.EasyRemoteMissionEventTailer:
+        """Tail daemon-projected mission events through the SDK Mission facade."""
+        try:
+            return self._mission.tail_events(
+                run_id,
+                cursor_sequence=cursor_sequence,
+                limit=limit,
+                max_empty_pages=max_empty_pages,
+                poll_interval_seconds=poll_interval_seconds,
+            )
+        except easynet_sdk.SDKError as exc:
+            raise _easyremote_mission_error(exc) from exc
+
 
 class MissionRun:
     """Handle for a submitted mission run."""
@@ -134,6 +155,22 @@ class MissionRun:
             self.run_id,
             cursor_sequence=cursor_sequence,
             limit=limit,
+        )
+
+    def tail_events(
+        self,
+        *,
+        cursor_sequence: int = 0,
+        limit: int = 0,
+        max_empty_pages: int = 0,
+        poll_interval_seconds: float = 0.0,
+    ) -> easynet_sdk.EasyRemoteMissionEventTailer:
+        return self._control.tail_events(
+            self.run_id,
+            cursor_sequence=cursor_sequence,
+            limit=limit,
+            max_empty_pages=max_empty_pages,
+            poll_interval_seconds=poll_interval_seconds,
         )
 
 def _easyremote_mission_error(error: easynet_sdk.SDKError) -> RemoteError:

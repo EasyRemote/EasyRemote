@@ -52,6 +52,23 @@ class EasyRemoteMissionFacade:
             limit=limit,
         )
 
+    def tail_events(
+        self,
+        run_id: str,
+        *,
+        cursor_sequence: int = 0,
+        limit: int = 0,
+        max_empty_pages: int = 0,
+        poll_interval_seconds: float = 0.0,
+    ) -> easynet_sdk.EasyRemoteMissionEventTailer:
+        return self._adapter.tail_events(
+            run_id,
+            cursor_sequence=cursor_sequence,
+            limit=limit,
+            max_empty_pages=max_empty_pages,
+            poll_interval_seconds=poll_interval_seconds,
+        )
+
 
 def _bridge(client: object) -> easynet_sdk.EasyRemoteProfileBridge:
     return easynet_sdk.EasyRemoteProfileBridge(_EasyRemoteProfileDispatcher(client))
