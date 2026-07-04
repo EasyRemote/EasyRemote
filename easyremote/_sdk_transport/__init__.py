@@ -1,8 +1,9 @@
 """Private transport layer over the EasyNet-Cli SDK facade.
 
-EasyRemote keeps its historical ``Transport``/``FrameStream``/``BidiChannel``
-shape, but daemon I/O now enters through ``easynet_sdk``. Raw C ABI loading is
-owned by the SDK package, not by EasyRemote.
+EasyRemote keeps its historical ``Transport``/``FrameStream`` shape, but daemon
+I/O now enters through ``easynet_sdk``. Raw C ABI loading, unary wait state, and
+bidi session lifecycle semantics are owned by the SDK package, not by
+EasyRemote.
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ from ..config import settings
 from ..errors import error_from_sdk
 
 __all__ = [
-    "BidiChannel",
     "DaemonProcess",
     "FrameStream",
     "Transport",
@@ -55,9 +55,9 @@ class Transport:
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
-    def bidi(self, invocation: Mapping[str, object]) -> BidiChannel:
+    def bidi(self, invocation: Mapping[str, object]) -> easynet_sdk.DaemonBidiChannel:
         try:
-            return BidiChannel(self._adapter.bidi(invocation))
+            return self._adapter.bidi(invocation)
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
@@ -147,45 +147,6 @@ class FrameStream:
                 return
 
     def __enter__(self) -> FrameStream:
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.close()
-
-
-@dataclass
-class BidiChannel:
-    """Bidirectional session wrapper that preserves EasyRemote's channel API."""
-
-    _channel: easynet_sdk.DaemonBidiChannel
-
-    def send(self, frame: Mapping[str, object]) -> None:
-        try:
-            self._channel.send(frame)
-        except easynet_sdk.SDKError as exc:
-            raise error_from_sdk(exc) from exc
-
-    def recv(self, timeout: float | None = None) -> dict[str, Any] | None:
-        try:
-            return dict(self._channel.recv(timeout=timeout))
-        except StopIteration:
-            return None
-        except easynet_sdk.SDKError as exc:
-            raise error_from_sdk(exc) from exc
-
-    def close(self) -> None:
-        try:
-            self._channel.close()
-        except easynet_sdk.SDKError as exc:
-            raise error_from_sdk(exc) from exc
-
-    def cancel(self) -> None:
-        try:
-            self._channel.cancel()
-        except easynet_sdk.SDKError as exc:
-            raise error_from_sdk(exc) from exc
-
-    def __enter__(self) -> BidiChannel:
         return self
 
     def __exit__(self, *exc_info: object) -> None:

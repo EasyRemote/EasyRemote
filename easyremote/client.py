@@ -42,7 +42,7 @@ from ._addressing import (
     ResolvedAbility,
     owner_kind,
 )
-from ._sdk_transport import BidiChannel, FrameStream, Transport, UnaryDispatchPool
+from ._sdk_transport import FrameStream, Transport, UnaryDispatchPool
 from .errors import (
     InvalidArgument,
     Unavailable,
@@ -196,22 +196,38 @@ _DEFAULT_TIMEOUT = object()  # sentinel: use Client._timeout
 
 
 class BidiSession:
-    """A bidirectional invocation session (context manager)."""
+    """A bidirectional invocation session (context manager).
 
-    def __init__(self, channel: BidiChannel) -> None:
-        self._channel = channel
+    The SDK owns daemon bidi lifecycle semantics. This class keeps EasyRemote's
+    public method names and maps SDK errors into EasyRemote's taxonomy.
+    """
+
+    def __init__(self, session: easynet_sdk.EasyRemoteBidiSessionAdapter) -> None:
+        self._session = session
 
     def send(self, frame: dict[str, Any]) -> None:
-        self._channel.send(frame)
+        try:
+            self._session.send(frame)
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
 
     def recv(self, timeout: float | None = None) -> dict[str, Any] | None:
-        return self._channel.recv(timeout=timeout)
+        try:
+            return self._session.recv(timeout=timeout)
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
 
     def close(self) -> None:
-        self._channel.close()
+        try:
+            self._session.close()
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
 
-    def cancel(self) -> None:
-        self._channel.cancel()
+    def cancel(self, reason: str = "client cancel") -> None:
+        try:
+            self._session.cancel(reason)
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
 
     def __enter__(self) -> BidiSession:
         return self
@@ -313,7 +329,9 @@ class Client:
             bidi_streams=streams
             or [StreamSpec(stream_id=0, content_type="application/json")],
         )
-        return BidiSession(self._connected().bidi(wire))
+        return BidiSession(
+            easynet_sdk.EasyRemoteBidiSessionAdapter(self._connected().bidi(wire))
+        )
 
     # -- L2 ------------------------------------------------------------------
 

@@ -9,9 +9,11 @@ import base64
 import json
 import time
 
+import easynet_sdk
 import pytest
 
 from easyremote.client import (
+    BidiSession,
     Client,
     FunctionInfo,
     RemoteFunction,
@@ -88,6 +90,7 @@ class _FakeBidi:
         self.sent = []
         self.closed = False
         self.cancelled = False
+        self.cancel_reason = ""
 
     def send(self, frame):
         self.sent.append(frame)
@@ -98,8 +101,9 @@ class _FakeBidi:
     def close(self):
         self.closed = True
 
-    def cancel(self):
+    def cancel(self, reason=""):
         self.cancelled = True
+        self.cancel_reason = reason
 
 
 class FakeTransport:
@@ -341,6 +345,29 @@ def test_ability_ura_bidi_uses_descriptor_bound_bidi_surface():
         wire["descriptor_ref"]
         == "easynet:///r/acme/ability/user-1.claude.terminal@1.0.0"
     )
+
+
+def test_bidi_session_close_delegates_open_release_to_sdk_adapter():
+    class TerminalRequiredBidi(_FakeBidi):
+        def close(self):
+            if not self.cancelled:
+                raise easynet_sdk.SDKError(
+                    code=easynet_sdk.ErrorCode.INVALID_ARGUMENT,
+                    stage="bidi",
+                    retry=easynet_sdk.RetryHint.NEVER,
+                    retryable=False,
+                    message="bidi session must be terminal before close",
+                )
+            super().close()
+
+    channel = TerminalRequiredBidi()
+    session = BidiSession(easynet_sdk.EasyRemoteBidiSessionAdapter(channel))
+
+    session.close()
+
+    assert channel.cancelled
+    assert channel.cancel_reason == "client close"
+    assert channel.closed
 
 
 # -- argument mapping ------------------------------------------------------------
