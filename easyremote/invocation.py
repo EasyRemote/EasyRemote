@@ -275,9 +275,10 @@ def encode_invocation(
     NOT an eighth tuple field. The inspectable route name stays on the
     in-memory ``InvocationTuple.ability`` for diagnostics.
     """
+    sdk_tuple = _tuple_for_sdk_adapter(tuple_)
     try:
         wire = _easyremote_invocation_adapter().to_wire_dict(
-            tuple_,
+            sdk_tuple,
             metadata=metadata,
             caller_signature=caller_signature,
             bidi_streams=bidi_streams,
@@ -289,6 +290,21 @@ def encode_invocation(
             reason="invalid_descriptor_ref",
         ) from exc
     return _legacy_wire_projection(wire, tuple_, metadata, bidi_streams)
+
+
+def _tuple_for_sdk_adapter(tuple_: InvocationTuple) -> InvocationTuple:
+    ability = tuple_.ability.strip()
+    if _sdk_identity.is_easynet_ura_text(ability) or "@" in ability:
+        return tuple_
+    try:
+        ability_ura = _sdk_identity.owner_ability_ura(tuple_.callee, ability)
+    except _sdk_identity.IdentityFacadeError as exc:
+        raise InvalidArgument(
+            f"cannot derive Ability URA for callee {tuple_.callee!r}"
+            f" and ability {ability!r}",
+            reason="invalid_ability_owner",
+        ) from exc
+    return replace(tuple_, ability=ability_ura)
 
 
 def _easyremote_invocation_adapter() -> easynet_sdk.InvocationObjectAdapter:
