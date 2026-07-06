@@ -52,14 +52,24 @@ class InMemorySdkIdentityFacade:
         if kind == "device" and body:
             return _sdk_identity.UraProjection(kind="device", ura=value, realm=realm)
         if kind == "agent" and body:
+            user_id, _, agent_id = body.partition(".")
             return _sdk_identity.UraProjection(
                 kind="agent",
                 ura=value,
                 realm=realm,
-                components={"owner_kind": _agent_owner_kind(body)},
+                components={
+                    "owner_kind": _agent_owner_kind(body),
+                    "user_id": user_id,
+                    "agent_id": agent_id,
+                },
             )
         if kind == "user" and body:
-            return _sdk_identity.UraProjection(kind="user", ura=value, realm=realm)
+            return _sdk_identity.UraProjection(
+                kind="user",
+                ura=value,
+                realm=realm,
+                components={"user_id": body},
+            )
         if kind == "resource" and body:
             return _sdk_identity.UraProjection(kind="resource", ura=value, realm=realm)
         if kind == "ability" and body:
@@ -95,11 +105,11 @@ class InMemorySdkIdentityFacade:
         _require_non_empty(realm, "realm")
         return f"easynet:///r/{realm}/hub"
 
-    def resource_ura(self, realm: str, owner_id: str, path: str) -> str:
-        _require_non_empty(realm, "realm")
-        _require_non_empty(owner_id, "owner_id")
+    def resource_ura(self, owner_ura: str, path: str) -> str:
+        parsed = self.parse_ura(owner_ura)
+        owner_id = _resource_owner_id(owner_ura, parsed.kind)
         _require_non_empty(path, "path")
-        return f"easynet:///r/{realm}/resource/{owner_id}/{path.strip('/')}"
+        return f"easynet:///r/{parsed.realm}/resource/{owner_id}/{path.strip('/')}"
 
     def device_ability_ura(
         self, realm: str, node_id: str, namespace: str, local_name: str
@@ -185,6 +195,17 @@ class InMemorySdkIdentityFacade:
 
 def _agent_owner_kind(owner_token: str) -> str:
     return "device" if owner_token.startswith("device.") else "user"
+
+
+def _resource_owner_id(owner_ura: str, owner_kind: str) -> str:
+    owner_token = owner_ura.rsplit("/", 1)[-1]
+    if owner_kind == "device":
+        return f"device.{owner_token}"
+    if owner_kind in {"agent", "user"}:
+        return owner_token
+    if owner_kind == "hub":
+        return "hub"
+    raise _invalid_identity(f"{owner_kind} owners cannot own resources")
 
 
 def _require_non_empty(value: str, label: str) -> None:
