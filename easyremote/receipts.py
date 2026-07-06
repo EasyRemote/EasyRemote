@@ -17,7 +17,7 @@ from .errors import InternalError, Unavailable, error_from_sdk
 
 __all__ = ["InvocationState", "Receipt", "ReceiptChain"]
 
-InvocationState: TypeAlias = easynet_sdk.EasyRemoteInvocationState
+InvocationState: TypeAlias = easynet_sdk.InvocationLifecycleState
 
 
 @dataclass(frozen=True)
@@ -44,7 +44,7 @@ class Receipt:
     @classmethod
     def from_wire(cls, wire: dict[str, Any]) -> Receipt:
         try:
-            return cls._from_sdk(easynet_sdk.EasyRemoteReceipt.from_wire(wire))
+            return cls._from_sdk(easynet_sdk.LocalReceiptSummary.from_wire(wire))
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
@@ -68,7 +68,7 @@ class Receipt:
             raise error_from_sdk(exc) from exc
 
     @classmethod
-    def _from_sdk(cls, receipt: easynet_sdk.EasyRemoteReceipt) -> Receipt:
+    def _from_sdk(cls, receipt: easynet_sdk.LocalReceiptSummary) -> Receipt:
         return cls(
             index=receipt.index,
             invocation_id=receipt.invocation_id,
@@ -84,8 +84,8 @@ class Receipt:
             raw=dict(receipt.raw),
         )
 
-    def _to_sdk(self) -> easynet_sdk.EasyRemoteReceipt:
-        return easynet_sdk.EasyRemoteReceipt(
+    def _to_sdk(self) -> easynet_sdk.LocalReceiptSummary:
+        return easynet_sdk.LocalReceiptSummary(
             index=self.index,
             invocation_id=self.invocation_id,
             receipt_type=self.receipt_type,
@@ -118,7 +118,7 @@ class ReceiptChain(Sequence[Receipt]):
 
     def verify_continuity(self) -> None:
         try:
-            easynet_sdk.EasyRemoteReceiptChain(
+            easynet_sdk.LocalReceiptSummaryChain(
                 tuple(receipt._to_sdk() for receipt in self._receipts)
             ).verify_continuity()
         except easynet_sdk.SDKError as exc:

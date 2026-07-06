@@ -291,8 +291,8 @@ def encode_invocation(
     return _legacy_wire_projection(wire, tuple_, metadata, bidi_streams)
 
 
-def _easyremote_invocation_adapter() -> easynet_sdk.EasyRemoteInvocationAdapter:
-    return easynet_sdk.EasyRemoteInvocationAdapter(
+def _easyremote_invocation_adapter() -> easynet_sdk.InvocationObjectAdapter:
+    return easynet_sdk.InvocationObjectAdapter(
         easynet_sdk.AbilityInvocationClient(
             runtime=easynet_sdk.RuntimeClient(_EncodeOnlyRuntimeTransport()),
             addressing=easynet_sdk.AddressingClient(
@@ -333,10 +333,10 @@ class _EasyRemoteSdkAddressingTransport:
         request = _json_request(request_json)
         descriptor_ref = _required_wire_string(request, "descriptor_ref")
         try:
-            canonical = _sdk_identity.canonical_ability_descriptor_ref(descriptor_ref)
+            projection = _sdk_identity.project_descriptor_ref(descriptor_ref)
         except _sdk_identity.IdentityFacadeError as exc:
             raise _sdk_identity_error(exc) from exc
-        return _descriptor_projection_json(canonical)
+        return _descriptor_projection_json(projection)
 
     def build_descriptor_ref(self, request_json: bytes) -> bytes:
         request = _json_request(request_json)
@@ -347,9 +347,10 @@ class _EasyRemoteSdkAddressingTransport:
                 ability_ura,
                 descriptor_version,
             )
+            projection = _sdk_identity.project_descriptor_ref(descriptor_ref)
         except _sdk_identity.IdentityFacadeError as exc:
             raise _sdk_identity_error(exc) from exc
-        return _descriptor_projection_json(descriptor_ref)
+        return _descriptor_projection_json(projection)
 
     def project_identity(self, request_json: bytes) -> bytes:
         request = _json_request(request_json)
@@ -428,24 +429,19 @@ def _required_wire_string(request: Mapping[str, Any], field_name: str) -> str:
     return value
 
 
-def _descriptor_projection_json(descriptor_ref: str) -> bytes:
-    ability_ura, separator, descriptor_version = descriptor_ref.rpartition("@")
-    if not separator or not ability_ura or not descriptor_version:
-        raise _sdk_invalid("descriptor_ref must contain an Ability URA and version")
-    try:
-        owner_ura = _sdk_identity.owner_ura_for_ability(ability_ura)
-    except _sdk_identity.IdentityFacadeError:
-        owner_ura = ""
+def _descriptor_projection_json(
+    projection: _sdk_identity.DescriptorProjection,
+) -> bytes:
     return _json_response(
         {
-            "kind": "descriptor_ref",
-            "valid": True,
-            "profile": "easynet-strict-v2",
-            "components": {"owner_ura": owner_ura} if owner_ura else {},
-            "metadata": {"grammar_owner": "axon"},
-            "descriptor_ref": descriptor_ref,
-            "ability_ura": ability_ura,
-            "descriptor_version": descriptor_version,
+            "kind": projection.kind,
+            "valid": projection.valid,
+            "profile": projection.profile,
+            "components": dict(projection.components),
+            "metadata": dict(projection.metadata),
+            "descriptor_ref": projection.descriptor_ref,
+            "ability_ura": projection.ability_ura,
+            "descriptor_version": projection.descriptor_version,
         }
     )
 

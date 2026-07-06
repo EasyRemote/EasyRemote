@@ -46,6 +46,20 @@ class UraProjection:
         return _component_string(self.components, "local_name")
 
 
+@dataclass(frozen=True)
+class DescriptorProjection:
+    """EasyRemote view of an SDK DescriptorRef projection."""
+
+    kind: str
+    valid: bool
+    profile: str
+    components: Mapping[str, object]
+    metadata: Mapping[str, object]
+    descriptor_ref: str
+    ability_ura: str
+    descriptor_version: str
+
+
 class IdentityFacadeError(Exception):
     """SDK identity failure normalized for EasyRemote callers."""
 
@@ -76,6 +90,8 @@ class IdentityFacade(Protocol):
     def canonical_ability_descriptor_ref(
         self, value: str, descriptor_version: str = ""
     ) -> str: ...
+
+    def project_descriptor_ref(self, value: str) -> DescriptorProjection: ...
 
 
 class SdkIdentityFacade:
@@ -144,6 +160,13 @@ class SdkIdentityFacade:
             )
         except easynet_sdk.SDKError as exc:
             raise _identity_error(exc) from exc
+
+    def project_descriptor_ref(self, value: str) -> DescriptorProjection:
+        try:
+            projection = easynet_sdk.project_descriptor_ref(value)
+        except easynet_sdk.SDKError as exc:
+            raise _identity_error(exc) from exc
+        return _descriptor_projection(projection)
 
     def _owner_ura_from_resource_owner_id(self, realm: str, owner_id: str) -> str:
         owner_id = owner_id.strip()
@@ -219,12 +242,31 @@ def canonical_ability_descriptor_ref(
     )
 
 
+def project_descriptor_ref(value: str) -> DescriptorProjection:
+    return identity_facade().project_descriptor_ref(value)
+
+
 def _projection(projection: easynet_sdk.IdentityProjection) -> UraProjection:
     return UraProjection(
         kind=projection.kind,
         ura=projection.ura,
         realm=projection.realm,
         components=projection.components,
+    )
+
+
+def _descriptor_projection(
+    projection: easynet_sdk.IdentityProjection,
+) -> DescriptorProjection:
+    return DescriptorProjection(
+        kind=projection.kind,
+        valid=projection.valid,
+        profile=projection.profile,
+        components=projection.components,
+        metadata=projection.metadata,
+        descriptor_ref=projection.descriptor_ref,
+        ability_ura=projection.ability_ura,
+        descriptor_version=projection.descriptor_version,
     )
 
 

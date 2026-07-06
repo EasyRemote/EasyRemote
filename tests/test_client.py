@@ -402,7 +402,7 @@ def test_bidi_session_close_delegates_open_release_to_sdk_adapter():
             super().close()
 
     channel = TerminalRequiredBidi()
-    session = BidiSession(easynet_sdk.EasyRemoteBidiSessionAdapter(channel))
+    session = BidiSession(easynet_sdk.BidiSessionAdapter(channel))
 
     session.close()
 

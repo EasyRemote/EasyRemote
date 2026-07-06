@@ -16,7 +16,7 @@ from typing import Any, Literal
 import easynet_sdk
 
 from ._sdk_transport import DaemonProcess, Transport
-from .errors import RemoteError, error_from_sdk
+from .errors import InvalidArgument, RemoteError, error_from_sdk
 
 __all__ = ["DaemonHandle", "DaemonStartConfig"]
 
@@ -73,14 +73,34 @@ class DaemonStartConfig:
         )
 
     def to_wire(self) -> dict[str, Any]:
-        return dict(self._to_sdk().to_wire_dict())
+        config = self._to_sdk()
+        value: dict[str, Any] = {"mode": config.mode.value}
+        if config.realm:
+            value["realm"] = config.realm
+        if config.device_id:
+            value["node_id"] = config.device_id
+        if config.env:
+            value["env"] = dict(config.env)
+        if config.log_path:
+            value["log_path"] = config.log_path
+        if config.detached is not None:
+            value["detach"] = config.detached
+        return value
 
-    def _to_sdk(self) -> easynet_sdk.EasyRemoteDaemonStartConfig:
+    def to_wire_dict(self) -> dict[str, Any]:
+        return self.to_wire()
+
+    def _to_sdk(self) -> easynet_sdk.DaemonStartProjection:
+        if self.mode == "device" and not (self.node_id or "").strip():
+            raise InvalidArgument(
+                "device daemon start requires a node_id",
+                reason="missing_node_id",
+            )
         try:
-            return easynet_sdk.EasyRemoteDaemonStartConfig.from_legacy(
+            return easynet_sdk.DaemonStartProjection.from_profile(
                 mode=self.mode,
                 realm=self.realm or "",
-                node_id=self.node_id or "",
+                device_id=self.node_id or "",
                 env=self.env or {},
                 log_path=str(self.log_path) if self.log_path is not None else "",
                 detached=self.detached,
@@ -128,7 +148,7 @@ class DaemonHandle:
 
 def _start_process(config: DaemonStartConfig) -> DaemonProcess:
     try:
-        return DaemonProcess.start(config._to_sdk())
+        return DaemonProcess.start(config)
     except RemoteError:
         raise
     except easynet_sdk.SDKError as exc:

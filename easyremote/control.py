@@ -158,7 +158,7 @@ class AgentStopResult:
 
     @classmethod
     def from_sdk(
-        cls, value: easynet_sdk.EasyRemoteAgentStopProjection
+        cls, value: easynet_sdk.AgentStopProjection
     ) -> AgentStopResult:
         return cls(
             name=value.name,
@@ -178,7 +178,7 @@ class AbilityControl:
 
     def __init__(self, client: Client | None = None) -> None:
         self._client = client or _new_client()
-        self._publication = easynet_sdk.EasyRemotePublicationCatalogFacade(
+        self._publication = easynet_sdk.PublicationCatalogFacade(
             self._client,
             addressing=_sdk_identity.identity_facade(),
         )
@@ -363,7 +363,7 @@ def _easyremote_admin_error(error: easynet_sdk.SDKError) -> RemoteError:
     return error_from_sdk(error)
 
 
-def _ability_record(row: easynet_sdk.EasyRemotePublishedAbilityRecord) -> AbilityRecord:
+def _ability_record(row: easynet_sdk.PublicationCatalogRecord) -> AbilityRecord:
     return AbilityRecord(
         name=row.name,
         ability_ura=row.ability_ura,

@@ -7,7 +7,7 @@ from collections.abc import Mapping
 import easynet_sdk
 
 
-def admin_facade(client: object) -> easynet_sdk.EasyRemoteAdminAdapter:
+def admin_facade(client: object) -> easynet_sdk.AgentLifecycleAdapter:
     return _bridge(client).admin_facade()
 
 
@@ -18,15 +18,15 @@ def mission_facade(client: object) -> EasyRemoteMissionFacade:
 class EasyRemoteMissionFacade:
     """EasyRemote API compatibility wrapper over the SDK Mission adapter."""
 
-    def __init__(self, adapter: easynet_sdk.EasyRemoteMissionAdapter) -> None:
+    def __init__(self, adapter: easynet_sdk.MissionExecutionAdapter) -> None:
         self._adapter = adapter
 
     def run_eal(
         self, source: str, *, label: str | None = None
-    ) -> easynet_sdk.EasyRemoteMissionRunProjection:
+    ) -> easynet_sdk.MissionRunProjection:
         projected = self._adapter.run_eal(source, label=label)
         raw = _raw_result(projected.raw)
-        return easynet_sdk.EasyRemoteMissionRunProjection(
+        return easynet_sdk.MissionRunProjection(
             run_id=str(raw.get("run_id") or raw.get("mission_id") or projected.run_id),
             run_dir=str(raw.get("run_dir") or projected.run_dir),
             outputs=_mapping_or_empty(raw.get("outputs")) or dict(projected.outputs),
@@ -60,7 +60,7 @@ class EasyRemoteMissionFacade:
         limit: int = 0,
         max_empty_pages: int = 0,
         poll_interval_seconds: float = 0.0,
-    ) -> easynet_sdk.EasyRemoteMissionEventTailer:
+    ) -> easynet_sdk.MissionEventProjectionTailer:
         return self._adapter.tail_events(
             run_id,
             cursor_sequence=cursor_sequence,
@@ -70,8 +70,8 @@ class EasyRemoteMissionFacade:
         )
 
 
-def _bridge(client: object) -> easynet_sdk.EasyRemoteProfileBridge:
-    return easynet_sdk.EasyRemoteProfileBridge(_EasyRemoteProfileDispatcher(client))
+def _bridge(client: object) -> easynet_sdk.DaemonProfileBridge:
+    return easynet_sdk.DaemonProfileBridge(_EasyRemoteProfileDispatcher(client))
 
 
 class _EasyRemoteProfileDispatcher:

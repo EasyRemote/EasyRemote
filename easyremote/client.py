@@ -169,7 +169,7 @@ class Stream:
 
     def __init__(self, frames: FrameStream, *, timeout: float | None = None) -> None:
         self._frames = frames
-        self._adapter = easynet_sdk.EasyRemoteStreamAdapter(
+        self._adapter = easynet_sdk.StreamValueAdapter(
             frames,
             timeout=timeout,
         )
@@ -202,7 +202,7 @@ class BidiSession:
     public method names and maps SDK errors into EasyRemote's taxonomy.
     """
 
-    def __init__(self, session: easynet_sdk.EasyRemoteBidiSessionAdapter) -> None:
+    def __init__(self, session: easynet_sdk.BidiSessionAdapter) -> None:
         self._session = session
 
     def send(self, frame: dict[str, Any]) -> None:
@@ -332,7 +332,7 @@ class Client:
             or [StreamSpec(stream_id=0, content_type="application/json")],
         )
         return BidiSession(
-            easynet_sdk.EasyRemoteBidiSessionAdapter(self._connected().bidi(wire))
+            easynet_sdk.BidiSessionAdapter(self._connected().bidi(wire))
         )
 
     # -- L2 ------------------------------------------------------------------

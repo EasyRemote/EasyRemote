@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import easynet_sdk
 
@@ -28,14 +28,14 @@ __all__ = [
 class Transport:
     """EasyRemote transport wrapper over ``easynet_sdk`` Invocation transport."""
 
-    def __init__(self, adapter: easynet_sdk.EasyRemoteTransportAdapter) -> None:
+    def __init__(self, adapter: easynet_sdk.InvocationResultAdapter) -> None:
         self._adapter = adapter
 
     @classmethod
     def connect(cls, control_path: str | None = None) -> Transport:
         try:
             return cls(
-                easynet_sdk.EasyRemoteTransportAdapter.connect(
+                easynet_sdk.InvocationResultAdapter.connect(
                     control_path=control_path or str(settings().control_path),
                     library_path=_library_path(),
                 )
@@ -88,21 +88,21 @@ class Transport:
 class UnaryDispatchPool:
     """EasyRemote error-mapping wrapper over the SDK unary dispatch pool."""
 
-    def __init__(self, pool: easynet_sdk.EasyRemoteUnaryDispatchPool) -> None:
+    def __init__(self, pool: easynet_sdk.UnaryDispatchPool) -> None:
         self._pool = pool
 
     @classmethod
     def connect(cls) -> UnaryDispatchPool:
-        def factory() -> easynet_sdk.EasyRemoteUnaryTransport:
-            return cast(easynet_sdk.EasyRemoteUnaryTransport, Transport.connect())
+        def factory() -> easynet_sdk.UnaryInvocationTransport:
+            return cast(easynet_sdk.UnaryInvocationTransport, Transport.connect())
 
-        return cls(easynet_sdk.EasyRemoteUnaryDispatchPool(factory))
+        return cls(easynet_sdk.UnaryDispatchPool(factory))
 
     @classmethod
     def from_transport(cls, transport: Transport) -> UnaryDispatchPool:
         return cls(
-            easynet_sdk.EasyRemoteUnaryDispatchPool.from_transport(
-                cast(easynet_sdk.EasyRemoteUnaryTransport, transport)
+            easynet_sdk.UnaryDispatchPool.from_transport(
+                cast(easynet_sdk.UnaryInvocationTransport, transport)
             )
         )
 
@@ -185,18 +185,19 @@ class FrameStream:
 class DaemonProcess:
     """Lifecycle handle wrapper over the SDK daemon facade."""
 
-    def __init__(self, handle: easynet_sdk.EasyRemoteDaemonHandleFacade) -> None:
+    def __init__(self, handle: easynet_sdk.DaemonHandleFacade) -> None:
         self._handle = handle
 
     @classmethod
     def start(
-        cls, config: easynet_sdk.EasyRemoteDaemonStartConfig
+        cls, config: easynet_sdk.DaemonStartProjection | _DaemonStartProjectionSource
     ) -> DaemonProcess:
         try:
-            lifecycle = easynet_sdk.EasyRemoteDaemonLifecycleFacade(
+            sdk_config = config._to_sdk() if hasattr(config, "_to_sdk") else config
+            lifecycle = easynet_sdk.DaemonLifecycleFacade(
                 _environment().daemon_control()
             )
-            return cls(lifecycle.start(config))
+            return cls(lifecycle.start(sdk_config))
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
@@ -243,3 +244,7 @@ def _environment() -> easynet_sdk.SdkEnvironment:
 def _library_path() -> str | None:
     path = settings().library_path
     return str(path) if path is not None else None
+
+
+class _DaemonStartProjectionSource(Protocol):
+    def _to_sdk(self) -> easynet_sdk.DaemonStartProjection: ...

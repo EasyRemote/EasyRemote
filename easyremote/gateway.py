@@ -69,7 +69,7 @@ class Server:
         tls: TLSConfig | Literal["self-signed", "acme"] = "self-signed",
         home: Path | None = None,
         daemon_starter: Callable[
-            [DaemonStartConfig], easynet_sdk.EasyRemoteGatewayDaemonHandle
+            [DaemonStartConfig], easynet_sdk.GatewayDaemonHandle
         ]
         | None = None,
     ) -> None:
@@ -94,11 +94,11 @@ class Server:
         self._tls = tls
         self._home = home or _EASYNET_DIR
         self._daemon_starter = daemon_starter or DaemonHandle.start
-        self._daemon: easynet_sdk.EasyRemoteGatewayDaemonHandle | None = None
-        self._gateway = easynet_sdk.EasyRemoteGatewayFacade(
+        self._daemon: easynet_sdk.GatewayDaemonHandle | None = None
+        self._gateway = easynet_sdk.GatewayLifecycleFacade(
             lambda realm: self._daemon_starter(DaemonStartConfig.hub(realm))
         )
-        self._runtime: easynet_sdk.EasyRemoteGatewayRuntime | None = None
+        self._runtime: easynet_sdk.GatewayRuntime | None = None
         self._tls_config: TLSConfig | None = None
         self._stop_event = threading.Event()
 
@@ -186,7 +186,7 @@ class Server:
         tls = self._resolve_tls()
         try:
             runtime = self._gateway.start(
-                easynet_sdk.EasyRemoteGatewayConfig(
+                easynet_sdk.GatewayConfig(
                     port=self._port,
                     realm=self._realm,
                     home_dir=str(self._home),

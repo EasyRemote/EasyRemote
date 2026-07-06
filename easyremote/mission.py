@@ -98,7 +98,7 @@ class MissionControl:
         limit: int = 0,
         max_empty_pages: int = 0,
         poll_interval_seconds: float = 0.0,
-    ) -> easynet_sdk.EasyRemoteMissionEventTailer:
+    ) -> easynet_sdk.MissionEventProjectionTailer:
         """Tail daemon-projected mission events through the SDK Mission facade."""
         try:
             return self._mission.tail_events(
@@ -164,7 +164,7 @@ class MissionRun:
         limit: int = 0,
         max_empty_pages: int = 0,
         poll_interval_seconds: float = 0.0,
-    ) -> easynet_sdk.EasyRemoteMissionEventTailer:
+    ) -> easynet_sdk.MissionEventProjectionTailer:
         return self._control.tail_events(
             self.run_id,
             cursor_sequence=cursor_sequence,

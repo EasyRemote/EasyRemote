@@ -142,6 +142,26 @@ class InMemorySdkIdentityFacade:
             )
         return f"{value}@{descriptor_version}"
 
+    def project_descriptor_ref(self, value: str) -> _sdk_identity.DescriptorProjection:
+        descriptor_ref = self.canonical_ability_descriptor_ref(value)
+        ability_ura, separator, descriptor_version = descriptor_ref.rpartition("@")
+        if not separator or not ability_ura or not descriptor_version:
+            raise _invalid_identity("invalid DescriptorRef")
+        try:
+            owner_ura = self.owner_ura_for_ability(ability_ura)
+        except _sdk_identity.IdentityFacadeError:
+            owner_ura = ""
+        return _sdk_identity.DescriptorProjection(
+            kind="descriptor_ref",
+            valid=True,
+            profile="easynet-strict-v2",
+            components={"owner_ura": owner_ura} if owner_ura else {},
+            metadata={"grammar_owner": "axon"},
+            descriptor_ref=descriptor_ref,
+            ability_ura=ability_ura,
+            descriptor_version=descriptor_version,
+        )
+
     def _ability_owner(self, realm: str, body: str) -> tuple[str, str, str]:
         parts = body.split(".")
         if len(parts) < 2:
