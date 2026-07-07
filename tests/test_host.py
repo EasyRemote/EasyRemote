@@ -342,7 +342,7 @@ def test_context_child_call_uses_parent_receipt_dispatcher(short_tmp):
         "timestamp_unix_ms": 1_700_000_000_000,
         "prev_receipt_hash_hex": "00" * 32,
         "self_hash_hex": "aa" * 32,
-        "receipt_ura": "easynet:///r/example/receipt/parent-1",
+        "receipt_ura": "easynet:///r/example/resource/agent.easyremote.test/invocation/parent-1/receipt",
         "payload_content_type": "application/json",
         "cleanup_complete": True,
         "reason": "",
@@ -364,11 +364,11 @@ def test_context_child_call_uses_parent_receipt_dispatcher(short_tmp):
     assert stream_items(frames) == [
         {
             "child": "er.child",
-            "receipt": "easynet:///r/example/receipt/parent-1",
+            "receipt": "easynet:///r/example/resource/agent.easyremote.test/invocation/parent-1/receipt",
         }
     ]
     assert seen == {
-        "receipt_ura": "easynet:///r/example/receipt/parent-1",
+        "receipt_ura": "easynet:///r/example/resource/agent.easyremote.test/invocation/parent-1/receipt",
         "function": "er.child",
         "args": (),
         "kwargs": {"q": "hi"},

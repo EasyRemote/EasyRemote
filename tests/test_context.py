@@ -90,7 +90,7 @@ def test_sdk_dispatcher_projects_parent_receipt_into_child_causal_ref():
             "timestamp_unix_ms": 1_700_000_000_000,
             "prev_receipt_hash_hex": "00" * 32,
             "self_hash_hex": "aa" * 32,
-            "receipt_ura": "easynet:///r/example/receipt/parent-1",
+            "receipt_ura": "easynet:///r/example/resource/agent.easyremote.test/invocation/parent-1/receipt",
             "payload_content_type": "application/json",
             "cleanup_complete": True,
             "reason": "",
@@ -105,7 +105,7 @@ def test_sdk_dispatcher_projects_parent_receipt_into_child_causal_ref():
     _, target, args, kwargs = fake.seen[0]
     assert target.function == "er.child"
     assert target.causal is not None
-    assert target.causal.receipt_ura == "easynet:///r/example/receipt/parent-1"
+    assert target.causal.receipt_ura == "easynet:///r/example/resource/agent.easyremote.test/invocation/parent-1/receipt"
     assert target.causal.receipt_hash == b"\xaa" * 32
     assert args == ()
     assert kwargs == {"q": "hi"}

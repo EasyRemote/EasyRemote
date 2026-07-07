@@ -80,7 +80,7 @@ def test_events_fetches_mission_event_page():
                 "occurred_unix_ms": 1_700_000_000_000,
                 "terminal": True,
                 "payload": {"ok": True},
-                "receipt": {"receipt_ura": "easynet:///r/acme/receipt/r-1"},
+                "receipt": {"receipt_ura": "easynet:///r/acme/resource/agent.easyremote.test/invocation/r-1/receipt"},
             }
         ],
     }

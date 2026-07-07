@@ -145,7 +145,7 @@ def test_pipeline_validates_daemon_child_invocation_facts():
               "metadata_state": "receipt_backed",
               "ledger_state": "completed",
               "receipt": {
-                "receipt_ura": "easynet:///r/acme/receipt/r-1",
+                "receipt_ura": "easynet:///r/acme/resource/agent.easyremote.test/invocation/r-1/receipt",
                 "receipt_hash": "aa"
               }
             }
@@ -291,7 +291,7 @@ def test_pipeline_run_handle_tails_events_until_terminal():
                             "occurred_unix_ms": 1_700_000_000_001,
                             "terminal": True,
                             "payload": {"reply": "done"},
-                            "receipt": {"receipt_ura": "easynet:///r/acme/receipt/r-1"},
+                            "receipt": {"receipt_ura": "easynet:///r/acme/resource/agent.easyremote.test/invocation/r-1/receipt"},
                             "metadata": {},
                         }
                     ],
