@@ -20,7 +20,7 @@ import easynet_sdk
 
 from .errors import Unavailable
 
-__all__ = ["Settings", "agents_root", "configure", "settings"]
+__all__ = ["Settings", "agents_root", "configure", "sdk_environment", "settings"]
 
 # The SDK owns the process-level daemon discovery default. EasyRemote keeps
 # product credentials beside that discovery file, but must derive the root
@@ -97,6 +97,26 @@ def settings() -> Settings:
         if _settings is None:
             _settings = _from_environment()
         return _settings
+
+
+def sdk_environment(
+    *,
+    control_path: str | Path | None = None,
+) -> easynet_sdk.SdkEnvironment:
+    """Create the SDK runtime environment from the EasyRemote process root.
+
+    EasyRemote owns product path overrides; the SDK owns daemon runtime
+    discovery, feature negotiation and transport construction. All consumers
+    that need an SDK process root should use this entrypoint so control-path
+    and library-path projection stays single-sourced.
+    """
+
+    current = settings()
+    library_path = str(current.library_path) if current.library_path is not None else None
+    return easynet_sdk.SdkEnvironment(
+        library_path=library_path,
+        control_path=str(control_path or current.control_path),
+    )
 
 
 def read_control() -> dict[str, Any]:

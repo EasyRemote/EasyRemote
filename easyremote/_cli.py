@@ -42,10 +42,7 @@ def run_checks() -> list[Check]:
 
     # 1. SDK facade handshake
     try:
-        feature_set = easynet_sdk.SdkEnvironment(
-            library_path=_library_path(),
-            control_path=str(config.settings().control_path),
-        ).feature_set()
+        feature_set = config.sdk_environment().feature_set()
         add("easynet-sdk", True, f"ABI v{feature_set.abi_version}")
         sdk_ok = True
     except (RemoteError, easynet_sdk.SDKError) as exc:
@@ -90,11 +87,6 @@ def run_checks() -> list[Check]:
             add("transport", False, str(exc))
 
     return checks
-
-
-def _library_path() -> str | None:
-    path = config.settings().library_path
-    return str(path) if path is not None else None
 
 
 def main(argv: list[str] | None = None) -> int:

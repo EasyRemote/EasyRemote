@@ -41,6 +41,27 @@ def test_configure_merges_partially(tmp_path):
     assert config.agents_root() == tmp_path / "agents"
 
 
+def test_sdk_environment_uses_configured_process_root(tmp_path):
+    control = tmp_path / "control.json"
+    library = tmp_path / "libeasynet_cli.dylib"
+    config.configure(control=control, library_path=library)
+
+    environment = config.sdk_environment()
+
+    assert environment.resolved_control_path() == str(control)
+    assert environment.library_path == str(library)
+
+
+def test_sdk_environment_accepts_explicit_control_override(tmp_path):
+    configured = tmp_path / "control.json"
+    explicit = tmp_path / "other-control.json"
+    config.configure(control=configured)
+
+    environment = config.sdk_environment(control_path=explicit)
+
+    assert environment.resolved_control_path() == str(explicit)
+
+
 def test_missing_control_tells_user_to_start_daemon(tmp_path):
     config.configure(control=tmp_path / "absent.json")
     with pytest.raises(Unavailable) as exc_info:

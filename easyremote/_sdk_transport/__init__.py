@@ -14,7 +14,7 @@ from typing import Any, Protocol, cast
 
 import easynet_sdk
 
-from ..config import settings
+from ..config import sdk_environment
 from ..errors import error_from_sdk
 
 __all__ = [
@@ -33,11 +33,12 @@ class Transport:
 
     @classmethod
     def connect(cls, control_path: str | None = None) -> Transport:
+        environment = sdk_environment(control_path=control_path)
         try:
             return cls(
                 easynet_sdk.InvocationResultAdapter.connect(
-                    control_path=control_path or str(settings().control_path),
-                    library_path=_library_path(),
+                    control_path=environment.resolved_control_path(),
+                    library_path=environment.library_path,
                 )
             )
         except easynet_sdk.SDKError as exc:
@@ -235,15 +236,7 @@ class DaemonProcess:
 
 
 def _environment() -> easynet_sdk.SdkEnvironment:
-    return easynet_sdk.SdkEnvironment(
-        library_path=_library_path(),
-        control_path=str(settings().control_path),
-    )
-
-
-def _library_path() -> str | None:
-    path = settings().library_path
-    return str(path) if path is not None else None
+    return sdk_environment()
 
 
 class _DaemonStartProjectionSource(Protocol):
