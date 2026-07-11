@@ -104,34 +104,39 @@ class SchemaError(ValueError):
     """
 
 
-_SDK_ERROR_MAP: dict[easynet_sdk.ErrorCode, tuple[type[RemoteError], str]] = {
-    easynet_sdk.ErrorCode.INVALID_ARGUMENT: (InvalidArgument, "invalid_argument"),
-    easynet_sdk.ErrorCode.INVALID_UTF8: (InvalidArgument, "invalid_utf8"),
-    easynet_sdk.ErrorCode.INVALID_INVOCATION: (InvalidArgument, "invalid_invocation"),
-    easynet_sdk.ErrorCode.NOT_FOUND: (InvalidArgument, "not_found"),
-    easynet_sdk.ErrorCode.ABILITY_NOT_FOUND: (InvalidArgument, "ability_not_found"),
-    easynet_sdk.ErrorCode.PERMISSION_DENIED: (PermissionDenied, "permission_denied"),
-    easynet_sdk.ErrorCode.ADMISSION_DENIED: (PermissionDenied, "admission_denied"),
-    easynet_sdk.ErrorCode.TIMEOUT: (DeadlineExceeded, "timeout"),
-    easynet_sdk.ErrorCode.CANCELLED: (Cancelled, "cancelled"),
-    easynet_sdk.ErrorCode.DAEMON_OFFLINE: (Unavailable, "daemon_down"),
-    easynet_sdk.ErrorCode.NOT_INITIALIZED: (Unavailable, "not_initialized"),
-    easynet_sdk.ErrorCode.VERSION_MISMATCH: (Unavailable, "version_mismatch"),
-    easynet_sdk.ErrorCode.VERSION_INCOMPATIBLE: (
-        Unavailable,
-        "version_incompatible",
-    ),
-    easynet_sdk.ErrorCode.ROUTE_UNAVAILABLE: (Unavailable, "route_unavailable"),
-    easynet_sdk.ErrorCode.CONTROL_ONLY: (Unavailable, "control_only"),
-    easynet_sdk.ErrorCode.TRANSPORT: (Unavailable, "transport"),
-    easynet_sdk.ErrorCode.NULL_POINTER: (InternalError, "null_pointer"),
-    easynet_sdk.ErrorCode.INVALID_HANDLE: (InternalError, "invalid_handle"),
-    easynet_sdk.ErrorCode.ALREADY_INIT: (InternalError, "already_initialized"),
-    easynet_sdk.ErrorCode.PROTOCOL_MISMATCH: (InternalError, "protocol_mismatch"),
-    easynet_sdk.ErrorCode.PROTOCOL: (InternalError, "protocol"),
-    easynet_sdk.ErrorCode.ABILITY_FAILED: (InternalError, "ability_failed"),
-    easynet_sdk.ErrorCode.NOT_IMPLEMENTED: (InternalError, "not_implemented"),
-    easynet_sdk.ErrorCode.GENERIC: (InternalError, "generic"),
+_SDK_ERROR_CLASS_MAP: dict[easynet_sdk.ErrorClass, type[RemoteError]] = {
+    easynet_sdk.ErrorClass.VALIDATION: InvalidArgument,
+    easynet_sdk.ErrorClass.HANDLE: InternalError,
+    easynet_sdk.ErrorClass.LIFECYCLE: Unavailable,
+    easynet_sdk.ErrorClass.AVAILABILITY: Unavailable,
+    easynet_sdk.ErrorClass.PERMISSION: PermissionDenied,
+    easynet_sdk.ErrorClass.ADMISSION: PermissionDenied,
+    easynet_sdk.ErrorClass.ROUTING: InvalidArgument,
+    easynet_sdk.ErrorClass.TIMEOUT: DeadlineExceeded,
+    easynet_sdk.ErrorClass.CANCELLATION: Cancelled,
+    easynet_sdk.ErrorClass.PROTOCOL: InternalError,
+    easynet_sdk.ErrorClass.VERSION: Unavailable,
+    easynet_sdk.ErrorClass.CONTROL: Unavailable,
+    easynet_sdk.ErrorClass.UNSUPPORTED: InternalError,
+    easynet_sdk.ErrorClass.GENERIC: InternalError,
+}
+
+# Product taxonomy intentionally distinguishes lifecycle/setup defects and
+# execution failures from denial decisions, even where the generic SDK class
+# groups them together. All other codes inherit their public class from the
+# canonical SDK classification, so SDK additions cannot silently fall back to
+# an unrelated product error class.
+_SDK_ERROR_OVERRIDES: dict[easynet_sdk.ErrorCode, type[RemoteError]] = {
+    easynet_sdk.ErrorCode.ALREADY_INIT: InternalError,
+    easynet_sdk.ErrorCode.NULL_POINTER: InternalError,
+    easynet_sdk.ErrorCode.ROUTE_UNAVAILABLE: Unavailable,
+    easynet_sdk.ErrorCode.EXECUTION_FAILED: InternalError,
+    easynet_sdk.ErrorCode.ABILITY_FAILED: InternalError,
+}
+
+_SDK_REASON_OVERRIDES: dict[easynet_sdk.ErrorCode, str] = {
+    easynet_sdk.ErrorCode.ALREADY_INIT: "already_initialized",
+    easynet_sdk.ErrorCode.DAEMON_OFFLINE: "daemon_down",
 }
 
 _SDK_HINTS: dict[str, str] = {
@@ -155,9 +160,11 @@ def error_from_sdk(error: easynet_sdk.SDKError) -> RemoteError:
             invocation_id=error.invocation_id,
             retry_after=_retry_after(error.details),
         )
-    cls, reason = _SDK_ERROR_MAP.get(
-        error.code, (InternalError, error.code.value.lower())
+    cls = _SDK_ERROR_OVERRIDES.get(
+        error.code,
+        _SDK_ERROR_CLASS_MAP[error.error_class],
     )
+    reason = _SDK_REASON_OVERRIDES.get(error.code, error.code.value.lower())
     if isinstance(detail_reason, str) and detail_reason:
         reason = detail_reason
     return cls(

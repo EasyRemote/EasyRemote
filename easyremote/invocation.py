@@ -275,10 +275,9 @@ def encode_invocation(
     NOT an eighth tuple field. The inspectable route name stays on the
     in-memory ``InvocationTuple.ability`` for diagnostics.
     """
-    sdk_tuple = _tuple_for_sdk_adapter(tuple_)
     try:
-        wire = _easyremote_invocation_adapter().to_wire_dict(
-            sdk_tuple,
+        wire = _easyremote_wire_projector().to_wire_dict(
+            _tuple_for_sdk_projection(tuple_),
             metadata=metadata,
             caller_signature=caller_signature,
             bidi_streams=bidi_streams,
@@ -292,7 +291,7 @@ def encode_invocation(
     return _legacy_wire_projection(wire, tuple_, metadata, bidi_streams)
 
 
-def _tuple_for_sdk_adapter(tuple_: InvocationTuple) -> InvocationTuple:
+def _tuple_for_sdk_projection(tuple_: InvocationTuple) -> InvocationTuple:
     ability = tuple_.ability.strip()
     if _sdk_identity.is_easynet_ura_text(ability) or "@" in ability:
         return tuple_
@@ -307,14 +306,9 @@ def _tuple_for_sdk_adapter(tuple_: InvocationTuple) -> InvocationTuple:
     return replace(tuple_, ability=ability_ura)
 
 
-def _easyremote_invocation_adapter() -> easynet_sdk.InvocationObjectAdapter:
-    return easynet_sdk.InvocationObjectAdapter(
-        easynet_sdk.AbilityInvocationClient(
-            runtime=easynet_sdk.RuntimeClient(_EncodeOnlyRuntimeTransport()),
-            addressing=easynet_sdk.AddressingClient(
-                _EasyRemoteSdkAddressingTransport()
-            ),
-        )
+def _easyremote_wire_projector() -> easynet_sdk.InvocationWireProjector:
+    return easynet_sdk.InvocationWireProjector(
+        easynet_sdk.AddressingClient(_EasyRemoteSdkAddressingTransport())
     )
 
 
@@ -390,40 +384,6 @@ class _EasyRemoteSdkAddressingTransport:
         except _sdk_identity.IdentityFacadeError as exc:
             raise _sdk_identity_error(exc) from exc
         return _identity_projection_json(projection)
-
-
-class _EncodeOnlyRuntimeTransport:
-    """RuntimeTransport placeholder; encode_invocation never dispatches."""
-
-    def invoke(self, draft_json: bytes) -> bytes:
-        raise _sdk_invalid("encode-only invocation adapter cannot dispatch")
-
-    def open_stream(self, draft_json: bytes) -> tuple[Any, bytes]:
-        raise _sdk_invalid("encode-only invocation adapter cannot open streams")
-
-    def open_bidi(self, draft_json: bytes, streams_json: bytes) -> tuple[Any, bytes]:
-        raise _sdk_invalid("encode-only invocation adapter cannot open bidi sessions")
-
-    def prepare(self, draft_json: bytes, options_json: bytes) -> bytes:
-        raise _sdk_invalid("encode-only invocation adapter cannot prepare")
-
-    def submit_signed(self, signed_json: bytes) -> bytes:
-        raise _sdk_invalid("encode-only invocation adapter cannot submit signed calls")
-
-    def await_handle(self, handle_id: int) -> bytes:
-        raise _sdk_invalid("encode-only invocation adapter cannot await handles")
-
-    def cancel_handle(self, handle_id: int, reason: str) -> bytes:
-        raise _sdk_invalid("encode-only invocation adapter cannot cancel handles")
-
-    def handle_events(self, handle_id: int) -> bytes:
-        raise _sdk_invalid("encode-only invocation adapter cannot read handle events")
-
-    def free_handle(self, handle_id: int) -> None:
-        return None
-
-    def close(self) -> None:
-        return None
 
 
 def _json_request(raw: bytes) -> Mapping[str, Any]:
