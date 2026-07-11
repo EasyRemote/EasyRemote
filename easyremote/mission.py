@@ -76,8 +76,7 @@ class MissionChildInvocation:
     def from_mapping(cls, value: Mapping[str, object]) -> MissionChildInvocation:
         receipt = _optional_mapping(value.get("receipt"), "receipt")
         if receipt is not None:
-            _required_text(receipt, "receipt_ura")
-            _required_text(receipt, "receipt_hash")
+            _validate_receipt_anchor(receipt)
         ledger_state = value.get("ledger_state")
         if ledger_state is None:
             raise _invalid_status("ledger_state is required")
@@ -574,6 +573,24 @@ def _optional_mapping(
     if not isinstance(value, Mapping):
         raise _invalid_status(f"{field_name} must be an object or null")
     return dict(value)
+
+
+def _validate_receipt_anchor(value: Mapping[str, object]) -> easynet_sdk.ReceiptReference:
+    receipt_ura = _required_text(value, "receipt_ura")
+    receipt_hash = _required_text(value, "receipt_hash")
+    try:
+        receipt_hash_bytes = bytes.fromhex(receipt_hash)
+    except ValueError as exc:
+        raise _invalid_status(
+            "mission child receipt anchor hash must be hexadecimal"
+        ) from exc
+    try:
+        return easynet_sdk.ReceiptReference(
+            receipt_ura=receipt_ura,
+            receipt_hash=receipt_hash_bytes,
+        )
+    except easynet_sdk.SDKError as exc:
+        raise _invalid_status(f"mission child receipt anchor is invalid: {exc}") from exc
 
 
 def _required_text(value: Mapping[str, object], field_name: str) -> str:

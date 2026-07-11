@@ -146,7 +146,7 @@ def test_pipeline_validates_daemon_child_invocation_facts():
               "ledger_state": "completed",
               "receipt": {
                 "receipt_ura": "easynet:///r/acme/resource/agent.easyremote.test/invocation/r-1/receipt",
-                "receipt_hash": "aa"
+                "receipt_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
               }
             }
           ],
@@ -160,6 +160,38 @@ def test_pipeline_validates_daemon_child_invocation_facts():
 
     assert conformance.passed is True
     assert conformance.receipt_backed_steps == ("health",)
+
+
+def test_mission_status_rejects_invalid_child_receipt_anchor():
+    with pytest.raises(InternalError) as exc_info:
+        MissionStatus.from_json(
+            {
+                "profile": "mission",
+                "kind": "mission_status",
+                "mission_id": "run-1",
+                "state": "completed",
+                "terminal": True,
+                "child_invocations": [
+                    {
+                        "step_id": "health",
+                        "request_id": "req-1",
+                        "trace_id": "run-1",
+                        "ability": "observe.health",
+                        "invocation_ura": "easynet:///r/acme/invocation/req-1",
+                        "caller_ura": "easynet:///r/acme/device/dev-a",
+                        "callee_ura": "easynet:///r/acme/device/dev-a",
+                        "subject_ura": "easynet:///r/acme/device/dev-a",
+                        "metadata_state": "receipt_backed",
+                        "ledger_state": "completed",
+                        "receipt": {
+                            "receipt_ura": "receipt-1",
+                            "receipt_hash": "aa",
+                        },
+                    }
+                ],
+            }
+        )
+    assert exc_info.value.reason == "invalid_mission_status"
 
 
 def test_mission_status_rejects_duplicate_child_step_facts():
