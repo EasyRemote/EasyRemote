@@ -30,13 +30,11 @@ from typing import Literal
 
 import easynet_sdk
 
+from .config import settings
 from .daemon import DaemonHandle, DaemonStartConfig
 from .errors import InvalidArgument, Unavailable, error_from_sdk
 
 __all__ = ["Gateway", "Server", "TLSConfig"]
-
-_EASYNET_DIR = Path.home() / ".easynet"
-
 
 @dataclass(frozen=True)
 class TLSConfig:
@@ -92,7 +90,10 @@ class Server:
         self._port = port
         self._realm = realm.strip() or "localhost"
         self._tls = tls
-        self._home = home or _EASYNET_DIR
+        # Keep gateway material beside the SDK-owned daemon discovery root;
+        # callers that configure a custom EasyNet control path automatically
+        # get the same process-wide state root here.
+        self._home = home or settings().control_path.parent
         self._daemon_starter = daemon_starter or DaemonHandle.start
         self._daemon: easynet_sdk.GatewayDaemonHandle | None = None
         self._gateway = easynet_sdk.GatewayLifecycleFacade(

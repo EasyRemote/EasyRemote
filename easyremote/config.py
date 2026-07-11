@@ -16,11 +16,16 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+import easynet_sdk
+
 from .errors import Unavailable
 
 __all__ = ["Settings", "agents_root", "configure", "settings"]
 
-_EASYNET_DIR = Path.home() / ".easynet"
+# The SDK owns the process-level daemon discovery default. EasyRemote keeps
+# product credentials beside that discovery file, but must derive the root
+# from the SDK instead of maintaining a second home-directory convention.
+_EASYNET_DIR = easynet_sdk.default_control_path().parent
 
 
 def agents_root() -> Path:
