@@ -47,35 +47,27 @@ class Receipt:
     @classmethod
     def from_wire(cls, wire: dict[str, Any]) -> "Receipt":
         try:
-            index = _integer(wire["index"])
-            timestamp = _integer(wire["timestamp_unix_ms"])
-            invocation_id = _required_text(wire["invocation_id"], "invocation_id")
-            receipt_type = _required_text(wire["receipt_type"], "receipt_type")
-            previous = bytes.fromhex(str(wire["prev_receipt_hash_hex"]))
-            current = bytes.fromhex(str(wire["self_hash_hex"]))
-        except (KeyError, TypeError, ValueError) as exc:
+            summary = easynet_sdk.RuntimeReceipt.from_required_mapping(wire)
+        except easynet_sdk.SDKError as exc:
             raise InternalError(
                 f"daemon receipt summary is malformed: {exc}",
                 reason="receipt_protocol",
             ) from exc
-        if len(previous) != 32 or len(current) != 32:
-            raise InternalError(
-                "daemon receipt hashes must be 32 bytes",
-                reason="receipt_protocol",
-            )
         return cls(
-            index=index,
-            invocation_id=invocation_id,
-            receipt_type=receipt_type,
-            state=_state(wire.get("state")),
-            timestamp_unix_ms=timestamp,
-            prev_receipt_hash=previous,
-            self_hash=current,
-            payload_content_type=str(wire.get("payload_content_type", "")),
-            cleanup_complete=bool(wire.get("cleanup_complete", False)),
-            reason=str(wire.get("reason", "")),
-            child_invocation_id=str(wire.get("child_invocation_id", "")),
-            raw=dict(wire),
+            index=summary.index,
+            invocation_id=summary.invocation_id,
+            receipt_type=summary.receipt_type,
+            state=_state(summary.state),
+            timestamp_unix_ms=summary.timestamp_unix_ms,
+            prev_receipt_hash=summary.prev_receipt_hash(),
+            self_hash=summary.self_receipt_hash(),
+            payload_content_type=_optional_text(
+                summary.raw.get("payload_content_type")
+            ),
+            cleanup_complete=bool(summary.cleanup_complete),
+            reason=summary.reason,
+            child_invocation_id=summary.child_invocation_id,
+            raw=summary.to_json_dict(),
         )
 
     def verify(self, resolver: object | None = None) -> None:
@@ -139,14 +131,5 @@ def _state(value: object) -> InvocationState:
         return InvocationState.UNSPECIFIED
 
 
-def _integer(value: object) -> int:
-    if isinstance(value, bool):
-        raise TypeError("boolean is not an integer")
-    return int(value)  # type: ignore[arg-type]
-
-
-def _required_text(value: object, field_name: str) -> str:
-    text = str(value)
-    if not text:
-        raise ValueError(f"{field_name} is required")
-    return text
+def _optional_text(value: object) -> str:
+    return value if isinstance(value, str) else ""
