@@ -9,7 +9,6 @@ that the P0 link verification has validated against a live daemon.
 
 from __future__ import annotations
 
-import json
 import os
 import threading
 from dataclasses import dataclass, replace
@@ -142,31 +141,23 @@ def read_credentials() -> dict[str, Any]:
         Unavailable: with reason ``not_paired`` when the file is absent —
             identity only exists after a one-time `easynet pair`.
     """
-    return _read_json(
-        settings().credentials_path,
-        reason="not_paired",
-        hint="no EasyNet identity on this machine — pair it once with `easynet pair`",
-    )
+    projection = runtime_identity_projection()
+    return {
+        "realm": projection.realm,
+        "node_id": projection.device_id,
+        "username": projection.username,
+        "hub_endpoint": projection.hub_endpoint,
+    }
 
 
-def _read_json(path: Path, *, reason: str, hint: str) -> dict[str, Any]:
+def runtime_identity_projection() -> easynet_sdk.RuntimeIdentityProjection:
+    """Load paired runtime identity through the EasyNet-Cli SDK projection."""
+
+    path = settings().credentials_path
     try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        raise Unavailable(f"{hint} (looked at {path})", reason=reason) from None
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise Unavailable(
-            f"{path} is not valid JSON ({exc}) — re-run `easynet start`/`easynet pair`",
-            reason=f"{reason}_corrupt",
-        ) from exc
-    if not isinstance(data, dict):
-        raise Unavailable(
-            f"{path} must contain a JSON object, found {type(data).__name__}",
-            reason=f"{reason}_corrupt",
-        )
-    return data
+        return sdk_environment().runtime_identity_projection(path)
+    except easynet_sdk.SDKError as exc:
+        raise _runtime_identity_projection_error(path, exc) from exc
 
 
 def _control_discovery_dict(discovery: easynet_sdk.ControlDiscovery) -> dict[str, Any]:
@@ -196,4 +187,21 @@ def _control_discovery_error(path: Path, error: easynet_sdk.SDKError) -> Unavail
         f"{path} is not a valid daemon control discovery file ({error.message})"
         " — re-run `easynet start`",
         reason="daemon_not_running_corrupt",
+    )
+
+
+def _runtime_identity_projection_error(
+    path: Path,
+    error: easynet_sdk.SDKError,
+) -> Unavailable:
+    if error.code == easynet_sdk.ErrorCode.DAEMON_OFFLINE:
+        return Unavailable(
+            "no EasyNet identity on this machine — pair it once with "
+            f"`easynet pair` (looked at {path})",
+            reason="not_paired",
+        )
+    return Unavailable(
+        f"{path} is not a valid runtime identity projection ({error.message})"
+        " — re-run `easynet pair`",
+        reason="not_paired_corrupt",
     )

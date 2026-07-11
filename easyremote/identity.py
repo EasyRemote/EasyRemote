@@ -1,8 +1,7 @@
 """Local identity: who this process is on the EasyNet.
 
-Source of truth is the pairing-issued ``~/.easynet/credentials.json``
-(``EasyNet-Cli/src/persistence/config.rs::Credentials``: ``node_id``,
-``realm``, ``hub_endpoint``, optional ``username``).
+Source of truth is the EasyNet-Cli SDK runtime identity projection. EasyRemote
+does not parse daemon credentials directly.
 
 URA policy (ura-discipline): **the EasyNet-Cli SDK owns URA truth**.
 All builders below delegate through ``easyremote._sdk_identity`` so
@@ -16,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import _sdk_identity
-from .config import read_credentials
+from .config import runtime_identity_projection
 from .errors import InternalError, Unavailable
 
 __all__ = [
@@ -117,7 +116,28 @@ class LocalIdentity:
 
     @classmethod
     def load(cls) -> LocalIdentity:
-        return cls.from_credentials(read_credentials())
+        return cls.from_runtime_projection(runtime_identity_projection())
+
+    @classmethod
+    def from_runtime_projection(
+        cls, projection: Any,
+    ) -> LocalIdentity:
+        try:
+            realm = str(projection.realm)
+            node_id = str(projection.device_id)
+        except AttributeError as exc:
+            raise Unavailable(
+                "runtime identity projection is incomplete — re-pair with "
+                "`easynet pair`",
+                reason="credentials_incomplete",
+            ) from exc
+        username = getattr(projection, "username", "")
+        return cls(
+            realm=realm,
+            node_id=node_id,
+            username=str(username) if username else None,
+            hub_endpoint=str(getattr(projection, "hub_endpoint", "")),
+        )
 
     @classmethod
     def from_credentials(cls, credentials: dict[str, Any]) -> LocalIdentity:

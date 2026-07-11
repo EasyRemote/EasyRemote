@@ -1,8 +1,12 @@
 """URA discipline: everything we emit round-trips the canonical parser."""
 
+from pathlib import Path
+
 import pytest
+import easynet_sdk
 
 from easyremote import _sdk_identity
+import easyremote.config as config
 from easyremote.errors import InternalError
 from easyremote.identity import (
     LocalIdentity,
@@ -37,3 +41,33 @@ def test_corrupt_credentials_fail_the_round_trip_loudly():
         _ = broken.device_ura
     assert exc_info.value.reason == "ura_round_trip_failed"
     assert "easynet pair" in str(exc_info.value)
+
+
+def test_local_identity_load_uses_sdk_runtime_projection(monkeypatch):
+    class FakeEnvironment:
+        def runtime_identity_projection(self, credentials_path: object):
+            assert str(credentials_path).endswith("credentials.json")
+            return easynet_sdk.RuntimeIdentityProjection(
+                realm="acme",
+                device_id="dev-a",
+                username="alice",
+                hub_endpoint="hub:443",
+            )
+
+    monkeypatch.setattr(config, "sdk_environment", lambda: FakeEnvironment())
+    monkeypatch.setattr(
+        config,
+        "settings",
+        lambda: config.Settings(
+            credentials_path=Path("/tmp/credentials.json"),
+            control_path=Path("/tmp/control.json"),
+            library_path=None,
+        ),
+    )
+
+    identity = LocalIdentity.load()
+
+    assert identity.realm == "acme"
+    assert identity.node_id == "dev-a"
+    assert identity.username == "alice"
+    assert identity.hub_endpoint == "hub:443"
