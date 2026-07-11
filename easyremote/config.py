@@ -107,11 +107,12 @@ def read_control() -> dict[str, Any]:
             absent — the daemon writes it on startup, so absence means
             there is no daemon to talk to.
     """
-    return _read_json(
-        settings().control_path,
-        reason="daemon_not_running",
-        hint="no easynet-daemon discovery file — start the daemon with `easynet start`",
-    )
+    path = settings().control_path
+    try:
+        discovery = easynet_sdk.read_control_discovery(path)
+    except easynet_sdk.SDKError as exc:
+        raise _control_discovery_error(path, exc) from exc
+    return _control_discovery_dict(discovery)
 
 
 def read_credentials() -> dict[str, Any]:
@@ -146,3 +147,33 @@ def _read_json(path: Path, *, reason: str, hint: str) -> dict[str, Any]:
             reason=f"{reason}_corrupt",
         )
     return data
+
+
+def _control_discovery_dict(discovery: easynet_sdk.ControlDiscovery) -> dict[str, Any]:
+    return {
+        "socket_path": discovery.socket_path,
+        "pipe_name": discovery.pipe_name,
+        "invocation_endpoint": discovery.invocation_endpoint,
+        "pid": discovery.pid,
+        "daemon_version": discovery.daemon_version,
+        "supported_ipc_versions": {
+            "min": discovery.supported_ipc_versions.min,
+            "max": discovery.supported_ipc_versions.max,
+        },
+        "capability_flags": list(discovery.capability_flags),
+        "pages_port": discovery.pages_port,
+    }
+
+
+def _control_discovery_error(path: Path, error: easynet_sdk.SDKError) -> Unavailable:
+    if error.code == easynet_sdk.ErrorCode.DAEMON_OFFLINE:
+        return Unavailable(
+            f"no easynet-daemon discovery file — start the daemon with `easynet start`"
+            f" (looked at {path})",
+            reason="daemon_not_running",
+        )
+    return Unavailable(
+        f"{path} is not a valid daemon control discovery file ({error.message})"
+        " — re-run `easynet start`",
+        reason="daemon_not_running_corrupt",
+    )

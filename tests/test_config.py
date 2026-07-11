@@ -68,6 +68,36 @@ def test_corrupt_json_is_reported(tmp_path):
 
 def test_valid_json_round_trips(tmp_path):
     path = tmp_path / "control.json"
-    path.write_text(json.dumps({"socket_path": "/tmp/daemon.sock"}))
+    path.write_text(
+        json.dumps(
+            {
+                "socket_path": "/tmp/control.sock",
+                "invocation_endpoint": "unix:///tmp/daemon.sock",
+                "pid": 123,
+                "daemon_version": "0.65.0",
+                "supported_ipc_versions": {"min": 1, "max": 1},
+                "capability_flags": ["runtime.invocation"],
+                "pages_port": 8080,
+            }
+        )
+    )
     config.configure(control=path)
-    assert config.read_control() == {"socket_path": "/tmp/daemon.sock"}
+    assert config.read_control() == {
+        "socket_path": "/tmp/control.sock",
+        "pipe_name": "",
+        "invocation_endpoint": "unix:///tmp/daemon.sock",
+        "pid": 123,
+        "daemon_version": "0.65.0",
+        "supported_ipc_versions": {"min": 1, "max": 1},
+        "capability_flags": ["runtime.invocation"],
+        "pages_port": 8080,
+    }
+
+
+def test_semantically_invalid_control_json_is_reported(tmp_path):
+    path = tmp_path / "control.json"
+    path.write_text(json.dumps({"socket_path": "/tmp/control.sock"}))
+    config.configure(control=path)
+    with pytest.raises(Unavailable) as exc_info:
+        config.read_control()
+    assert exc_info.value.reason == "daemon_not_running_corrupt"
