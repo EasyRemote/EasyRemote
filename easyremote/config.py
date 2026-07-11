@@ -34,7 +34,7 @@ def agents_root() -> Path:
     Mirrors EasyNet-Cli ``config::agents_root()`` (new convention);
     the legacy ``workspaces/`` location is deliberately not supported.
     """
-    return _EASYNET_DIR / "agents"
+    return settings().control_path.parent / "agents"
 
 
 _ENV_CREDENTIALS = "EASYNET_CREDENTIALS"

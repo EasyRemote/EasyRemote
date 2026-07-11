@@ -38,6 +38,7 @@ def test_configure_merges_partially(tmp_path):
     s = config.settings()
     assert s.control_path == tmp_path / "c.json"  # survived the second call
     assert s.credentials_path == tmp_path / "creds.json"
+    assert config.agents_root() == tmp_path / "agents"
 
 
 def test_missing_control_tells_user_to_start_daemon(tmp_path):
