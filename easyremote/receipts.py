@@ -87,6 +87,18 @@ class Receipt:
             invocation_id=self.invocation_id,
         )
 
+    def reference(self) -> easynet_sdk.ReceiptReference:
+        """Project this summary to an SDK-validated scalar causal reference."""
+
+        try:
+            return easynet_sdk.ReceiptReference.from_runtime_receipt(self.raw)
+        except easynet_sdk.SDKError as exc:
+            raise Unavailable(
+                "receipt summary does not include a daemon/Axon causal anchor",
+                reason="parent_receipt_anchor_unavailable",
+                invocation_id=self.invocation_id,
+            ) from exc
+
 
 class ReceiptChain(Sequence[Receipt]):
     """Ordered product receipt summaries with explicit hash-link validation."""

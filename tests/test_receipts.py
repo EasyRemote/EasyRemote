@@ -35,6 +35,22 @@ def test_from_wire_parses_all_fields():
     assert receipt.raw["self_hash_hex"] == "aa" * 32  # nothing lost
 
 
+def test_reference_uses_sdk_receipt_anchor_projection():
+    receipt = Receipt.from_wire(
+        wire_receipt(
+            receipt_ura="easynet:///r/example/resource/agent.easyremote.test/invocation/r-1/receipt"
+        )
+    )
+
+    reference = receipt.reference()
+
+    assert reference.receipt_ura == (
+        "easynet:///r/example/resource/agent.easyremote.test/invocation/r-1/receipt"
+    )
+    assert reference.receipt_hash == b"\xaa" * 32
+    assert reference.causal_context()["receipt_hash_hex"] == "aa" * 32
+
+
 def test_from_wire_accepts_current_string_receipt_type_and_state():
     receipt = Receipt.from_wire(wire_receipt(receipt_type="admitted", state="admitted"))
     assert receipt.receipt_type == "admitted"

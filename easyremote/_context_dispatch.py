@@ -66,11 +66,15 @@ class SDKContextChildDispatcher:
 
 
 def _causal_ref_from_parent_receipt(receipt: Receipt) -> CausalRef:
-    receipt_ura = receipt.raw.get("receipt_ura")
-    if not isinstance(receipt_ura, str) or not receipt_ura:
+    try:
+        reference = receipt.reference()
+    except Unavailable:
         raise Unavailable(
             "Context child dispatch requires a parent receipt_ura and"
             " receipt hash returned by the daemon",
             reason="parent_receipt_anchor_unavailable",
         )
-    return CausalRef(receipt_hash=receipt.self_hash, receipt_ura=receipt_ura)
+    return CausalRef(
+        receipt_hash=reference.receipt_hash,
+        receipt_ura=reference.receipt_ura,
+    )
