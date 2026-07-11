@@ -384,11 +384,9 @@ def test_rolling_hash_matches_daemon_golden_vector():
     # reject otherwise-valid streams as STREAM_TRUNCATED. Verified
     # byte-identical against a standalone Rust replica using the same
     # sha2 / serde_json versions.
-    import easynet_sdk
+    from easyremote._host.protocol import FrameWriter
 
-    writer = easynet_sdk.HostBindingClient(
-        easynet_sdk.LocalHostBindingTransport()
-    ).open_frame_writer()
+    writer = FrameWriter()
     for frame in ["a:hi", "b:hi", "c:hi"]:
         writer.write_item(frame)
     assert (

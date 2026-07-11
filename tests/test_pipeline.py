@@ -1,11 +1,11 @@
 """Pipeline: EAL compilation (grammar-pinned), validation, mission calls."""
 
-import easynet_sdk
 import pytest
 from test_client import IDENTITY, FakeTransport, ok_response  # shared fakes
 
 from easyremote.client import Client
-from easyremote.errors import InvalidArgument
+from easyremote.errors import InternalError, InvalidArgument
+from easyremote.mission import MissionStatus
 from easyremote.pipeline import MissionRun, Pipeline, StepOutput
 
 
@@ -103,7 +103,7 @@ def test_step_output_render():
     assert StepOutput("fetch").render() == "fetch.output"
 
 
-def test_child_invocation_intents_are_sdk_owned():
+def test_child_invocation_intents_are_easyremote_owned():
     pipe = Pipeline("p")
     first = pipe.step("observe.health")
     pipe.step("notify.user", msg=first.output, on_failure="continue", optional=True)
@@ -120,7 +120,7 @@ def test_child_invocation_intents_are_sdk_owned():
 def test_pipeline_validates_daemon_child_invocation_facts():
     pipe = Pipeline("p")
     pipe.step("observe.health")
-    status = easynet_sdk.MissionStatus.from_json(
+    status = MissionStatus.from_json(
         b"""{
           "profile": "mission",
           "kind": "mission_status",
@@ -160,6 +160,35 @@ def test_pipeline_validates_daemon_child_invocation_facts():
 
     assert conformance.passed is True
     assert conformance.receipt_backed_steps == ("health",)
+
+
+def test_mission_status_rejects_duplicate_child_step_facts():
+    child = {
+        "step_id": "health",
+        "request_id": "req-1",
+        "trace_id": "run-1",
+        "ability": "observe.health",
+        "invocation_ura": "easynet:///r/acme/invocation/req-1",
+        "caller_ura": "easynet:///r/acme/device/dev-a",
+        "callee_ura": "easynet:///r/acme/device/dev-a",
+        "subject_ura": "easynet:///r/acme/device/dev-a",
+        "metadata_state": "running",
+        "ledger_state": "running",
+        "receipt": None,
+    }
+
+    with pytest.raises(InternalError) as exc_info:
+        MissionStatus.from_json(
+            {
+                "profile": "mission",
+                "kind": "mission_status",
+                "mission_id": "run-1",
+                "state": "running",
+                "terminal": False,
+                "child_invocations": [child, dict(child, request_id="req-2")],
+            }
+        )
+    assert exc_info.value.reason == "invalid_mission_status"
 
 
 def test_created_by_header_uses_identity():

@@ -150,11 +150,27 @@ wheels = [
 ]
 
 [[package]]
+name = "easynet-run-axon"
+version = "0.129.23"
+source = { editable = "../EasyNet-Axon/sdk/python" }
+dependencies = [
+    { name = "cryptography" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "cryptography", specifier = ">=41" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "easynet-sdk"
 version = "0.91.30"
 source = { editable = "../EasyNet-Cli/sdk/python" }
 dependencies = [
     { name = "cryptography" },
+    { name = "easynet-run-axon" },
     { name = "grpcio" },
     { name = "protobuf" },
 ]
@@ -162,6 +178,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography", specifier = ">=41" },
+    { name = "easynet-run-axon", editable = "../EasyNet-Axon/sdk/python" },
     { name = "grpcio", specifier = ">=1.60" },
     { name = "protobuf", specifier = ">=4.25" },
 ]
@@ -170,6 +187,7 @@ requires-dist = [
 name = "easyremote"
 source = { editable = "." }
 dependencies = [
+    { name = "easynet-run-axon" },
     { name = "easynet-sdk" },
 ]
 
@@ -192,6 +210,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography", marker = "extra == 'gateway'", specifier = ">=42" },
+    { name = "easynet-run-axon", editable = "../EasyNet-Axon/sdk/python" },
     { name = "easynet-sdk", editable = "../EasyNet-Cli/sdk/python" },
     { name = "pydantic", marker = "extra == 'pydantic'", specifier = ">=2.0" },
 ]

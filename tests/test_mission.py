@@ -1,10 +1,11 @@
 """Mission facade: direct EAL run/track/cancel over daemon Invocation."""
 
+import easynet_sdk
 import pytest
 from test_client import IDENTITY, FakeTransport, ok_response
 
 from easyremote.client import Client
-from easyremote.errors import InvalidArgument
+from easyremote.errors import InternalError, InvalidArgument, Unavailable
 from easyremote.mission import MissionControl
 
 
@@ -65,6 +66,10 @@ def test_track_and_cancel_validate_run_id_and_use_unary():
     with pytest.raises(InvalidArgument) as exc_info:
         control.track(" ")
     assert exc_info.value.reason == "empty_run_id"
+
+    with pytest.raises(InvalidArgument) as exc_info:
+        control.track("/tmp/run-9")
+    assert exc_info.value.reason == "invalid_run_id"
 
 
 def test_events_fetches_mission_event_page():
@@ -127,3 +132,97 @@ def test_invalid_eal_inputs_are_rejected():
     with pytest.raises(InvalidArgument) as exc_info:
         control.run_file("/definitely/missing.eal")
     assert exc_info.value.reason == "eal_file_unreadable"
+
+
+def test_execution_adapter_preserves_generic_sdk_error_taxonomy():
+    class OfflineClient:
+        def invoke(self, *_args, **_kwargs):
+            raise easynet_sdk.SDKError(
+                code=easynet_sdk.ErrorCode.DAEMON_OFFLINE,
+                stage="transport",
+                retry=easynet_sdk.RetryHint.SAFE,
+                retryable=True,
+                message="daemon is offline",
+            )
+
+    with pytest.raises(Unavailable) as exc_info:
+        MissionControl(OfflineClient()).track("run-1")
+
+    assert exc_info.value.reason == "daemon_down"
+
+
+def test_event_tailer_fails_closed_on_dropped_events():
+    client, _ = make_client(
+        responses=[
+            ok_response(
+                {
+                    "cursor_sequence": 3,
+                    "next_cursor_sequence": 4,
+                    "has_more": False,
+                    "dropped_count": 1,
+                    "events": [],
+                }
+            )
+        ]
+    )
+
+    with pytest.raises(Unavailable) as exc_info:
+        list(MissionControl(client).tail_events("run-1", cursor_sequence=3))
+
+    assert exc_info.value.reason == "mission_events_dropped"
+
+
+def test_event_tailer_rejects_has_more_without_cursor_progress():
+    client, _ = make_client(
+        responses=[
+            ok_response(
+                {
+                    "cursor_sequence": 3,
+                    "next_cursor_sequence": 3,
+                    "has_more": True,
+                    "dropped_count": 0,
+                    "events": [],
+                }
+            )
+        ]
+    )
+
+    with pytest.raises(InternalError) as exc_info:
+        list(MissionControl(client).tail_events("run-1", cursor_sequence=3))
+
+    assert exc_info.value.reason == "mission_event_cursor_stalled"
+
+
+def test_event_tailer_rejects_nonempty_page_without_cursor_progress():
+    client, _ = make_client(
+        responses=[
+            ok_response(
+                {
+                    "cursor_sequence": 3,
+                    "next_cursor_sequence": 3,
+                    "has_more": True,
+                    "dropped_count": 0,
+                    "events": [{"sequence": 3, "terminal": False}],
+                }
+            )
+        ]
+    )
+
+    with pytest.raises(InternalError) as exc_info:
+        next(MissionControl(client).tail_events("run-1", cursor_sequence=3))
+
+    assert exc_info.value.reason == "mission_event_cursor_stalled"
+
+
+def test_event_controls_enforce_bounds_before_invocation():
+    client, transport = make_client()
+    control = MissionControl(client)
+
+    with pytest.raises(InvalidArgument) as exc_info:
+        control.events("run-1", limit=1001)
+    assert exc_info.value.reason == "invalid_limit"
+
+    with pytest.raises(InvalidArgument) as exc_info:
+        control.tail_events("run-1", poll_interval_seconds=float("nan"))
+    assert exc_info.value.reason == "invalid_poll_interval_seconds"
+    assert transport.invocations == []

@@ -23,16 +23,18 @@ from __future__ import annotations
 
 import socket
 import threading
+import base64
+import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Literal
 
-import easynet_sdk
-
 from .config import settings
 from .daemon import DaemonHandle, DaemonStartConfig
-from .errors import InvalidArgument, Unavailable, error_from_sdk
+from .errors import InvalidArgument, Unavailable
 
 __all__ = ["Gateway", "Server", "TLSConfig"]
 
@@ -66,10 +68,7 @@ class Server:
         realm: str = "localhost",
         tls: TLSConfig | Literal["self-signed", "acme"] = "self-signed",
         home: Path | None = None,
-        daemon_starter: Callable[
-            [DaemonStartConfig], easynet_sdk.GatewayDaemonHandle
-        ]
-        | None = None,
+        daemon_starter: Callable[[DaemonStartConfig], DaemonHandle] | None = None,
     ) -> None:
         # DaemonMode::Both exists daemon-side, but the FFI start config
         # only accepts "device" | "hub" (ffi/daemon.rs:52) — so this
@@ -95,11 +94,11 @@ class Server:
         # get the same process-wide state root here.
         self._home = home or settings().control_path.parent
         self._daemon_starter = daemon_starter or DaemonHandle.start
-        self._daemon: easynet_sdk.GatewayDaemonHandle | None = None
-        self._gateway = easynet_sdk.GatewayLifecycleFacade(
+        self._daemon: DaemonHandle | None = None
+        self._gateway = _GatewayLifecycle(
             lambda realm: self._daemon_starter(DaemonStartConfig.hub(realm))
         )
-        self._runtime: easynet_sdk.GatewayRuntime | None = None
+        self._runtime: _GatewayRuntime | None = None
         self._tls_config: TLSConfig | None = None
         self._stop_event = threading.Event()
 
@@ -118,8 +117,6 @@ class Server:
     def stop(self) -> None:
         try:
             self._gateway.stop()
-        except easynet_sdk.SDKError as exc:
-            raise error_from_sdk(exc) from exc
         finally:
             self._runtime = None
             self._daemon = None
@@ -151,10 +148,7 @@ class Server:
         if runtime is not None:
             return runtime.fingerprint
         tls = self._tls_config or self._resolve_tls()
-        try:
-            return easynet_sdk.certificate_fingerprint(str(tls.cert_pem))
-        except easynet_sdk.SDKError as exc:
-            raise error_from_sdk(exc) from exc
+        return _certificate_fingerprint(tls.cert_pem)
 
     @property
     def pairing_guidance(self) -> str:
@@ -185,19 +179,16 @@ class Server:
     def _start_once(self) -> None:
         self._stop_event.clear()
         tls = self._resolve_tls()
-        try:
-            runtime = self._gateway.start(
-                easynet_sdk.GatewayConfig(
-                    port=self._port,
-                    realm=self._realm,
-                    home_dir=str(self._home),
-                    tls_cert_path=str(tls.cert_pem),
-                    tls_key_path=str(tls.key_pem),
-                    hostname=socket.gethostname(),
-                )
+        runtime = self._gateway.start(
+            _GatewayConfig(
+                port=self._port,
+                realm=self._realm,
+                home_dir=self._home,
+                tls_cert_path=tls.cert_pem,
+                tls_key_path=tls.key_pem,
+                hostname=socket.gethostname(),
             )
-        except easynet_sdk.SDKError as exc:
-            raise error_from_sdk(exc) from exc
+        )
         self._tls_config = tls
         self._runtime = runtime
         self._daemon = runtime.daemon
@@ -261,3 +252,113 @@ def _generate_self_signed(cert_path: Path, key_path: Path) -> None:
 
 # SPEC §5.3 alias — same object, the architectural term.
 Gateway = Server
+
+
+class _GatewayState(Enum):
+    IDLE = "idle"
+    RUNNING = "running"
+
+
+@dataclass(frozen=True)
+class _GatewayConfig:
+    port: int
+    realm: str
+    home_dir: Path
+    tls_cert_path: Path
+    tls_key_path: Path
+    hostname: str
+
+    def validate(self) -> "_GatewayConfig":
+        if not 1 <= self.port <= 65535:
+            raise InvalidArgument(
+                "gateway port must be between 1 and 65535",
+                reason="invalid_gateway_port",
+            )
+        TLSConfig(self.tls_cert_path, self.tls_key_path).validate()
+        return self
+
+    @property
+    def config_path(self) -> Path:
+        return self.home_dir / "daemon-config.toml"
+
+    @property
+    def endpoint(self) -> str:
+        return f"{self.hostname or 'localhost'}:{self.port}"
+
+
+@dataclass(frozen=True)
+class _GatewayRuntime:
+    endpoint: str
+    fingerprint: str
+    config_path: Path
+    daemon: DaemonHandle
+
+
+class _GatewayLifecycle:
+    """Product-owned hub provisioning around the generic daemon lifecycle."""
+
+    def __init__(self, daemon_starter: Callable[[str], DaemonHandle]) -> None:
+        self._daemon_starter = daemon_starter
+        self._state = _GatewayState.IDLE
+        self._runtime: _GatewayRuntime | None = None
+        self._lock = threading.Lock()
+
+    def start(self, config: _GatewayConfig) -> _GatewayRuntime:
+        normalized = config.validate()
+        with self._lock:
+            if self._state is _GatewayState.RUNNING:
+                assert self._runtime is not None
+                return self._runtime
+            _ensure_hub_config(normalized)
+            daemon = self._daemon_starter(normalized.realm.strip() or "localhost")
+            runtime = _GatewayRuntime(
+                endpoint=normalized.endpoint,
+                fingerprint=_certificate_fingerprint(normalized.tls_cert_path),
+                config_path=normalized.config_path,
+                daemon=daemon,
+            )
+            self._runtime = runtime
+            self._state = _GatewayState.RUNNING
+            return runtime
+
+    def stop(self) -> None:
+        with self._lock:
+            runtime = self._runtime
+            self._runtime = None
+            self._state = _GatewayState.IDLE
+        if runtime is not None:
+            runtime.daemon.stop()
+
+
+def _ensure_hub_config(config: _GatewayConfig) -> None:
+    path = config.config_path
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "# Auto-generated by EasyRemote. Operator-authored files are preserved.\n"
+        "[daemon]\n"
+        'mode = "hub"\n'
+        f"realm = {json.dumps(config.realm.strip() or 'localhost')}\n"
+        f"listen_tcp = {json.dumps(f'0.0.0.0:{config.port}')}\n"
+        f"tls_cert_pem = {json.dumps(str(config.tls_cert_path))}\n"
+        f"tls_key_pem = {json.dumps(str(config.tls_key_path))}\n",
+        encoding="utf-8",
+    )
+
+
+def _certificate_fingerprint(cert_path: Path) -> str:
+    try:
+        lines = [
+            line
+            for line in cert_path.read_text(encoding="ascii").splitlines()
+            if line and not line.startswith("-----")
+        ]
+        der = base64.b64decode("".join(lines), validate=True)
+    except Exception as exc:
+        raise InvalidArgument(
+            "TLS certificate must be PEM encoded",
+            reason="invalid_tls_certificate",
+        ) from exc
+    digest = hashlib.sha256(der).hexdigest().upper()
+    return ":".join(digest[index : index + 2] for index in range(0, len(digest), 2))

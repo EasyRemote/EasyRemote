@@ -56,9 +56,13 @@ def resource_ura(realm: str, owner_id: str, path: str) -> str:
             "resource path must not be empty",
             reason="empty_resource_path",
         )
-    return _validated_build(
-        lambda: _sdk_identity.resource_ura(realm, owner_id, clean_path)
-    )
+    if not owner_id.startswith("device."):
+        raise InternalError(
+            f"unsupported resource owner id {owner_id!r}",
+            reason="invalid_resource_owner",
+        )
+    owner = device_ura(realm, owner_id.removeprefix("device."))
+    return _validated_build(lambda: _sdk_identity.resource_ura(owner, clean_path))
 
 
 def device_ability_ura(

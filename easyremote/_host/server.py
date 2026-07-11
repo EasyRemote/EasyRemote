@@ -26,8 +26,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import easynet_sdk
-
 from .. import _codec
 from .._context_dispatch import dispatcher_from_parent_receipt
 from .._json import dumps_wire
@@ -35,6 +33,7 @@ from ..context import Context, ContextChildDispatcher
 from ..errors import InternalError, InvalidArgument, RemoteError
 from ..receipts import Receipt
 from ..schema import PARAMETER_ORDER_KEY, VAR_POSITIONAL_KEY, DerivedSignature
+from .protocol import HostFrame, HostRequest, HostSession
 
 __all__ = ["HostServer", "HostedFunction"]
 
@@ -202,9 +201,6 @@ class HostServer:
         self._context_dispatcher_factory = (
             context_dispatcher_factory or dispatcher_from_parent_receipt
         )
-        self._host_binding = easynet_sdk.HostBindingClient(
-            easynet_sdk.LocalHostBindingTransport()
-        )
 
     @property
     def socket_path(self) -> Path:
@@ -284,25 +280,23 @@ class HostServer:
             if not line:
                 return
             try:
-                session = self._host_binding.open_session(
-                    easynet_sdk.HostStreamEnvelope.from_json(line)
-                )
-            except easynet_sdk.SDKError as exc:
+                session = HostSession.from_envelope(line)
+            except InvalidArgument as exc:
                 self._send_error(
                     connection,
                     InvalidArgument.KIND,
                     "bad_request",
-                    exc.message,
+                    str(exc),
                 )
                 return
             self._serve_stream(connection, session)
 
     def _send_frame(
-        self, connection: socket.socket, frame: easynet_sdk.HostStreamFrame
+        self, connection: socket.socket, frame: HostFrame
     ) -> None:
         connection.sendall(
             (
-                dumps_wire(frame.to_host_wire_dict(), what="host_stream frame")
+                dumps_wire(frame.wire, what="host_stream frame")
                 + "\n"
             ).encode("utf-8")
         )
@@ -312,11 +306,11 @@ class HostServer:
     ) -> None:
         self._send_frame(
             connection,
-            self._host_binding.encode_error(_host_error(kind, reason, message)),
+            HostFrame({"error": {"kind": kind, "reason": reason, "message": message}}),
         )
 
     def _serve_stream(
-        self, connection: socket.socket, session: easynet_sdk.HostStreamSession
+        self, connection: socket.socket, session: HostSession
     ) -> None:
         """Stream a generator ability's frames per the host_stream wire.
 
@@ -366,15 +360,6 @@ class HostServer:
             )
             for frame in frames:
                 self._send_frame(connection, session.emit(frame))
-        except easynet_sdk.SDKError as exc:
-            details = dict(exc.details)
-            self._send_error(
-                connection,
-                str(details.get("kind") or InternalError.KIND),
-                str(details.get("reason") or exc.stage),
-                exc.message,
-            )
-            return
         except RemoteError as exc:
             self._send_error(connection, exc.kind, exc.reason, str(exc))
             return
@@ -392,7 +377,7 @@ class HostServer:
         self._send_frame(connection, session.finish())
 
     def _context_for_request(
-        self, request: easynet_sdk.HostStreamRequest
+        self, request: HostRequest
     ) -> Context:
         parent = (
             Receipt.from_wire(dict(request.parent_receipt))
@@ -404,30 +389,6 @@ class HostServer:
             caller=request.caller,
             _child_dispatcher=self._context_dispatcher_factory(parent),
         )
-
-
-def _host_error(kind: str, reason: str, message: str) -> easynet_sdk.SDKError:
-    """A single terminal `error` frame for the host_stream wire.
-
-    Mutually exclusive with `terminal` and sent at most once — the
-    daemon's host_stream executor maps this to an in-band terminal error
-    (`STREAM_TRUNCATED` / `function_raised` / `not_found` …), never a
-    clean end-of-stream.
-    """
-    code = (
-        easynet_sdk.ErrorCode.INVALID_ARGUMENT
-        if kind == InvalidArgument.KIND
-        else easynet_sdk.ErrorCode.GENERIC
-    )
-    return easynet_sdk.SDKError(
-        code=code,
-        stage="easyremote_host",
-        retry=easynet_sdk.RetryHint.NEVER,
-        retryable=False,
-        message=message,
-        details={"kind": kind, "reason": reason},
-    )
-
 
 def _drain_async_gen(gen: Any) -> Iterator[Any]:
     """Drain an async generator on a private event loop, yielding each

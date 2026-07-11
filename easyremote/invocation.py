@@ -385,6 +385,9 @@ class _EasyRemoteSdkAddressingTransport:
             raise _sdk_identity_error(exc) from exc
         return _identity_projection_json(projection)
 
+    def close(self) -> None:
+        pass
+
 
 def _json_request(raw: bytes) -> Mapping[str, Any]:
     try:

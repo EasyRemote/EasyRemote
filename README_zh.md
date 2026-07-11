@@ -172,6 +172,10 @@ hub.call("route", target="gpu-2")           # 临时调用，无需 stub
 | 运行已有 EAL | `Client().missions.run_eal(source, label="nightly")` 或 `Client().missions.run_file("nightly.eal")` |
 | 管理 daemon 目录 | `Client().abilities.list(scope="realm")`、`Client().agents.add(...)` |
 
+Mission plan、step/output 引用、子调用事实校验、结果投影与有界事件
+tailer 属于 EasyRemote 产品语义；执行统一通过通用 `Client.invoke`。
+easynet-sdk 只提供通用 Invocation、寻址、传输和类型化运行时错误。
+
 ---
 
 ## 适用场景
@@ -198,7 +202,7 @@ v2 是基于 EasyNet 栈（[EasyNet-Axon](https://github.com/EasyRemote/EasyNet-
 | agent 生命周期控制面 | ✅ `Client().agents` 与 `easyremote agent add/list/refresh` |
 | live daemon 调用闭环 | 🧪 仅集成/手工路径；CI 在没有 `EASYNET_CLI_LIB` + 运行中 daemon 时跳过 |
 | 三层客户端 / `@remote` stub / async 镜像 | ✅ |
-| Pipeline → EAL → mission.run | ✅ `Pipeline.run()` 编译 EAL 后委托 `MissionControl.run_eal()` |
+| Pipeline → EAL → mission.run | ✅ EasyRemote 自有 plan/projection/event-tail 语义，`Pipeline.run()` 通过通用 `Client.invoke` 发起调用 |
 | 直接 Mission/EAL 运行 facade | ✅ `Client().missions.run_eal/run_file/track/cancel` 与 `easyremote mission run/track/cancel` |
 | Server（hub + 自签 TLS 引导） | ✅ |
 | `easyremote hub` | ✅ 通过 Gateway facade 以 hub 模式启动本机 daemon |

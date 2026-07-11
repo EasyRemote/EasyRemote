@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-import easynet_sdk
-
 from .client import Client, Stream
-from .errors import Unavailable, error_from_sdk
+from .errors import Unavailable
 from .invocation import CausalRef, Invocation
 from .receipts import Receipt
 
@@ -69,28 +66,11 @@ class SDKContextChildDispatcher:
 
 
 def _causal_ref_from_parent_receipt(receipt: Receipt) -> CausalRef:
-    try:
-        projected = easynet_sdk.ReceiptClient(
-            easynet_sdk.LocalReceiptTransport()
-        ).causal_ref(
-            json.dumps(
-                receipt.raw, separators=(",", ":"), sort_keys=True
-            ).encode("utf-8")
-        )
-    except easynet_sdk.SDKError as exc:
-        error = error_from_sdk(exc)
+    receipt_ura = receipt.raw.get("receipt_ura")
+    if not isinstance(receipt_ura, str) or not receipt_ura:
         raise Unavailable(
             "Context child dispatch requires a parent receipt_ura and"
             " receipt hash returned by the daemon",
             reason="parent_receipt_anchor_unavailable",
-        ) from error
-    try:
-        return CausalRef(
-            receipt_hash=bytes.fromhex(projected.receipt_hash_hex),
-            receipt_ura=projected.receipt_ura,
         )
-    except ValueError as exc:
-        raise Unavailable(
-            "Context child dispatch received a malformed parent receipt hash",
-            reason="parent_receipt_anchor_unavailable",
-        ) from exc
+    return CausalRef(receipt_hash=receipt.self_hash, receipt_ura=receipt_ura)

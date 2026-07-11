@@ -183,6 +183,11 @@ configured. See [`examples/06_owner_handles.py`](examples/06_owner_handles.py).
 | Run existing EAL source | `Client().missions.run_eal(source, label="nightly")` or `Client().missions.run_file("nightly.eal")` |
 | Control daemon catalogues | `Client().abilities.list(scope="realm")`, `Client().agents.add(...)` |
 
+Mission plans, step/output references, child-fact conformance, result
+projection, and bounded event tailing are EasyRemote product semantics. They
+dispatch through generic `Client.invoke`; easynet-sdk remains responsible for
+generic Invocation, addressing, transport, and typed runtime errors.
+
 ---
 
 ## Where it fits
@@ -209,7 +214,7 @@ v2 is a clean reimplementation on the EasyNet stack ([EasyNet-Axon](https://gith
 | Agent lifecycle control facade | ✅ `Client().agents` plus `easyremote agent add/list/refresh` |
 | invoke closed loop against a live daemon | 🧪 integration/manual path only; CI skips without `EASYNET_CLI_LIB` + a running daemon |
 | Three-layer client / `@remote` stubs / async mirror | ✅ |
-| Pipeline → EAL → mission.run | ✅ `Pipeline.run()` compiles EAL and delegates to `MissionControl.run_eal()` |
+| Pipeline → EAL → mission.run | ✅ EasyRemote owns plan/projection/event-tail semantics; `Pipeline.run()` dispatches via generic `Client.invoke` |
 | Direct Mission/EAL run facade | ✅ `Client().missions.run_eal/run_file/track/cancel` plus `easyremote mission run/track/cancel` |
 | Server (hub + self-signed TLS bootstrap) | ✅ |
 | `easyremote hub` | ✅ starts the local daemon in hub mode via the Gateway facade |

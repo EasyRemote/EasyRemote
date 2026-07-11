@@ -575,6 +575,11 @@ print(pipe.to_eal())             # 可检视 EAL 源，含强制 provenance 头
 `{ok, run_id, run_dir, outputs, meta}`）；每 step 是子 invocation，回执链
 完整。**facade 不自建编排运行时**。
 
+产品归属：Mission plan/step/output、status/child-fact conformance、run
+projection、event tailer 和 execution adapter 都由 EasyRemote 持有；它们只
+通过通用 `Client.invoke` 调用 daemon。easynet-sdk 不提供 Mission 产品
+facade、system-ability enum 或 profile bridge。
+
 已有 EAL 源直接运行，不需要构造 `Pipeline`：
 
 ```python

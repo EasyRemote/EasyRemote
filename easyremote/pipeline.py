@@ -1,69 +1,134 @@
-"""Pipeline → EAL → ``mission.run`` (SPEC §5.9; grammar-verified).
-
-EAL's dependency edges are **dataflow only**: a later step references
-an earlier one as ``alias.output``, and the daemon's planner derives
-the phase DAG from those references (eal-grammar.md — there is no
-standalone "after" syntax, which is why this API has no ``after=``
-parameter: ordering *is* data).
-
-Grammar limits honored at build time, not at run time:
-
-- field values are scalars (string/int/float/bool) or step refs —
-  nested objects/lists are rejected with guidance;
-- failure policies are ``abort | skip | retry | continue``.
-
-The facade compiles; the daemon executes (``mission.run`` →
-``{ok, run_id, run_dir, outputs, meta}``, ``mission.track`` /
-``mission.cancel`` take ``{run_id}``). No second orchestration
-runtime lives here.
-
-Provenance: the generated source carries a ``created_by`` comment
-header when the client identity is available; the *structured*
-provenance contract for EAL artifacts is a flagged P0 item.
-"""
+"""EasyRemote Pipeline: an acyclic product plan compiled to daemon EAL."""
 
 from __future__ import annotations
 
+import json
+import math
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TypeAlias
-
-import easynet_sdk
+from typing import TYPE_CHECKING, Any
 
 from ._version import __version__
-from .errors import InvalidArgument
-from .mission import MissionControl, MissionRun
+from .errors import InternalError, InvalidArgument
+from .mission import MissionChildInvocation, MissionControl, MissionRun, MissionStatus
 from .node import RegisteredFunction
 
 if TYPE_CHECKING:
     from .client import Client
 
-__all__ = ["MissionRun", "Pipeline", "Step", "StepOutput"]
+__all__ = [
+    "MissionChildInvocationConformance",
+    "MissionChildInvocationIntent",
+    "MissionRun",
+    "Pipeline",
+    "Step",
+    "StepOutput",
+]
 
-StepOutput: TypeAlias = easynet_sdk.MissionPlanStepOutput
-Step: TypeAlias = easynet_sdk.MissionPlanStep
+_FAILURE_POLICIES = frozenset({"abort", "skip", "retry", "continue"})
+_IDENTIFIER = re.compile(r"[^A-Za-z0-9_]")
+
+
+@dataclass(frozen=True)
+class StepOutput:
+    """A dataflow reference to one earlier step result."""
+
+    alias: str
+
+    def render(self) -> str:
+        return f"{self.alias}.output"
+
+
+@dataclass(frozen=True)
+class Step:
+    alias: str
+    ref: str
+    args: Mapping[str, object]
+    on: str | None = None
+    timeout: int | None = None
+    retries: int | None = None
+    on_failure: str | None = None
+    optional: bool = False
+
+    @property
+    def output(self) -> StepOutput:
+        return StepOutput(self.alias)
+
+    def render(self) -> str:
+        parts = [f"let {self.alias} = call {_eal_string(self.ref)}"]
+        if self.on:
+            parts.append(f"on {_eal_string(self.on)}")
+        if self.args:
+            fields = ", ".join(
+                f"{name} = {_eal_value(value)}" for name, value in self.args.items()
+            )
+            parts.append(f"with {{ {fields} }}")
+        if self.timeout is not None:
+            parts.append(f"timeout {self.timeout}")
+        if self.retries is not None:
+            parts.append(f"retries {self.retries}")
+        if self.on_failure is not None:
+            parts.append(f"on_failure {self.on_failure}")
+        if self.optional:
+            parts.append("optional")
+        return " ".join(parts)
+
+
+@dataclass(frozen=True)
+class MissionChildInvocationIntent:
+    step_id: str
+    ability: str
+    on: str | None
+    optional: bool
+    on_failure: str | None
+
+
+@dataclass(frozen=True)
+class MissionChildInvocationConformance:
+    mission_id: str
+    expected_steps: tuple[str, ...]
+    observed_steps: tuple[str, ...]
+    missing_steps: tuple[str, ...]
+    unexpected_steps: tuple[str, ...]
+    ability_mismatched_steps: tuple[str, ...]
+    incomplete_fact_steps: tuple[str, ...]
+    receipt_backed_steps: tuple[str, ...]
+
+    @property
+    def passed(self) -> bool:
+        return not any(
+            (
+                self.missing_steps,
+                self.unexpected_steps,
+                self.ability_mismatched_steps,
+                self.incomplete_fact_steps,
+            )
+        )
+
+    def require_passed(self) -> None:
+        if not self.passed:
+            raise InternalError(
+                "Mission child Invocation facts do not match the Pipeline",
+                reason="mission_child_invocation_mismatch",
+            )
 
 
 @dataclass
 class Pipeline:
-    """A mission under construction.
-
-    Cycles are impossible by construction: a step can only reference
-    the outputs of steps that already exist.
-    """
+    """Append-only plan; earlier-step outputs are its only dependency edges."""
 
     name: str
     client: Client | None = None
-    _plan: easynet_sdk.MissionPlan = field(init=False, repr=False)
+    _steps: list[Step] = field(init=False, repr=False, default_factory=list)
+    _aliases: set[str] = field(init=False, repr=False, default_factory=set)
 
     def __post_init__(self) -> None:
-        try:
-            self._plan = easynet_sdk.MissionPlan(
-                self.name,
-                created_by=self._created_by(),
-                version=__version__,
-            )
-        except easynet_sdk.SDKError as exc:
-            raise _pipeline_error(exc) from exc
+        self.name = _text(self.name, "pipeline name", "empty_name")
+
+    @property
+    def steps(self) -> tuple[Step, ...]:
+        return tuple(self._steps)
 
     def step(
         self,
@@ -76,27 +141,43 @@ class Pipeline:
         optional: bool = False,
         **args: Any,
     ) -> Step:
-        """Append one call; pass upstream results as ``other.output``."""
         ref = self._target_ref(target)
-        try:
-            return self._plan.step(
-                ref,
-                on=on,
-                timeout=timeout,
-                retries=retries,
-                on_failure=on_failure,
-                optional=optional,
-                args=args,
+        if on_failure is not None and on_failure not in _FAILURE_POLICIES:
+            raise InvalidArgument(
+                f"on_failure must be one of {sorted(_FAILURE_POLICIES)},"
+                f" got {on_failure!r}",
+                reason="invalid_failure_policy",
             )
-        except easynet_sdk.SDKError as exc:
-            raise _pipeline_error(exc) from exc
+        for name, value in args.items():
+            _validate_field(name, value, self._aliases)
+        step = Step(
+            alias=self._fresh_alias(ref),
+            ref=ref,
+            args=dict(args),
+            on=on.strip() if isinstance(on, str) and on.strip() else None,
+            timeout=_timeout(timeout),
+            retries=_retries(retries),
+            on_failure=on_failure,
+            optional=optional,
+        )
+        self._steps.append(step)
+        self._aliases.add(step.alias)
+        return step
 
     def to_eal(self) -> str:
-        """The mission source — inspectable before anything runs."""
-        try:
-            return _easyremote_eal_header(self._plan.to_eal())
-        except easynet_sdk.SDKError as exc:
-            raise _pipeline_error(exc) from exc
+        if not self._steps:
+            raise InvalidArgument(
+                f"pipeline '{self.name}' has no steps",
+                reason="empty_pipeline",
+            )
+        lines = [f"// generated by easyremote {__version__}"]
+        created_by = self._created_by()
+        if created_by:
+            lines.append(f"// created_by: {created_by}")
+        lines.append(f"mission {_eal_string(self.name)} {{")
+        lines.extend(f"  {step.render()}" for step in self._steps)
+        lines.append("}")
+        return "\n".join(lines) + "\n"
 
     def run(self, *, label: str | None = None) -> MissionRun:
         return MissionControl(self.client).run_eal(
@@ -106,83 +187,170 @@ class Pipeline:
 
     def child_invocation_intents(
         self,
-    ) -> tuple[easynet_sdk.MissionChildInvocationIntent, ...]:
-        return self._plan.child_invocation_intents()
+    ) -> tuple[MissionChildInvocationIntent, ...]:
+        return tuple(
+            MissionChildInvocationIntent(
+                step.alias,
+                step.ref,
+                step.on,
+                step.optional,
+                step.on_failure,
+            )
+            for step in self._steps
+        )
 
     def validate_child_invocations(
-        self, status: easynet_sdk.MissionStatus
-    ) -> easynet_sdk.MissionChildInvocationConformance:
-        try:
-            return self._plan.validate_child_invocations(status)
-        except easynet_sdk.SDKError as exc:
-            raise _pipeline_error(exc) from exc
-
-    # -- internals -----------------------------------------------------------
+        self,
+        status: MissionStatus | Mapping[str, object],
+    ) -> MissionChildInvocationConformance:
+        projected = (
+            status
+            if isinstance(status, MissionStatus)
+            else MissionStatus.from_json(status)
+        )
+        expected = {item.step_id: item for item in self.child_invocation_intents()}
+        observed = {item.step_id: item for item in projected.child_invocations}
+        expected_ids, observed_ids = set(expected), set(observed)
+        result = MissionChildInvocationConformance(
+            mission_id=projected.mission_id,
+            expected_steps=tuple(sorted(expected_ids)),
+            observed_steps=tuple(sorted(observed_ids)),
+            missing_steps=tuple(sorted(expected_ids - observed_ids)),
+            unexpected_steps=tuple(sorted(observed_ids - expected_ids)),
+            ability_mismatched_steps=tuple(
+                sorted(
+                    step_id
+                    for step_id in expected_ids & observed_ids
+                    if expected[step_id].ability != observed[step_id].ability
+                )
+            ),
+            incomplete_fact_steps=tuple(
+                sorted(
+                    step_id
+                    for step_id in expected_ids & observed_ids
+                    if not _child_complete(observed[step_id])
+                )
+            ),
+            receipt_backed_steps=tuple(
+                sorted(
+                    item.step_id
+                    for item in projected.child_invocations
+                    if item.step_id in expected_ids and item.receipt is not None
+                )
+            ),
+        )
+        result.require_passed()
+        return result
 
     def _target_ref(self, target: str | RegisteredFunction) -> str:
-        if isinstance(target, RegisteredFunction):
-            return target.qualified_name
-        if isinstance(target, str) and target.strip():
-            return target.strip()
+        value = (
+            target.qualified_name if isinstance(target, RegisteredFunction) else target
+        )
+        if isinstance(value, str) and value.strip():
+            return value.strip()
         raise InvalidArgument(
-            "step target must be a qualified ability name (str) or a"
-            f" RegisteredFunction, got {type(target).__name__}",
+            "step target must be a qualified ability name or RegisteredFunction",
             reason="invalid_step_target",
         )
+
+    def _fresh_alias(self, ref: str) -> str:
+        base = _IDENTIFIER.sub("_", ref.rsplit(".", 1)[-1]) or "step"
+        alias, counter = base, 2
+        while alias in self._aliases:
+            alias, counter = f"{base}_{counter}", counter + 1
+        return alias
 
     def _created_by(self) -> str:
         if self.client is None:
             return ""
         try:
-            return self.client._who().device_ura
-        except Exception:  # identity not paired yet — header is optional
+            value = self.client._who().device_ura
+            return value if isinstance(value, str) else ""
+        except Exception:
             return ""
 
 
-def _pipeline_error(error: easynet_sdk.SDKError) -> InvalidArgument:
-    reason = error.details.get("reason")
-    message = error.message or str(error)
-    if reason == "foreign_step_output":
-        message = message.replace("mission plan", "pipeline")
-    return InvalidArgument(
-        message,
-        reason=(
-            str(reason)
-            if isinstance(reason, str)
-            else _pipeline_reason(message)
-        ),
+def _text(value: str, label: str, reason: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise InvalidArgument(f"{label} must not be empty", reason=reason)
+    return value.strip()
+
+
+def _validate_field(name: str, value: object, aliases: set[str]) -> None:
+    _text(name, "field name", "invalid_field_name")
+    if isinstance(value, StepOutput):
+        if value.alias not in aliases:
+            raise InvalidArgument(
+                f"step '{value.alias}' is not part of this pipeline",
+                reason="foreign_step_output",
+            )
+        return
+    if isinstance(value, bool | str | int):
+        return
+    if isinstance(value, float) and math.isfinite(value):
+        return
+    reason = "non_finite_field" if isinstance(value, float) else "non_scalar_field"
+    message = (
+        "EAL numbers must be finite"
+        if reason == "non_finite_field"
+        else "EAL field values are scalars or step outputs; reference .output"
     )
+    raise InvalidArgument(message, reason=reason)
 
 
-def _easyremote_eal_header(source: str) -> str:
-    lines = source.splitlines()
-    if not lines:
-        return source
-    if lines[0].startswith("// generated by easynet daemon sdk"):
-        lines[0] = lines[0].replace(
-            "// generated by easynet daemon sdk",
-            "// generated by easyremote",
-            1,
+def _timeout(value: float | None) -> int | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, int | float)
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise InvalidArgument(
+            "timeout must be positive and finite", reason="invalid_timeout"
         )
-        return "\n".join(lines) + ("\n" if source.endswith("\n") else "")
-    return source
+    return max(1, math.ceil(value))
 
 
-def _pipeline_reason(message: str) -> str:
-    if "pipeline name" in message and "empty" in message:
-        return "empty_name"
-    if "has no steps" in message:
-        return "empty_pipeline"
-    if "on_failure" in message:
-        return "invalid_failure_policy"
-    if "timeout" in message:
-        return "invalid_timeout"
-    if "retries" in message:
-        return "invalid_retries"
-    if "non-finite" in message or "EAL number must be finite" in message:
-        return "non_finite_field"
-    if "not part of this pipeline" in message:
-        return "foreign_step_output"
-    if "EAL field values are scalars" in message:
-        return "non_scalar_field"
-    return "sdk_pipeline_invalid_argument"
+def _retries(value: int | None) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise InvalidArgument("retries must be non-negative", reason="invalid_retries")
+    return value
+
+
+def _eal_string(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _eal_value(value: object) -> str:
+    if isinstance(value, StepOutput):
+        return value.render()
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return repr(value)
+    if isinstance(value, str):
+        return _eal_string(value)
+    raise InvalidArgument("unsupported EAL value", reason="non_scalar_field")
+
+
+def _child_complete(child: MissionChildInvocation) -> bool:
+    return (
+        all(
+            (
+                child.step_id,
+                child.request_id,
+                child.trace_id,
+                child.ability,
+                child.invocation_ura,
+                child.caller_ura,
+                child.callee_ura,
+                child.subject_ura,
+                child.metadata_state,
+            )
+        )
+        and child.ledger_state is not None
+    )

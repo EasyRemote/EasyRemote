@@ -77,7 +77,7 @@ class IdentityFacade(Protocol):
 
     def hub_ura(self, realm: str) -> str: ...
 
-    def resource_ura(self, realm: str, owner_id: str, path: str) -> str: ...
+    def resource_ura(self, owner_ura: str, path: str) -> str: ...
 
     def device_ability_ura(
         self, realm: str, node_id: str, namespace: str, local_name: str
@@ -123,10 +123,9 @@ class SdkIdentityFacade:
         except easynet_sdk.SDKError as exc:
             raise _identity_error(exc) from exc
 
-    def resource_ura(self, realm: str, owner_id: str, path: str) -> str:
-        owner = self._owner_ura_from_resource_owner_id(realm, owner_id)
+    def resource_ura(self, owner_ura: str, path: str) -> str:
         try:
-            return easynet_sdk.resource_ura(owner, path)
+            return easynet_sdk.resource_ura(owner_ura, path)
         except easynet_sdk.SDKError as exc:
             raise _identity_error(exc) from exc
 
@@ -168,16 +167,6 @@ class SdkIdentityFacade:
             raise _identity_error(exc) from exc
         return _descriptor_projection(projection)
 
-    def _owner_ura_from_resource_owner_id(self, realm: str, owner_id: str) -> str:
-        owner_id = owner_id.strip()
-        if owner_id.startswith("device."):
-            return self.device_ura(realm, owner_id.removeprefix("device."))
-        raise IdentityFacadeError(
-            f"unsupported resource owner id {owner_id!r}",
-            invalid_argument=True,
-        )
-
-
 _facade: IdentityFacade = SdkIdentityFacade()
 
 
@@ -215,8 +204,8 @@ def hub_ura(realm: str) -> str:
     return identity_facade().hub_ura(realm)
 
 
-def resource_ura(realm: str, owner_id: str, path: str) -> str:
-    return identity_facade().resource_ura(realm, owner_id, path)
+def resource_ura(owner_ura: str, path: str) -> str:
+    return identity_facade().resource_ura(owner_ura, path)
 
 
 def device_ability_ura(
@@ -246,7 +235,7 @@ def project_descriptor_ref(value: str) -> DescriptorProjection:
     return identity_facade().project_descriptor_ref(value)
 
 
-def _projection(projection: easynet_sdk.IdentityProjection) -> UraProjection:
+def _projection(projection: easynet_sdk.AddressingProjection) -> UraProjection:
     return UraProjection(
         kind=projection.kind,
         ura=projection.ura,
@@ -256,7 +245,7 @@ def _projection(projection: easynet_sdk.IdentityProjection) -> UraProjection:
 
 
 def _descriptor_projection(
-    projection: easynet_sdk.IdentityProjection,
+    projection: easynet_sdk.AddressingProjection,
 ) -> DescriptorProjection:
     return DescriptorProjection(
         kind=projection.kind,

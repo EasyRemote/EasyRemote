@@ -176,13 +176,18 @@ def test_agent_add_and_list_use_daemon_system_abilities():
                         "name": "caesura",
                         "runtime": "claude-code",
                         "model": "sonnet",
+                        "metadata": {
+                            "root_path": "/tmp/caesura",
+                            "timeout_secs": 30,
+                            "root_exists": True,
+                        },
                     }
                 ]
             }
         ),
         ok_response(
             {
-                "stopped": True,
+                "ack": True,
                 "agent_ura": "easynet:///r/acme/agent/caesura",
             }
         ),
@@ -195,6 +200,9 @@ def test_agent_add_and_list_use_daemon_system_abilities():
 
     assert added.name == "caesura"
     assert listed[0].runtime == "claude-code"
+    assert listed[0].root_path == "/tmp/caesura"
+    assert listed[0].timeout_secs == 30
+    assert listed[0].root_exists is True
     assert stopped.name == "caesura"
     assert stopped.stopped is True
     assert stopped.agent_ura == "easynet:///r/acme/agent/caesura"
@@ -210,6 +218,15 @@ def test_agent_add_and_list_use_daemon_system_abilities():
         "/ability/device.dev-a.agent.stop@1.0.0"
     )
     assert transport.invocations[2]["args"] == {"name": "caesura"}
+
+
+def test_agent_add_preserves_explicit_model_presence_without_a_model():
+    client, transport = client_with(ok_response({}))
+
+    AgentControl(client).add("caesura", kind="claude-code")
+
+    assert transport.invocations[0]["args"]["model"] is None
+    assert transport.invocations[0]["args"]["model_present"] is True
 
 
 def test_agent_refresh_accepts_optional_name():

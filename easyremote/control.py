@@ -15,6 +15,8 @@ The important separation is:
 from __future__ import annotations
 
 import builtins
+import tempfile
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,7 +25,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import easynet_sdk
 
 from . import _sdk_identity
-from ._sdk_profiles import admin_facade
+from ._product_abilities import AgentAbility
 from .errors import InvalidArgument, RemoteError, Unavailable, error_from_sdk
 
 if TYPE_CHECKING:
@@ -111,13 +113,23 @@ class AgentRecord:
 
     @classmethod
     def from_wire(cls, value: Mapping[str, Any]) -> AgentRecord:
+        metadata = _optional_dict(value.get("metadata"))
         return cls(
             name=str(value.get("name") or ""),
-            runtime=str(value.get("runtime") or value.get("agent_type") or ""),
+            runtime=str(
+                value.get("runtime")
+                or value.get("kind")
+                or value.get("agent_type")
+                or ""
+            ),
             model=_optional_str(value.get("model")),
-            root_path=_optional_str(value.get("root_path")),
-            timeout_secs=_optional_int(value.get("timeout_secs")),
-            root_exists=_optional_bool(value.get("root_exists")),
+            root_path=_optional_str(value.get("root_path", metadata.get("root_path"))),
+            timeout_secs=_optional_int(
+                value.get("timeout_secs", metadata.get("timeout_secs"))
+            ),
+            root_exists=_optional_bool(
+                value.get("root_exists", metadata.get("root_exists"))
+            ),
             raw=dict(value),
         )
 
@@ -157,14 +169,17 @@ class AgentStopResult:
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @classmethod
-    def from_sdk(
-        cls, value: easynet_sdk.AgentStopProjection
+    def from_wire(
+        cls,
+        value: Mapping[str, Any],
+        *,
+        name: str,
     ) -> AgentStopResult:
         return cls(
-            name=value.name,
-            agent_ura=value.agent_ura,
-            stopped=value.stopped,
-            raw=value.raw,
+            name=str(value.get("name") or name),
+            agent_ura=_optional_str(value.get("agent_ura")),
+            stopped=bool(value.get("stopped", value.get("ack", False))),
+            raw=dict(value),
         )
 
 
@@ -178,24 +193,25 @@ class AbilityControl:
 
     def __init__(self, client: Client | None = None) -> None:
         self._client = client or _new_client()
-        self._publication = easynet_sdk.PublicationCatalogFacade(
-            self._client,
-            addressing=_sdk_identity.identity_facade(),
-        )
 
     def install(self, path: str | Path, *, node: str = "local") -> AbilityInstallResult:
         """Install an ability package by invoking daemon `ability.deploy`."""
-        try:
-            result = self._publication.install(path, node=node)
-        except easynet_sdk.SDKError as exc:
-            raise _easyremote_publication_error(exc) from exc
-        return AbilityInstallResult(
-            install_id=result.install_id,
-            ability_ura=result.ability_ura,
-            state=result.state,
-            node_id=result.node_id,
-            raw=result.raw,
+        node_id = node.strip()
+        if not node_id:
+            raise InvalidArgument("node must not be empty", reason="empty_node")
+        package = Path(path)
+        if not package.is_dir():
+            raise InvalidArgument(
+                f"ability package path is not a directory: {package}",
+                reason="ability_package_not_directory",
+            )
+        ref = _local_resource_ref(package, self._client._who())
+        result = self._invoke(
+            self._client.target("ability.deploy", subject=str(ref["resource_ura"])),
+            resource_ref=ref,
+            node_id=node_id,
         )
+        return AbilityInstallResult.from_wire(result, node_id=node_id)
 
     def list(
         self,
@@ -215,37 +231,34 @@ class AbilityControl:
         `agent_ura` request field. The field name is historical; the
         value is any canonical ability owner URA accepted by the daemon.
         """
-        try:
-            records = [
-                AbilityRecord(
-                    name=row.name,
-                    ability_ura=row.ability_ura,
-                    owner_ura=row.owner_ura,
-                    description=row.description,
-                    state=row.state,
-                    input_schema=row.input_schema,
-                    metadata=row.metadata,
-                    raw=row.raw,
-                )
-                for row in self._publication.list(
-                    node=node,
-                    owner_ura=owner_ura or "",
-                    user_id=user_id or "",
-                    subject_ura=subject_ura or "",
-                    scope=scope,
-                )
-            ]
-        except easynet_sdk.SDKError as exc:
-            raise _easyremote_publication_error(exc) from exc
+        if scope not in {"local", "realm"}:
+            raise InvalidArgument("unsupported ability list scope", reason="invalid_ability_scope")
+        args: dict[str, object] = {}
+        if scope == "realm":
+            args["scope"] = scope
+        if owner_ura:
+            _require_ura_kind(owner_ura, {"device", "agent", "hub", "user"}, "owner_ura")
+            args["agent_ura"] = owner_ura
+        if subject_ura:
+            _require_ura_kind(subject_ura, {"ability"}, "subject_ura")
+            args["subject_ura"] = subject_ura
+        owner = self._client._who().device_ura if not node else self._client.device(node).owner_ura
+        result = self._invoke(self._client.target("meta.list_abilities", owner_ura=owner), **args)
+        rows = result.get("abilities") or []
+        if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
+            raise InvalidArgument("meta.list_abilities response field 'abilities' is not an object array", reason="invalid_daemon_response")
+        records = [AbilityRecord.from_wire(row) for row in rows if isinstance(row, Mapping)]
+        if user_id:
+            user = user_id.strip()
+            if not user:
+                raise InvalidArgument("user_id must not be empty", reason="empty_user_id")
+            records = [record for record in records if _record_belongs_to_user(record, user)]
         return records
 
     def list_device(self, device: str | None = None) -> builtins.list[AbilityRecord]:
         """List abilities owned by this device, or another device owner."""
-        try:
-            rows = self._publication.list_device(device)
-        except easynet_sdk.SDKError as exc:
-            raise _easyremote_publication_error(exc) from exc
-        return [_ability_record(row) for row in rows]
+        owner = self._client._who().device_ura if device is None else self._client.device(device).owner_ura
+        return self.list(owner_ura=owner)
 
     def list_user(
         self,
@@ -254,11 +267,10 @@ class AbilityControl:
         scope: AbilityListScope = "realm",
     ) -> builtins.list[AbilityRecord]:
         """List abilities owned by this paired user across catalogue rows."""
-        try:
-            rows = self._publication.list_user(user_id, scope=scope)
-        except easynet_sdk.SDKError as exc:
-            raise _easyremote_publication_error(exc) from exc
-        return [_ability_record(row) for row in rows]
+        user = user_id if user_id is not None else self._client._who().username
+        if not user or not user.strip():
+            raise InvalidArgument("user_id is required because credentials have no username", reason="missing_user_id")
+        return self.list(user_id=user.strip(), scope=scope)
 
     def show(
         self,
@@ -268,25 +280,32 @@ class AbilityControl:
         scope: AbilityListScope = "local",
     ) -> AbilityRecord:
         """Return one ability catalogue row by canonical Ability URA."""
+        _require_ura_kind(ability_ura, {"ability"}, "ability_ura")
+        for record in self.list(node=node, subject_ura=ability_ura, scope=scope):
+            if record.ability_ura == ability_ura:
+                return record
+        raise Unavailable(
+            f"ability {ability_ura!r} was not found in the daemon catalogue",
+            reason="ability_not_found",
+        )
+
+    def _invoke(self, target: object, **kwargs: object) -> dict[str, Any]:
         try:
-            return _ability_record(
-                self._publication.show(ability_ura, node=node, scope=scope)
-            )
+            result = self._client.invoke(target, **kwargs).result()
         except easynet_sdk.SDKError as exc:
-            if easynet_sdk.is_code(exc, easynet_sdk.ErrorCode.ABILITY_NOT_FOUND):
-                raise Unavailable(
-                    exc.message,
-                    reason="ability_not_found",
-                ) from exc
-            raise _easyremote_publication_error(exc) from exc
+            raise error_from_sdk(exc) from exc
+        except RemoteError:
+            raise
+        except Exception as exc:
+            raise Unavailable(f"ability control invocation failed: {exc}", reason="ability_invocation_failed") from exc
+        return _dict(result)
 
 
 class AgentControl:
-    """Daemon-owned agent lifecycle facade."""
+    """EasyRemote product facade for daemon-owned agent lifecycle."""
 
     def __init__(self, client: Client | None = None) -> None:
         self._client = client or _new_client()
-        self._admin = admin_facade(self._client)
 
     def add(
         self,
@@ -309,75 +328,129 @@ class AgentControl:
                 "agent type must not be empty", reason="empty_agent_type"
             )
 
-        try:
-            result = self._admin.start_agent(
-                agent_name,
-                kind=runtime,
-                model=model,
-                label=label,
-                command=command,
-                args=args,
-            )
-        except easynet_sdk.SDKError as exc:
-            raise _easyremote_admin_error(exc) from exc
-        return AgentStartResult(
-            name=result.name,
-            runtime=result.runtime,
-            model=result.model,
-            root_path=result.root_path,
-            replaced_prior=result.replaced_prior,
-            raw=result.raw,
+        result = self._invoke(
+            AgentAbility.START,
+            name=agent_name,
+            agent_type=runtime,
+            model=model,
+            model_present=True,
+            label=label,
+            command=command,
+            command_args=list(args),
+            materialize_directory=True,
+            update_existing_spec=False,
+            project_workspace=True,
+        )
+        return AgentStartResult.from_wire(
+            result,
+            name=agent_name,
+            runtime=runtime,
         )
 
     def list(self) -> builtins.list[AgentRecord]:
-        try:
-            return [
-                AgentRecord(
-                    name=row.name,
-                    runtime=row.runtime,
-                    model=row.model,
-                    root_path=row.root_path,
-                    timeout_secs=row.timeout_secs,
-                    root_exists=row.root_exists,
-                    raw=row.raw,
-                )
-                for row in self._admin.list_agents()
-            ]
-        except easynet_sdk.SDKError as exc:
-            raise _easyremote_admin_error(exc) from exc
+        result = self._invoke(AgentAbility.LIST)
+        rows = result.get("agents")
+        if not isinstance(rows, list) or not all(
+            isinstance(row, Mapping) for row in rows
+        ):
+            raise InvalidArgument(
+                "agent.list result must contain an agents object array",
+                reason="invalid_daemon_response",
+            )
+        return [AgentRecord.from_wire(row) for row in rows if isinstance(row, Mapping)]
 
     def stop(self, name: str) -> AgentStopResult:
-        try:
-            return AgentStopResult.from_sdk(self._admin.stop_agent(name))
-        except easynet_sdk.SDKError as exc:
-            raise _easyremote_admin_error(exc) from exc
+        agent_name = name.strip()
+        if not agent_name:
+            raise InvalidArgument(
+                "agent name must not be empty",
+                reason="empty_agent_name",
+            )
+        return AgentStopResult.from_wire(
+            self._invoke(AgentAbility.STOP, name=agent_name),
+            name=agent_name,
+        )
 
     def refresh(self, name: str | None = None) -> Mapping[str, Any]:
+        args: dict[str, object] = {}
+        if name is not None:
+            agent_name = name.strip()
+            if not agent_name:
+                raise InvalidArgument(
+                    "agent name must not be empty",
+                    reason="empty_agent_name",
+                )
+            args["name"] = agent_name
+        return self._invoke(AgentAbility.REFRESH, **args)
+
+    def _invoke(
+        self,
+        ability: AgentAbility,
+        **kwargs: object,
+    ) -> dict[str, Any]:
         try:
-            return dict(self._admin.refresh_agents(name))
+            result = self._client.invoke(str(ability), **kwargs).result()
         except easynet_sdk.SDKError as exc:
-            raise _easyremote_admin_error(exc) from exc
+            raise error_from_sdk(exc) from exc
+        except RemoteError:
+            raise
+        except Exception as exc:
+            raise Unavailable(
+                f"{ability} invocation failed: {exc}",
+                reason="agent_invocation_failed",
+            ) from exc
+        if not isinstance(result, Mapping):
+            raise InvalidArgument(
+                f"{ability} result must be an object",
+                reason="invalid_daemon_response",
+            )
+        return dict(result)
 
 
-def _easyremote_admin_error(error: easynet_sdk.SDKError) -> RemoteError:
-    return error_from_sdk(error)
+def _local_resource_ref(path: Path, identity: object) -> dict[str, object]:
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    resolved = absolute.resolve(strict=True)
+    for label, root in (("workspace", Path.cwd()), ("tmp", Path(tempfile.gettempdir())), ("home", Path.home())):
+        try:
+            relative = resolved.relative_to(root.resolve(strict=True)).as_posix()
+        except (FileNotFoundError, ValueError):
+            continue
+        if relative and all(part not in {"", ".", ".."} for part in relative.split("/")):
+            owner = str(getattr(identity, "device_ura"))
+            resource = _sdk_identity.resource_ura(owner, f"fs/{label}/{relative}")
+            return {
+                "resource_ura": resource,
+                "owner_ura": owner,
+                "namespace": "fs",
+                "capability": "read",
+                "expires_unix_ms": int(time.time() * 1000) + 300_000,
+                "revision": "fs-local-mapping-v1",
+                "display_path": f"{label}/{relative}",
+            }
+    raise InvalidArgument(f"resource path {path} is outside workspace, temp, and home roots", reason="invalid_resource_path")
 
 
-def _ability_record(row: easynet_sdk.PublicationCatalogRecord) -> AbilityRecord:
-    return AbilityRecord(
-        name=row.name,
-        ability_ura=row.ability_ura,
-        owner_ura=row.owner_ura,
-        description=row.description,
-        state=row.state,
-        input_schema=row.input_schema,
-        metadata=row.metadata,
-        raw=row.raw,
-    )
+def _require_ura_kind(value: str, kinds: set[str], field: str) -> None:
+    candidate = value.strip()
+    if not candidate:
+        raise InvalidArgument(f"{field} must not be empty", reason=f"empty_{field}")
+    try:
+        projection = _sdk_identity.parse_ura(candidate)
+    except _sdk_identity.IdentityFacadeError as exc:
+        raise InvalidArgument(f"invalid {field}: {exc}", reason=f"invalid_{field}") from exc
+    if projection.kind not in kinds:
+        raise InvalidArgument(f"unexpected {field} kind {projection.kind!r}", reason=f"invalid_{field}")
 
 
-def _easyremote_publication_error(error: easynet_sdk.SDKError) -> RemoteError:
-    return error_from_sdk(error)
+def _record_belongs_to_user(record: AbilityRecord, user_id: str) -> bool:
+    if any(str(record.metadata.get(key) or "") == user_id for key in ("owner_user", "owner_user_id", "user_id", "local_user_id")):
+        return True
+    try:
+        owner = _sdk_identity.parse_ura(record.owner_ura)
+    except _sdk_identity.IdentityFacadeError:
+        return False
+    components = owner.components or {}
+    return owner.kind in {"agent", "user"} and str(components.get("user_id") or "") == user_id
 
 
 def _dict(value: Any) -> dict[str, Any]:
