@@ -1,5 +1,6 @@
 """Pipeline: EAL compilation (grammar-pinned), validation, mission calls."""
 
+import easynet_sdk
 import pytest
 from test_client import IDENTITY, FakeTransport, ok_response  # shared fakes
 
@@ -160,6 +161,62 @@ def test_pipeline_validates_daemon_child_invocation_facts():
 
     assert conformance.passed is True
     assert conformance.receipt_backed_steps == ("health",)
+
+
+def test_mission_status_projects_child_receipt_anchor_through_sdk(monkeypatch):
+    seen: list[object] = []
+    original = easynet_sdk.ReceiptReference.from_runtime_receipt
+
+    def spy(receipt: object) -> easynet_sdk.ReceiptReference:
+        seen.append(receipt)
+        return original(receipt)
+
+    monkeypatch.setattr(
+        easynet_sdk.ReceiptReference,
+        "from_runtime_receipt",
+        staticmethod(spy),
+    )
+
+    MissionStatus.from_json(
+        {
+            "profile": "mission",
+            "kind": "mission_status",
+            "mission_id": "run-1",
+            "state": "completed",
+            "terminal": True,
+            "child_invocations": [
+                {
+                    "step_id": "health",
+                    "request_id": "req-1",
+                    "trace_id": "run-1",
+                    "ability": "observe.health",
+                    "invocation_ura": "easynet:///r/acme/invocation/req-1",
+                    "caller_ura": "easynet:///r/acme/device/dev-a",
+                    "callee_ura": "easynet:///r/acme/device/dev-a",
+                    "subject_ura": "easynet:///r/acme/device/dev-a",
+                    "metadata_state": "receipt_backed",
+                    "ledger_state": "completed",
+                    "receipt": {
+                        "receipt_ura": (
+                            "easynet:///r/acme/resource/agent.easyremote.test"
+                            "/invocation/r-1/receipt"
+                        ),
+                        "receipt_hash": "aa" * 32,
+                    },
+                }
+            ],
+        }
+    )
+
+    assert seen == [
+        {
+            "receipt_ura": (
+                "easynet:///r/acme/resource/agent.easyremote.test"
+                "/invocation/r-1/receipt"
+            ),
+            "self_hash_hex": "aa" * 32,
+        }
+    ]
 
 
 def test_mission_status_rejects_invalid_child_receipt_anchor():
