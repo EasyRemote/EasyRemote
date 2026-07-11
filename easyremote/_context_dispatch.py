@@ -74,7 +74,4 @@ def _causal_ref_from_parent_receipt(receipt: Receipt) -> CausalRef:
             " receipt hash returned by the daemon",
             reason="parent_receipt_anchor_unavailable",
         )
-    return CausalRef(
-        receipt_hash=reference.receipt_hash,
-        receipt_ura=reference.receipt_ura,
-    )
+    return CausalRef.from_sdk_reference(reference)

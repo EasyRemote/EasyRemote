@@ -26,6 +26,7 @@ from easyremote.invocation import (
 from easyremote.receipts import InvocationState
 
 NONCE = bytes(range(1, 17))  # base64: AQIDBAUGBwgJCgsMDQ4PEA==
+RECEIPT_URA = "easynet:///r/test/resource/agent.callee/invocation/inv-1/receipt"
 
 
 def make_tuple(**overrides):
@@ -90,12 +91,12 @@ def test_binary_arguments_use_base64_and_content_type():
 
 
 def test_causal_scalar_list_merkle_forms():
-    ref = CausalRef(receipt_hash=b"\xab" * 32, receipt_ura="easynet:///r/x")
+    ref = CausalRef(receipt_hash=b"\xab" * 32, receipt_ura=RECEIPT_URA)
     scalar = encode_invocation(make_tuple(causal=ref))["causal_context"]
     assert scalar == {
         "form": "scalar",
         "receipt_hash_hex": "ab" * 32,
-        "receipt_ura": "easynet:///r/x",
+        "receipt_ura": RECEIPT_URA,
     }
 
     listed = encode_invocation(make_tuple(causal=[ref, ref]))["causal_context"]
@@ -164,7 +165,13 @@ def test_empty_causal_list_rejected():
 
 def test_causal_ref_validates_hash_length():
     with pytest.raises(InvalidArgument, match="32 bytes"):
-        CausalRef(receipt_hash=b"\x01", receipt_ura="easynet:///r/x")
+        CausalRef(receipt_hash=b"\x01", receipt_ura=RECEIPT_URA)
+
+
+def test_causal_ref_rejects_non_canonical_receipt_ura():
+    with pytest.raises(InvalidArgument) as exc_info:
+        CausalRef(receipt_hash=b"\x01" * 32, receipt_ura="receipt-1")
+    assert exc_info.value.reason == "invalid_receipt_reference"
 
 
 def test_binary_arguments_need_content_type():
@@ -281,7 +288,7 @@ def test_prepared_invocation_inspect_then_send():
 
     prepared = PreparedInvocation(tuple=make_tuple(), dispatcher=dispatcher)
     adjusted = prepared.with_subject("easynet:///r/test/device/other").with_causal(
-        CausalRef(receipt_hash=b"\xee" * 32, receipt_ura="easynet:///r/r")
+        CausalRef(receipt_hash=b"\xee" * 32, receipt_ura=RECEIPT_URA)
     )
 
     assert (

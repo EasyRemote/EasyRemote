@@ -119,22 +119,48 @@ class CausalRef:
 
     receipt_hash: bytes
     receipt_ura: str
+    _reference: easynet_sdk.ReceiptReference = field(
+        init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
-        if len(self.receipt_hash) != 32:
-            raise InvalidArgument(
-                f"receipt_hash must be 32 bytes, got {len(self.receipt_hash)}",
-                reason="invalid_receipt_hash",
+        try:
+            reference = easynet_sdk.ReceiptReference(
+                receipt_ura=self.receipt_ura,
+                receipt_hash=self.receipt_hash,
             )
-        if not self.receipt_ura.strip():
+        except easynet_sdk.SDKError as exc:
             raise InvalidArgument(
-                "receipt_ura must not be empty", reason="invalid_receipt_ura"
+                f"invalid receipt reference: {exc}",
+                reason="invalid_receipt_reference",
+            ) from exc
+        object.__setattr__(self, "receipt_ura", reference.receipt_ura)
+        object.__setattr__(self, "_reference", reference)
+
+    @classmethod
+    def from_sdk_reference(
+        cls, reference: easynet_sdk.ReceiptReference
+    ) -> "CausalRef":
+        if not isinstance(reference, easynet_sdk.ReceiptReference):
+            raise InvalidArgument(
+                "SDK ReceiptReference is required",
+                reason="invalid_receipt_reference",
             )
+        return cls(
+            receipt_hash=reference.receipt_hash,
+            receipt_ura=reference.receipt_ura,
+        )
 
     def to_wire(self) -> dict[str, str]:
+        causal = self._reference.causal_context()
+        if causal.get("form") != "scalar":
+            raise InternalError(
+                "SDK receipt reference did not project scalar causal context",
+                reason="receipt_protocol",
+            )
         return {
-            "receipt_hash_hex": self.receipt_hash.hex(),
-            "receipt_ura": self.receipt_ura,
+            "receipt_hash_hex": _required_wire_string(causal, "receipt_hash_hex"),
+            "receipt_ura": _required_wire_string(causal, "receipt_ura"),
         }
 
 
