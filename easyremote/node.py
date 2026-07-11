@@ -36,14 +36,13 @@ from ._host import HostServer
 from ._host.server import HostedFunction
 from ._json import dumps_wire
 from ._version import __version__
+from .config import settings
 from .context import Context
 from .control import AbilityControl
 from .errors import InvalidArgument
 from .schema import PARAMETER_ORDER_KEY, derive
 
 __all__ = ["AbilityInfo", "ComputeNode", "RegisteredFunction"]
-
-_EASYREMOTE_DIR = Path.home() / ".easynet" / "easyremote"
 
 _NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
@@ -114,7 +113,9 @@ class ComputeNode:
             )
         self._gateway = gateway
         self._namespace = namespace
-        self._abilities_dir = abilities_dir or (_EASYREMOTE_DIR / "abilities")
+        self._abilities_dir = abilities_dir or (
+            _default_easyremote_root() / "abilities"
+        )
         self._ability_control = ability_control or AbilityControl()
         self._host = HostServer(self._abilities_dir.parent / "host.sock")
         self._abilities: dict[str, AbilityInfo] = {}
@@ -357,6 +358,11 @@ def _derived_lambda_name(fn: Callable[..., Any]) -> str:
         seed = f"callable:{type(fn).__module__}.{type(fn).__qualname__}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
     return f"fn_{digest}"
+
+
+def _default_easyremote_root() -> Path:
+    """Product-local EasyRemote root under the configured EasyNet process root."""
+    return settings().control_path.parent / "easyremote"
 
 
 def _stable_repr(value: Any) -> str:

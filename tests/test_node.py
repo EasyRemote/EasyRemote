@@ -261,6 +261,19 @@ def test_invalid_namespace_rejected(tmp_path):
         ComputeNode(namespace="er.bad", abilities_dir=tmp_path)
 
 
+def test_default_storage_uses_configured_easynet_process_root(tmp_path, monkeypatch):
+    import easyremote.config as config
+
+    monkeypatch.setattr(config, "_settings", None)
+    control = tmp_path / "control.json"
+    config.configure(control=control)
+
+    node = ComputeNode(ability_control=FakeAbilityControl())
+
+    assert node._abilities_dir == tmp_path / "easyremote" / "abilities"
+    assert node.host_socket == tmp_path / "easyremote" / "host.sock"
+
+
 def test_registered_function_still_callable_locally(node):
     @node.register
     def double(x: int) -> int:
