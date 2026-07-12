@@ -79,8 +79,9 @@ canonical 文案全文见附录 A（README hero / landing page 母版）。
 
 ### 1.3 不变式（违反即 reject 的设计红线）
 
-1. facade 不私造协议语义——协议对象一律来自 `easynet_axon`，传输与
-   daemon 生命周期一律来自 `libeasynet_cli`。
+1. facade 不私造协议语义——Invocation、URA、receipt、传输与 daemon
+   生命周期一律来自 `easynet_sdk`；其内部协议实现不构成 EasyRemote 的
+   第二个 SDK 依赖入口。
 2. 七元组字段在公开边界**永远可检视**；便捷默认值（`subject=callee`、
    `causal=none`）必须暴露在对象属性上，不得埋进字符串。
 3. 产品调用只走 daemon.sock 的 `axon.v1.Invocation`；**不碰 JSON control
@@ -137,17 +138,14 @@ advertise_agent/advertise_abilities/heartbeat/revoke/resolve`、`skill.*`、
 `AbilityManifest = { schema_version, name, description, timeout_seconds,
 input_schema(JSON Schema, 必填), output_schema?, exec(shell|eal), access }`。
 
-### 3.5 easynet_axon Python SDK（`EasyNet-Axon/sdk/python`）
+### 3.5 EasyNet-Cli Python SDK（`EasyNet-Cli/sdk/python`）
 
-- `invocation/axiom.py`：七元组 envelope、`fresh_nonce()`、
-  `CausalContext.{none,scalar,list_,merkle}`、Ed25519 签名/验签、
-  canonical bytes（RFC-001 §4.2/4.3）。
-- `invocation/audit.py`：`InvocationReceipt.verify()/trace()/
-  prove_authority()`、`verify_receipt_chain()`。
-- `ura.py`：`parse_ura()`、`build_device_ability_ura()`。
-- 错误 taxonomy（7 类）。
-- **已知缺口**：SDK 层 stream/bidi async 迭代器未定稿 → facade 流式路径
-  一律走 C ABI（§3.1），不等 SDK。
+- Runtime Core：完整 Invocation、prepare/sign/submit、unary/stream/bidi
+  与 lifecycle handle。
+- Addressing：URA 解析与构造、descriptor reference projection。
+- Receipt：receipt reference、验证与因果链投影。
+- Daemon lifecycle：discovery、start/adopt、status、endpoint 与错误 taxonomy。
+- EasyRemote 只依赖这个 SDK；其内部使用的协议实现由 CLI SDK 维护。
 
 ### 3.6 拓扑约束
 
@@ -176,10 +174,10 @@ daemon SDK 已落地（`88bbd86` / `7ea78eb`）。
 │  _transport/   ctypes 绑定 C ABI（私有）                      │
 │  _host/        warm host_stream 宿主（私有）                   │
 └──────────────┬─────────────────────────┬─────────────────────┘
-               │ 协议对象/签名/URA/回执验证 │ daemon 生命周期 + invoke/stream/bidi
-        ┌──────▼──────┐           ┌──────▼──────────┐
-        │ easynet_axon │           │ libeasynet_cli  │
-        └─────────────┘           └──────┬──────────┘
+               │ Invocation/URA/回执/生命周期
+                         ┌──────▼──────────┐
+                         │   easynet_sdk   │
+                         └──────┬──────────┘
                                    ~/.easynet/daemon.sock
                               ┌──────────▼──────────┐
                               │   easynet-daemon     │
@@ -229,7 +227,7 @@ credentials.json 密钥自动签名。`sign=None` 表示按路径自动判定，
   均为 Python control facade 的薄 CLI 包装；内部走完整 Invocation 调
   daemon system ability，不 shell 到 `easynet` CLI。`ability list --scope realm`
   显式读取 daemon 的 hub-published 网络目录；默认 `local` 只读本 daemon。
-- 依赖：`easynet_axon`（PyPI），不依赖 grpcio/protobuf（流量走 C ABI）。
+- 依赖：仅 `easynet_sdk`；不直接依赖 grpcio/protobuf 或 Axon SDK。
 
 ---
 
@@ -520,13 +518,13 @@ class Invocation:
     def receipt(self) -> Receipt          # 终态回执
     def receipts(self) -> ReceiptChain
     def verify(self, resolver: KeyResolver | None = None) -> VerifiedReceipt
-        # None → realm 默认 resolver；底层即 easynet_axon M1/M2/M3
+        # None → daemon/SDK 的 realm 默认验证器
 
-class Receipt:                    # thin wrapper；.raw 暴露 easynet_axon 原对象
+class Receipt:                    # thin wrapper；.raw 暴露 SDK receipt projection
     type: str; state: str; timestamp_ms: int; invocation_id: str
     def verify(self, resolver=None) -> VerifiedReceipt
     def trace(self) -> CausalTrace
-    raw: "easynet_axon.invocation.audit.InvocationReceipt"
+    raw: "easynet_sdk.RuntimeReceipt"
 ```
 
 ### 5.8 错误层级
@@ -687,7 +685,7 @@ EasyNet-Cli / Axon 负责。
 | `easyremote/protocols/`、`easyremote/mcp/`、`easyremote/a2a/` | 删除——daemon MCP 投影 / 原生 invocation 取代 |
 | `easyremote/agent_service.py`、`easyremote/device_host.py` | 退役——功能由 daemon `skill.*` + ability deploy 承接；如需保留产品形态另立 RFC |
 | `easyremote/decorators.py`、`easyremote/skills.py` | 重写进 `client.py` / `pipeline.py` |
-| 依赖 | 移除 grpcio/protobuf；新增 easynet_axon；`libeasynet_cli` 由 EasyNet CLI 安装或显式路径提供 |
+| 依赖 | 移除 grpcio/protobuf 与直接 Axon SDK 依赖；仅依赖 `easynet_sdk`，其 native runtime 由 EasyNet CLI 安装或显式路径提供 |
 
 ---
 
@@ -864,24 +862,13 @@ EasyNet-Cli / Axon 负责。
 - 约束：hub TCP 必须 TLS；device 禁绑 TCP；SIGHUP 仅热载 federated_peers
   与 quota。
 
-### B.3 easynet_axon Python SDK
+### B.3 EasyNet-Cli Python SDK
 
-- `Client.tenant().ability().principal().call()`；`Transport` 协议；
-  `SidecarTransport` / `DendriteBridge`（FFI 级 unary/stream/bidi）。
-- `invocation/axiom.py`：`InvocationEnvelope`、`AgentIdentity` /
-  `SubjectIdentity`、`CausalContext.{none,scalar,list_,merkle}`、
-  `fresh_nonce`、`canonical_invocation_bytes`、`sign_invocation` /
-  `verify_invocation_signature`、`sign_receipt` / `verify_receipt_signature`、
-  `KeyResolver` / `FileKeyResolver`、`AuthorityBinding`、`DelegationProofBody`。
-- `invocation/audit.py`：`InvocationReceipt`（M1 `verify` / M2 `trace` /
-  M3 `prove_authority`）、`verify_receipt_chain`、`AxiomBinding`。
-- `invocation/handle.py`：`InvocationHandle`、`EventStream`（可续传）、
-  `InvocationState` 九态。
-- `invocation/supervisor.py` / `messaging.py`：`Supervisor`（进程组隔离、
-  资源限额、清理保证、orphan reap）、`MessageInbox`（FIFO、幂等、有界）。
-- `invocation/local_runtime.py`：`LocalRuntime`（参考运行时）、
-  `AbilityContext`。
-- `ura.py`：`parse_ura`、`build_device_ability_ura`、`ParsedURA/ParsedAbility`。
-- `errors.py` / `invocation/error.py`：12 类 SDK 级 + 7 类 invocation 级。
-- federation 六件套 wire shape：`sdk/FEDERATION_INVOKE_SCHEMAS.md`。
-- 缺口：SDK 层 stream/bidi async 迭代器、async connect/close 未定稿。
+- `RuntimeClient`：完整 Invocation、prepare/sign/submit、unary/stream/bidi
+  与 handle lifecycle。
+- `AddressingClient`：URA、ability descriptor reference 与 owner projection。
+- `ReceiptClient`：verification、causal receipt reference 与 terminal receipt
+  projection。
+- `DaemonLifecycleFacade`：daemon start/adopt/status/endpoint；私钥仍由 daemon
+  key-service 托管，EasyRemote 不接触密钥材料。
+- EasyRemote 不直接依赖或实例化底层协议 SDK/runtime。

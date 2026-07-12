@@ -187,7 +187,6 @@ requires-dist = [
 name = "easyremote"
 source = { editable = "." }
 dependencies = [
-    { name = "easynet-run-axon" },
     { name = "easynet-sdk" },
 ]
 
@@ -210,7 +209,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography", marker = "extra == 'gateway'", specifier = ">=42" },
-    { name = "easynet-run-axon", editable = "../EasyNet-Axon/sdk/python" },
     { name = "easynet-sdk", editable = "../EasyNet-Cli/sdk/python" },
     { name = "pydantic", marker = "extra == 'pydantic'", specifier = ">=2.0" },
 ]

@@ -12,17 +12,16 @@ Author: Silan Hu (silan.hu@u.nus.edu)
 
 ### Core runtime dependencies
 
-The core runtime intentionally has one protocol dependency:
+The core runtime intentionally has one SDK dependency:
 
-- `easynet-run-axon>=0.108`
+- `easynet-sdk>=0.91.30`
 
-`libeasynet_cli` is a runtime prerequisite, not a Python dependency in
-the pure facade wheel. Users either install EasyNet CLI so the dynamic
-loader can find the system library, or point `EASYNET_CLI_LIB` /
-`configure(library_path=...)` at an explicit ABI v3 library. A future
-platform wheel may bundle that library, but this repository must not
-advertise bundled native bytes until the binary-wheel pipeline actually
-ships them.
+The native runtime is provided by EasyNet CLI through `easynet-sdk`. Users
+either install EasyNet CLI so the SDK can discover the daemon/library, or
+point `EASYNET_CLI_LIB` / `configure(library_path=...)` at an explicit ABI
+library. A future platform wheel may bundle that library, but this repository
+must not advertise bundled native bytes until the binary-wheel pipeline
+actually ships them.
 
 ### Optional extras
 

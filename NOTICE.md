@@ -11,14 +11,15 @@ EasyRemote is an MIT-licensed Python facade over the EasyNet runtime. The
 following third-party or sibling-project components are relevant to normal
 runtime use:
 
-1. EasyNet-Axon / `easynet-run-axon`
-   - Role: URA construction/parsing, invocation and receipt protocol helpers.
+1. EasyNet-Axon
+   - Role: protocol implementation consumed transitively by EasyNet CLI; it
+     is not an EasyRemote package dependency.
    - License: Apache License 2.0.
    - Website: https://github.com/EasyRemote/EasyNet-Axon
 
-2. EasyNet CLI / `libeasynet_cli`
-   - Role: local daemon, ability deployment, C ABI transport, stream/bidi
-     invocation surfaces.
+2. EasyNet CLI / `easynet-sdk`
+   - Role: the single EasyRemote SDK entrypoint for local daemon lifecycle,
+     ability deployment, invocation, receipts, stream and bidi surfaces.
    - License: Apache License 2.0.
    - Website: https://github.com/EasyRemote/EasyNet-Cli
    - Note: not bundled in the pure Python wheel; users install EasyNet CLI or

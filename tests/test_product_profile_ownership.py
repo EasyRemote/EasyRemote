@@ -2,6 +2,7 @@
 
 import ast
 from pathlib import Path
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "easyremote"
@@ -73,6 +74,13 @@ def test_retired_mixed_profile_bridge_is_absent() -> None:
             if isinstance(node, ast.ImportFrom) and node.module == "_sdk_profiles":
                 imports.append(str(path.relative_to(ROOT)))
     assert imports == []
+
+
+def test_product_manifest_has_one_sdk_entrypoint() -> None:
+    manifest = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = manifest["project"]["dependencies"]
+    assert all(not dependency.startswith("easynet-run-axon") for dependency in dependencies)
+    assert "easynet-run-axon" not in manifest["tool"]["uv"]["sources"]
 
 
 def test_product_ability_names_have_one_owner() -> None:

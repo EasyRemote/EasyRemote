@@ -30,15 +30,11 @@ classifiers = [
 ]
 requires-python = ">=3.11"
 # Protocol truth enters through the generic EasyNet-Cli SDK runtime boundary.
-# EasyRemote owns product profiles such as Mission and Agent lifecycle; the SDK
-# owns Invocation/addressing/transport/error primitives and lower-layer Axon/C
-# ABI delegation.
+# EasyRemote owns product profiles such as Mission and Agent lifecycle; the CLI
+# SDK owns Invocation/addressing/transport/error primitives and its lower-layer
+# protocol implementation.
 dependencies = [
     "easynet-sdk>=0.91.30",
-    # Declared explicitly so uv applies the sibling source override while the
-    # unpublished SDK/Axon cutover is tested as one local dependency graph.
-    # EasyRemote production code still imports only easynet_sdk.
-    "easynet-run-axon>=0.129.23",
 ]
 
 [project.scripts]
@@ -68,7 +64,6 @@ default-groups = ["dev"]
 # Dev installs resolve the Daemon SDK from the sibling EasyNet-Cli checkout;
 # release builds need the same package published under the easynet-sdk name.
 easynet-sdk = { path = "../EasyNet-Cli/sdk/python", editable = true }
-easynet-run-axon = { path = "../EasyNet-Axon/sdk/python", editable = true }
 
 [tool.setuptools.dynamic]
 version = { attr = "easyremote._version.__version__" }
