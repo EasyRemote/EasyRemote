@@ -36,10 +36,11 @@ from ._host import HostServer
 from ._host.server import HostedFunction
 from ._json import dumps_wire
 from ._version import __version__
+from .bootstrap import DeviceRuntimeBootstrap, DeviceRuntimeLease, RuntimeBootstrap
 from .config import settings
 from .context import Context
 from .control import AbilityControl
-from .errors import InvalidArgument
+from .errors import InvalidArgument, Unavailable
 from .schema import PARAMETER_ORDER_KEY, derive
 
 __all__ = ["AbilityInfo", "ComputeNode", "RegisteredFunction"]
@@ -105,6 +106,7 @@ class ComputeNode:
         namespace: str = "er",
         abilities_dir: Path | None = None,
         ability_control: _AbilityInstaller | None = None,
+        runtime_bootstrap: RuntimeBootstrap | None = None,
     ) -> None:
         if not _NAME_PATTERN.match(namespace):
             raise InvalidArgument(
@@ -117,6 +119,8 @@ class ComputeNode:
             _default_easyremote_root() / "abilities"
         )
         self._ability_control = ability_control or AbilityControl()
+        self._runtime_bootstrap = runtime_bootstrap or DeviceRuntimeBootstrap()
+        self._runtime_lease: DeviceRuntimeLease | None = None
         self._host = HostServer(self._abilities_dir.parent / "host.sock")
         self._abilities: dict[str, AbilityInfo] = {}
         self._started = False
@@ -200,7 +204,14 @@ class ComputeNode:
 
     def serve(self) -> None:
         """Blocking serve; Ctrl-C exits cleanly."""
-        self.start()
+        try:
+            self.start()
+        except Unavailable as exc:
+            if exc.reason != "onboarding_required":
+                raise
+            print(exc)
+            return
+        self._print_ready()
         try:
             threading.Event().wait()
         except KeyboardInterrupt:
@@ -212,19 +223,28 @@ class ComputeNode:
         if self._started:
             return
         self._check_gateway()
+        runtime_lease = self._runtime_bootstrap.ensure()
         self._host.start()
         try:
             for info in self._abilities.values():
                 self._deploy(info)
         except BaseException:
             self._host.stop()
+            runtime_lease.close()
             self._started = False
             raise
+        self._runtime_lease = runtime_lease
         self._started = True
 
     def stop(self) -> None:
-        self._host.stop()
-        self._started = False
+        try:
+            self._host.stop()
+        finally:
+            lease = self._runtime_lease
+            self._runtime_lease = None
+            self._started = False
+            if lease is not None:
+                lease.close()
 
     def __enter__(self) -> ComputeNode:
         self.start()
@@ -252,6 +272,17 @@ class ComputeNode:
     def _deploy(self, info: AbilityInfo) -> None:
         """Publish onto this device's own ability registry."""
         self._ability_control.install(info.package_dir, node="local")
+
+    def _print_ready(self) -> None:
+        """Show the user what became callable without exposing bootstrap APIs."""
+
+        lease = self._runtime_lease
+        if lease is None:
+            return
+        action = "started" if lease.started_daemon else "reused"
+        print(f"✓ {action} easynet-daemon for {lease.identity.device_ura}")
+        for ability in self._abilities.values():
+            print(f"✓ Published {ability.ura or ability.qualified_name}")
 
     def _write_package(
         self,

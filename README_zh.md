@@ -74,10 +74,10 @@ Ray、Modal、RunPod 把远程执行做**易**，工具协议让 agent 变得**�
 ```bash
 pip install easyremote
 
-# 一次性前置（类比 ssh-keygen 的一次性成本，换来签名调用与回执链）
-easynet pair                                  # 设备配对，签发身份
-easynet start                                 # 启动设备 daemon
-easyremote doctor                            # 逐项体检：库 / daemon / 身份 / transport
+# 一次性身份配置（为签名调用与回执链建立身份）。
+# 此后 `node.serve()` 会自动复用或启动本机 device daemon。
+easynet pair
+easyremote doctor                            # 可选：逐项体检运行时
 
 # 在 hub/VPS 上，EasyRemote 可直接以 hub 模式启动 daemon facade：
 easyremote hub --realm my-team
@@ -89,7 +89,9 @@ easyremote agent add caesura --type claude-code --model sonnet
 easyremote mission run ./nightly.eal --label nightly
 ```
 
-之后就是上面的 12 行。`examples/` 有可直接运行的节点、客户端、编排三个示例。
+之后就是上面的 12 行。首次运行若未配对，`node.serve()` 不会伪造身份；它会清楚
+打印唯一需要的操作 `easynet pair` 后退出。配对完成后，同一脚本会依次检查 SDK、
+复用或启动 device daemon、启动 warm host，并发布全部已注册 capability。
 
 ### 三层调用面（渐进暴露）
 

@@ -9,6 +9,7 @@ implemented and tested.
 """
 
 from ._version import __version__
+from .bootstrap import DeviceRuntimeBootstrap, RuntimeBootstrapState
 from .client import (
     BidiSession,
     CallTarget,
@@ -65,6 +66,7 @@ __all__ = [
     "DaemonHandle",
     "DaemonStartConfig",
     "DeadlineExceeded",
+    "DeviceRuntimeBootstrap",
     "Gateway",
     "InternalError",
     "InvalidArgument",
@@ -82,6 +84,7 @@ __all__ = [
     "RemoteFunction",
     "RemoteOwner",
     "ResourceExhausted",
+    "RuntimeBootstrapState",
     "SchemaError",
     "Server",
     "Stream",

@@ -8,7 +8,7 @@ from functools import partial
 import pytest
 
 from easyremote.context import Context
-from easyremote.errors import InvalidArgument
+from easyremote.errors import InvalidArgument, Unavailable
 from easyremote.node import ComputeNode
 
 
@@ -16,7 +16,9 @@ from easyremote.node import ComputeNode
 def node(tmp_path):
     installer = FakeAbilityControl()
     node = ComputeNode(
-        abilities_dir=tmp_path / "abilities", ability_control=installer
+        abilities_dir=tmp_path / "abilities",
+        ability_control=installer,
+        runtime_bootstrap=ReadyRuntimeBootstrap(),
     )
     node.installer = installer
     return node
@@ -31,6 +33,21 @@ class FakeAbilityControl:
         self.installs.append((path, node))
         if self.fail is not None:
             raise self.fail
+
+
+class ReadyRuntimeLease:
+    def close(self):
+        pass
+
+
+class ReadyRuntimeBootstrap:
+    def ensure(self):
+        return ReadyRuntimeLease()
+
+
+class OnboardingRuntimeBootstrap:
+    def ensure(self):
+        raise Unavailable("Pair with `easynet pair`", reason="onboarding_required")
 
 
 def read_manifest(info):
@@ -154,7 +171,9 @@ def test_nothing_deploys_before_start(node):
 def test_start_deploys_each_package_to_local_node(short_tmp):
     installer = FakeAbilityControl()
     node = ComputeNode(
-        abilities_dir=short_tmp / "abilities", ability_control=installer
+        abilities_dir=short_tmp / "abilities",
+        ability_control=installer,
+        runtime_bootstrap=ReadyRuntimeBootstrap(),
     )
 
     @node.register
@@ -171,11 +190,25 @@ def test_start_deploys_each_package_to_local_node(short_tmp):
         assert len(installer.installs) == 2
 
 
+def test_serve_prints_actionable_onboarding_without_runtime_trace(tmp_path, capsys):
+    node = ComputeNode(
+        abilities_dir=tmp_path / "abilities",
+        ability_control=FakeAbilityControl(),
+        runtime_bootstrap=OnboardingRuntimeBootstrap(),
+    )
+
+    node.serve()
+
+    assert "easynet pair" in capsys.readouterr().out
+
+
 def test_start_rolls_back_host_when_deploy_fails(short_tmp):
     installer = FakeAbilityControl()
     installer.fail = RuntimeError("deploy failed")
     node = ComputeNode(
-        abilities_dir=short_tmp / "abilities", ability_control=installer
+        abilities_dir=short_tmp / "abilities",
+        ability_control=installer,
+        runtime_bootstrap=ReadyRuntimeBootstrap(),
     )
 
     @node.register
@@ -192,7 +225,9 @@ def test_start_rolls_back_host_when_deploy_fails(short_tmp):
 def test_post_start_registration_rolls_back_when_deploy_fails(short_tmp):
     installer = FakeAbilityControl()
     node = ComputeNode(
-        abilities_dir=short_tmp / "abilities", ability_control=installer
+        abilities_dir=short_tmp / "abilities",
+        ability_control=installer,
+        runtime_bootstrap=ReadyRuntimeBootstrap(),
     )
 
     @node.register
@@ -300,7 +335,9 @@ def test_gateway_param_accepted_classic_shape(tmp_path):
 
 def test_end_to_end_through_real_socket(short_tmp):
     node = ComputeNode(
-        abilities_dir=short_tmp / "abilities", ability_control=FakeAbilityControl()
+        abilities_dir=short_tmp / "abilities",
+        ability_control=FakeAbilityControl(),
+        runtime_bootstrap=ReadyRuntimeBootstrap(),
     )
 
     @node.register

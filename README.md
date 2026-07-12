@@ -74,11 +74,10 @@ Ray, Modal, and RunPod make remote execution *easy*. Tool protocols make agents 
 ```bash
 pip install easyremote
 
-# One-time prerequisites (an ssh-keygen-style cost, buying you
-# signed invocations and receipt chains)
-easynet pair                                  # pair this device, issue identity
-easynet start                                 # start the device daemon
-easyremote doctor                            # check library / daemon / identity / transport
+# One-time identity setup (signs invocations and receipt chains).
+# `node.serve()` then starts or reuses the local device daemon automatically.
+easynet pair
+easyremote doctor                            # optional runtime diagnosis
 
 # On a hub/VPS, EasyRemote can start the hub daemon facade directly:
 easyremote hub --realm my-team
@@ -92,6 +91,11 @@ easyremote mission run ./nightly.eal --label nightly
 ```
 
 Then it's the twelve lines above. `examples/` has runnable node/client pairs:
+
+If this is the first run, `node.serve()` does not invent an identity. It prints
+the one required action — `easynet pair` — and exits. Once paired, the same
+script checks the SDK, reuses a running daemon or starts a device daemon, then
+starts the warm host and publishes every registered capability.
 
 | Example | Shows |
 |---|---|
