@@ -177,7 +177,7 @@ class CallTarget:
         if self.subject is not None or self.causal is not None:
             warnings.warn(
                 "CallTarget subject/causal are deprecated and will be removed"
-                " in EasyRemote 1.0.0; use invocation_policy",
+                " in EasyRemote 3.0.0; use invocation_policy",
                 DeprecationWarning,
                 stacklevel=2,
             )

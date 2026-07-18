@@ -126,6 +126,19 @@ def test_receipt_chain_adapter_contains_no_local_chain_rule() -> None:
     assert "easynet_sdk.ReceiptClient.verify_chain" in source
 
 
+def test_receipt_lifecycle_is_fail_closed_by_the_sdk_type() -> None:
+    source = (PACKAGE / "receipts.py").read_text(encoding="utf-8")
+
+    assert _receipt_lifecycle_authority_violations(source) == []
+
+
+def test_edge_adapter_warning_matches_policy_removal_version() -> None:
+    client = (PACKAGE / "client.py").read_text(encoding="utf-8")
+    removal_version = _policy()["removal_version"]
+
+    assert f"in EasyRemote {removal_version}; use invocation_policy" in client
+
+
 def test_production_has_no_local_ura_grammar_or_retired_address_term() -> None:
     assert not (PACKAGE / "_sdk_identity.py").exists()
     assert _ura_violations(_production_sources()) == []
@@ -202,6 +215,15 @@ def decode_ability_ura(ability_ura):
     retired_address_term = {
         "bad_term.py": f"{RETIRED_ADDRESS_TERM}_value = 'legacy'\n",
     }
+    fail_open_receipt_lifecycle = """
+def _decode_runtime_receipt(value):
+    receipt = easynet_sdk.RuntimeReceipt.from_required_mapping(value)
+    normalized = receipt.state.replace("_", "").lower()
+    for state in InvocationState:
+        if state.name.lower() == normalized:
+            return receipt, state
+    return receipt, InvocationState.UNSPECIFIED
+"""
 
     assert _canonical_model_violations(renamed_invocation, adapters)
     assert _canonical_model_violations(renamed_receipt, adapters)
@@ -209,6 +231,7 @@ def decode_ability_ura(ability_ura):
     assert _ura_violations(renamed_ura_parser)
     assert _ura_violations(embedded_grammar)
     assert _ura_violations(retired_address_term)
+    assert _receipt_lifecycle_authority_violations(fail_open_receipt_lifecycle)
 
 
 def _policy() -> dict[str, Any]:
@@ -363,6 +386,99 @@ def _ura_violations(sources: dict[str, str]) -> list[str]:
                 violations.append(f"{name}: local URA tokenization")
         if "easynet:///" in source:
             violations.append(f"{name}: embedded URA grammar literal")
+    return violations
+
+
+def _receipt_lifecycle_authority_violations(source: str) -> list[str]:
+    violations: list[str] = []
+    tree = ast.parse(source)
+    decoders = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_decode_runtime_receipt"
+    ]
+    if len(decoders) != 1:
+        return ["receipt lifecycle must have exactly one canonical decoder"]
+    decoder = decoders[0]
+    sdk_lookups = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Attribute)
+        and isinstance(node.value.value, ast.Name)
+        and node.value.value.id == "easynet_sdk"
+        and node.value.attr == "InvocationLifecycleState"
+    ]
+    if len(sdk_lookups) != 1:
+        violations.append(
+            "receipt lifecycle projection must use exactly one SDK enum lookup"
+        )
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            and node.name == "_lifecycle_state"
+        ):
+            violations.append("local receipt lifecycle decoder")
+        if isinstance(node, ast.Call) and (
+            (isinstance(node.func, ast.Name) and node.func.id == "InvocationState")
+            or (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "easynet_sdk"
+                and node.func.attr == "InvocationLifecycleState"
+            )
+        ):
+            violations.append("numeric receipt lifecycle interpretation")
+        if (
+            isinstance(node, ast.For)
+            and isinstance(node.iter, ast.Name)
+            and node.iter.id == "InvocationState"
+        ):
+            violations.append("local receipt lifecycle enumeration")
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "InvocationState"
+            and node.attr == "UNSPECIFIED"
+        ):
+            violations.append("fail-open unspecified receipt lifecycle fallback")
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr
+            in {
+                "casefold",
+                "lower",
+                "removeprefix",
+                "removesuffix",
+                "replace",
+                "strip",
+            }
+        ):
+            violations.append("local receipt lifecycle normalization")
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "int"
+        ):
+            violations.append("numeric receipt lifecycle normalization")
+    for lookup in sdk_lookups:
+        guarded = next(
+            (
+                node
+                for node in ast.walk(decoder)
+                if isinstance(node, ast.Try)
+                and any(lookup is child for child in ast.walk(node))
+            ),
+            None,
+        )
+        if guarded is None or not any(
+            isinstance(handler.type, ast.Name)
+            and handler.type.id == "KeyError"
+            and any(isinstance(child, ast.Raise) for child in ast.walk(handler))
+            for handler in guarded.handlers
+        ):
+            violations.append("SDK receipt lifecycle lookup is not fail closed")
     return violations
 
 

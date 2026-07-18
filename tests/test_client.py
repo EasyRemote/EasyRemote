@@ -689,7 +689,7 @@ def test_target_policy_overrides_client_policy():
 def test_released_target_subject_kwarg_lowers_to_one_product_policy():
     client, transport = make_client()
 
-    with pytest.deprecated_call(match="EasyRemote 1.0.0"):
+    with pytest.deprecated_call(match="EasyRemote 3.0.0"):
         target = Client.target(
             "fn",
             subject="easynet:///r/acme/resource/job-1",
@@ -707,7 +707,7 @@ def test_released_target_causal_kwarg_lowers_to_sdk_receipt_reference():
         receipt_hash=b"\xab" * 32,
     )
 
-    with pytest.deprecated_call(match="EasyRemote 1.0.0"):
+    with pytest.deprecated_call(match="EasyRemote 3.0.0"):
         target = Client.target("fn", causal=parent)
     prepared = client.prepare(target, x=1)
 

@@ -44,14 +44,8 @@ class Receipt:
     )
 
     def __post_init__(self) -> None:
-        try:
-            canonical = easynet_sdk.RuntimeReceipt.from_required_mapping(self.raw)
-        except easynet_sdk.SDKError as exc:
-            raise InternalError(
-                f"daemon receipt summary is malformed: {exc}",
-                reason="receipt_protocol",
-            ) from exc
-        projected = _receipt_projection(canonical)
+        canonical, lifecycle_state = _decode_released_receipt(self.raw)
+        projected = _receipt_projection(canonical, lifecycle_state)
         supplied = (
             self.index,
             self.invocation_id,
@@ -76,14 +70,11 @@ class Receipt:
 
     @classmethod
     def from_wire(cls, wire: Mapping[str, object]) -> Receipt:
-        try:
-            canonical = easynet_sdk.RuntimeReceipt.from_required_mapping(wire)
-        except easynet_sdk.SDKError as exc:
-            raise InternalError(
-                f"daemon receipt summary is malformed: {exc}",
-                reason="receipt_protocol",
-            ) from exc
-        return cls(*_receipt_projection(canonical), raw=canonical.to_json_dict())
+        canonical, lifecycle_state = _decode_released_receipt(wire)
+        return cls(
+            *_receipt_projection(canonical, lifecycle_state),
+            raw=canonical.to_json_dict(),
+        )
 
     def verify(self, resolver: object | None = None) -> None:
         del resolver
@@ -141,7 +132,7 @@ def receipt_from_mapping(
 ) -> easynet_sdk.RuntimeReceipt:
     """Decode internal runtime input directly into the canonical SDK model."""
 
-    return easynet_sdk.RuntimeReceipt.from_required_mapping(value)
+    return _decode_runtime_receipt(value)[0]
 
 
 def receipt_reference(
@@ -154,6 +145,7 @@ def receipt_reference(
 
 def _receipt_projection(
     receipt: easynet_sdk.RuntimeReceipt,
+    lifecycle_state: InvocationState,
 ) -> tuple[
     int,
     str,
@@ -172,7 +164,7 @@ def _receipt_projection(
         receipt.index,
         receipt.invocation_id,
         receipt.receipt_type,
-        _lifecycle_state(receipt.state),
+        lifecycle_state,
         receipt.timestamp_unix_ms,
         receipt.prev_receipt_hash(),
         receipt.self_receipt_hash(),
@@ -183,12 +175,33 @@ def _receipt_projection(
     )
 
 
-def _lifecycle_state(value: str) -> InvocationState:
-    normalized = value.replace("_", "").replace("-", "").lower()
-    for state in InvocationState:
-        if state.name.replace("_", "").lower() == normalized:
-            return state
+def _decode_runtime_receipt(
+    value: Mapping[str, object],
+) -> tuple[easynet_sdk.RuntimeReceipt, InvocationState]:
+    receipt = easynet_sdk.RuntimeReceipt.from_required_mapping(value)
     try:
-        return InvocationState(int(value))
-    except (TypeError, ValueError):
-        return InvocationState.UNSPECIFIED
+        lifecycle_state = easynet_sdk.InvocationLifecycleState[receipt.state.upper()]
+    except KeyError as exc:
+        raise easynet_sdk.SDKError(
+            code=easynet_sdk.ErrorCode.INVALID_ARGUMENT,
+            stage="decode",
+            retry=easynet_sdk.RetryHint.NEVER,
+            message=f"runtime receipt has unknown lifecycle state: {receipt.state!r}",
+            invocation_id=receipt.invocation_id,
+            details={"reason": "invalid_lifecycle_state"},
+            cause=exc,
+        ) from exc
+    return receipt, lifecycle_state
+
+
+def _decode_released_receipt(
+    value: Mapping[str, object],
+) -> tuple[easynet_sdk.RuntimeReceipt, InvocationState]:
+    try:
+        return _decode_runtime_receipt(value)
+    except easynet_sdk.SDKError as exc:
+        raise InternalError(
+            f"daemon receipt summary is malformed: {exc}",
+            reason="receipt_protocol",
+            invocation_id=exc.invocation_id,
+        ) from exc
