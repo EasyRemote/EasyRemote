@@ -20,6 +20,7 @@ from easyremote.client import (
     BidiSession,
     Client,
     FunctionInfo,
+    RemoteAbility,
     RemoteFunction,
     RemoteOwner,
     Stream,
@@ -1164,6 +1165,41 @@ def test_device_handle_call_matches_node_target():
         == "easynet:///r/acme/ability/device.gpu-2.er.chat@1.0.0"
     )
     assert transport.invocations[0]["callee_ura"] == "easynet:///r/acme/device/gpu-2"
+
+
+def test_owner_ability_handle_calls_fully_qualified_native_ability():
+    client, transport = make_client(responses=[{"source": "easynet-native"}])
+
+    result = client.device("gpu-2").ability("nativeer.native_echo").call(text="hi")
+
+    assert result == {"source": "easynet-native"}
+    wire = transport.invocations[0]
+    assert wire["callee_ura"] == "easynet:///r/acme/device/gpu-2"
+    assert (
+        wire["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.gpu-2.nativeer.native_echo@1.0.0"
+    )
+    assert wire["args"] == {"text": "hi"}
+    assert transport.carriers == ["stream"]
+
+
+def test_owner_ability_handle_can_declare_typed_stub():
+    client, transport = make_client(responses=[{"value": 7}])
+    native = client.device("gpu-2").ability("nativeer.native_echo")
+
+    @native.remote
+    def native_echo(text: str, times: int = 1) -> dict[str, int]: ...
+
+    assert native_echo("hi", times=2) == {"value": 7}
+    assert isinstance(native, RemoteAbility)
+    assert native.name == "nativeer.native_echo"
+    assert native.owner_ura == "easynet:///r/acme/device/gpu-2"
+    wire = transport.invocations[0]
+    assert (
+        wire["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.gpu-2.nativeer.native_echo@1.0.0"
+    )
+    assert wire["args"] == {"text": "hi", "times": 2}
 
 
 def test_hub_handle_projects_product_policy_onto_realm_authority():

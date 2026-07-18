@@ -64,6 +64,7 @@ __all__ = [
     "CallTarget",
     "Client",
     "FunctionInfo",
+    "RemoteAbility",
     "RemoteFunction",
     "RemoteOwner",
     "Stream",
@@ -987,6 +988,55 @@ def remote(
     )
 
 
+class RemoteAbility:
+    """Invocation-only handle to one named ability on an owner.
+
+    Lifecycle remains owned by the canonical runtime control plane. This
+    facade only makes the common cross-product call shape explicit:
+    ``client.device("node").ability("nativeer.echo").call(...)``.
+    """
+
+    def __init__(self, owner: RemoteOwner, function: str) -> None:
+        function = str(function).strip()
+        if not function:
+            raise InvalidArgument(
+                "ability name must be non-empty",
+                reason="invalid_ability_name",
+            )
+        self._owner = owner
+        self._function = function
+
+    @property
+    def name(self) -> str:
+        return self._function
+
+    @property
+    def owner_ura(self) -> str:
+        return self._owner.owner_ura
+
+    def call(self, *args: Any, **kwargs: Any) -> Any:
+        return self._owner.call(self._function, *args, **kwargs)
+
+    def stream(self, *args: Any, **kwargs: Any) -> Stream:
+        return self._owner.stream(self._function, *args, **kwargs)
+
+    def remote(
+        self,
+        fn: Callable[..., Any] | None = None,
+        *,
+        name: str | None = None,
+        timeout: float | None = None,
+        invocation_policy: InvocationDerivationPolicy | None = None,
+    ) -> Any:
+        """Declare a typed stub bound to this ability handle."""
+        return self._owner.remote(
+            fn,
+            name=name or self._function,
+            timeout=timeout,
+            invocation_policy=invocation_policy,
+        )
+
+
 class RemoteOwner:
     """A handle to one ability owner — the client-side mirror of ``ComputeNode``.
 
@@ -1004,6 +1054,14 @@ class RemoteOwner:
     @property
     def owner_ura(self) -> str:
         return self._owner_ura
+
+    def ability(self, function: str) -> RemoteAbility:
+        """Return an invocation-only handle to one ability on this owner.
+
+        Fully-qualified names are preserved. Bare names still flow through
+        the client's default namespace during canonical URA projection.
+        """
+        return RemoteAbility(self, function)
 
     def remote(
         self,
