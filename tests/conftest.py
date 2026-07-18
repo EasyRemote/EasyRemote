@@ -45,15 +45,15 @@ def canonical_runtime_receipt(
         "child_invocation_id": "",
         "caller_binding": {
             "ura": "easynet:///r/example/agent/test.caller",
-            "profile": "easynet-strict-v2",
+            "profile": "axon-strict-v2",
         },
         "callee_binding": {
             "ura": "easynet:///r/example/agent/test.callee",
-            "profile": "easynet-strict-v2",
+            "profile": "axon-strict-v2",
         },
         "subject_binding": {
             "ura": "easynet:///r/example/resource/test.subject",
-            "profile": "easynet-strict-v2",
+            "profile": "axon-strict-v2",
         },
         "invocation_nonce_base64": base64.b64encode(bytes(range(1, 17))).decode(
             "ascii"
@@ -67,7 +67,7 @@ def canonical_runtime_receipt(
         },
         "signer_binding": {
             "ura": "easynet:///r/example/agent/test.callee",
-            "profile": "easynet-strict-v2",
+            "profile": "axon-strict-v2",
         },
         "authority_binding_kind": "self",
         "authority_binding": {
@@ -78,7 +78,7 @@ def canonical_runtime_receipt(
         "subject_ref": {
             "kind": 1,
             "ura": "easynet:///r/example/resource/test.subject",
-            "profile": "easynet-strict-v2",
+            "profile": "axon-strict-v2",
         },
         "descriptor_version": "1.0.0",
         "schema_hash_hex": hashlib.sha256(b"easyremote-test-schema").hexdigest(),
@@ -95,7 +95,7 @@ def canonical_runtime_receipt(
             "proof_hash_hex": hashlib.sha256(authority_payload).hexdigest(),
             "issuer": {
                 "ura": "easynet:///r/example/agent/test.callee",
-                "profile": "easynet-strict-v2",
+                "profile": "axon-strict-v2",
             },
             "signature": {
                 "algorithm": "ed25519",
