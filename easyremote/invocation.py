@@ -122,14 +122,6 @@ class Invocation:
         return builtins.tuple(receipt for receipt in ordered if receipt is not None)
 
     @property
-    def selected_node_id(self) -> str:
-        return self._result.selected_node_id
-
-    @property
-    def scheduling_reason(self) -> str:
-        return self._result.scheduling_reason
-
-    @property
     def elapsed_ms(self) -> int:
         return self._result.elapsed_ms
 

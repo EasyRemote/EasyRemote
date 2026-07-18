@@ -26,8 +26,6 @@ def ok_response(result):
     return {
         "ok": True,
         "state": int(InvocationState.COMPLETED),
-        "selected_node_id": "",
-        "scheduling_reason": "",
         "elapsed_ms": 1,
         "result_content_type": "application/json",
         "result_base64": base64.b64encode(payload).decode(),
@@ -64,8 +62,6 @@ class FakeTransport:
             "output_content_type": response["result_content_type"],
             "output_base64": response["result_base64"],
             "output_json": response["result_json"],
-            "selected_node_id": response["selected_node_id"],
-            "scheduling_reason": response["scheduling_reason"],
             "elapsed_ms": response["elapsed_ms"],
             "admission_receipt": response["admission_receipt"],
             "terminal_receipt": response["terminal_receipt"],

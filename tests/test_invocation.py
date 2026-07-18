@@ -71,8 +71,6 @@ def runtime_response(
         "output_content_type": output_content_type,
         "output_base64": output_base64,
         "output_json": output_json,
-        "selected_node_id": "node-1",
-        "scheduling_reason": "direct",
         "elapsed_ms": 7,
         "admission_receipt": admission_receipt,
         "terminal_receipt": terminal_receipt,
@@ -115,7 +113,6 @@ def test_product_result_unwraps_executor_envelope(runtime_receipt) -> None:
     assert invocation.tuple is not draft
     assert invocation.tuple.to_json_dict() == draft.to_json_dict()
     assert invocation.state is easynet_sdk.InvocationLifecycleState.COMPLETED
-    assert invocation.selected_node_id == "node-1"
 
 
 def test_product_result_decodes_binary_output(runtime_receipt) -> None:

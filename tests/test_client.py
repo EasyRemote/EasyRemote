@@ -56,8 +56,6 @@ def ok_response(result=None, content_type="application/json"):
     return {
         "ok": True,
         "state": int(InvocationState.COMPLETED),
-        "selected_node_id": "",
-        "scheduling_reason": "",
         "elapsed_ms": 1,
         "result_content_type": content_type,
         "result_base64": base64.b64encode(payload).decode() if payload else "",
@@ -98,16 +96,22 @@ class _FakeFrames:
 
 
 class _FakeBidi:
-    def __init__(self):
+    def __init__(self, *, frames=None, timeout=False):
         self.sent = []
         self.closed = False
         self.cancelled = False
         self.cancel_reason = ""
+        self.frames = list(frames or [])
+        self.timeout = timeout
 
     def send(self, frame):
         self.sent.append(frame)
 
     def recv(self, timeout=None):
+        if self.timeout:
+            raise TimeoutError("no frame")
+        if self.frames:
+            return self.frames.pop(0)
         return None
 
     def close(self):
@@ -218,8 +222,6 @@ class FakeTransport:
             "output_content_type": value.get("result_content_type", ""),
             "output_base64": value.get("result_base64", ""),
             "output_json": value.get("result_json"),
-            "selected_node_id": value.get("selected_node_id", ""),
-            "scheduling_reason": value.get("scheduling_reason", ""),
             "elapsed_ms": value.get("elapsed_ms", 0),
             "admission_receipt": value.get("admission_receipt"),
             "terminal_receipt": value.get("terminal_receipt"),
@@ -280,7 +282,7 @@ def fake_signer():
 
 def test_identity_uras_are_canonical():
     assert IDENTITY.device_ura == DEVICE_URA
-    assert IDENTITY.hub_ura == "easynet:///r/acme/hub"
+    assert IDENTITY.hub_ura == "easynet:///r/acme/authority"
 
 
 def test_explicit_root_policy_addresses_local_device_with_namespaced_ability():
@@ -468,6 +470,68 @@ def test_bidi_session_close_releases_without_claiming_cancellation():
 
     assert not channel.cancelled
     assert channel.closed
+
+
+def test_bidi_cancel_waits_for_sdk_terminal_receipt_without_local_close():
+    terminal_receipt = {"invocation_id": "inv-bidi-1", "index": 2}
+    channel = _FakeBidi(
+        frames=[
+            {
+                "terminal": True,
+                "terminal_receipt": terminal_receipt,
+            }
+        ]
+    )
+    session = BidiSession(easynet_sdk.BidiSessionAdapter(channel))
+
+    session.cancel("user stop")
+    terminal = session.recv(timeout=0.1)
+
+    assert channel.cancelled
+    assert channel.cancel_reason == "user stop"
+    assert not channel.closed
+    assert terminal == {
+        "terminal": True,
+        "terminal_receipt": terminal_receipt,
+    }
+
+
+def test_bidi_timeout_and_disconnect_consume_sdk_terminal_semantics():
+    timed_out = BidiSession(
+        easynet_sdk.BidiSessionAdapter(_FakeBidi(timeout=True))
+    )
+    with pytest.raises(DeadlineExceeded) as raised:
+        timed_out.recv(timeout=0.01)
+    assert raised.value.reason == "client_wait_timeout"
+
+    disconnected_channel = _FakeBidi()
+    disconnected = BidiSession(
+        easynet_sdk.BidiSessionAdapter(disconnected_channel)
+    )
+    assert disconnected.recv(timeout=0.01) is None
+    assert not disconnected_channel.cancelled
+    assert not disconnected_channel.closed
+
+
+def test_bidi_remote_transport_failure_maps_without_product_state_inference():
+    channel = _FakeBidi(
+        frames=[
+            {
+                "terminal": False,
+                "transport_terminal": True,
+                "error": {
+                    "kind": "UNAVAILABLE",
+                    "message": "peer disconnected",
+                },
+            }
+        ]
+    )
+    session = BidiSession(easynet_sdk.BidiSessionAdapter(channel))
+
+    with pytest.raises(Unavailable, match="peer disconnected"):
+        session.recv(timeout=0.1)
+
+    assert not channel.cancelled
 
 
 # -- argument mapping ------------------------------------------------------------
@@ -1102,12 +1166,15 @@ def test_device_handle_call_matches_node_target():
     assert transport.invocations[0]["callee_ura"] == "easynet:///r/acme/device/gpu-2"
 
 
-def test_hub_handle_addresses_realm_hub():
+def test_hub_handle_projects_product_policy_onto_realm_authority():
     client, transport = make_client()
     client.hub().call("route", x=1)
     wire = transport.invocations[0]
-    assert wire["callee_ura"] == "easynet:///r/acme/hub"
-    assert wire["descriptor_ref"] == "easynet:///r/acme/ability/hub.er.route@1.0.0"
+    assert wire["callee_ura"] == "easynet:///r/acme/authority"
+    assert (
+        wire["descriptor_ref"]
+        == "easynet:///r/acme/ability/authority.er.route@1.0.0"
+    )
 
 
 def test_handle_factories_return_remote_owner():
