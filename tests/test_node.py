@@ -9,6 +9,7 @@ import pytest
 
 from easyremote.context import Context
 from easyremote.errors import InvalidArgument, Unavailable
+from easyremote.identity import LocalIdentity
 from easyremote.node import ComputeNode
 
 
@@ -18,7 +19,7 @@ def node(tmp_path):
     node = ComputeNode(
         abilities_dir=tmp_path / "abilities",
         ability_control=installer,
-        runtime_bootstrap=ReadyRuntimeBootstrap(),
+        runtime_provider=ReadyRuntimeProvider(),
     )
     node.installer = installer
     return node
@@ -35,18 +36,33 @@ class FakeAbilityControl:
             raise self.fail
 
 
-class ReadyRuntimeLease:
+class ReadyRuntime:
+    identity = LocalIdentity(
+        realm="acme",
+        node_id="dev-a",
+        username=None,
+        hub_endpoint="hub:443",
+    )
+
+    def __init__(self):
+        self.closed = False
+
     def close(self):
-        pass
+        self.closed = True
 
 
-class ReadyRuntimeBootstrap:
-    def ensure(self):
-        return ReadyRuntimeLease()
+class ReadyRuntimeProvider:
+    def __init__(self):
+        self.connections = []
+
+    def connect(self):
+        connection = ReadyRuntime()
+        self.connections.append(connection)
+        return connection
 
 
-class OnboardingRuntimeBootstrap:
-    def ensure(self):
+class OnboardingRuntimeProvider:
+    def connect(self):
         raise Unavailable("Pair with `easynet pair`", reason="onboarding_required")
 
 
@@ -170,10 +186,11 @@ def test_nothing_deploys_before_start(node):
 
 def test_start_deploys_each_package_to_local_node(short_tmp):
     installer = FakeAbilityControl()
+    provider = ReadyRuntimeProvider()
     node = ComputeNode(
         abilities_dir=short_tmp / "abilities",
         ability_control=installer,
-        runtime_bootstrap=ReadyRuntimeBootstrap(),
+        runtime_provider=provider,
     )
 
     @node.register
@@ -188,13 +205,15 @@ def test_start_deploys_each_package_to_local_node(short_tmp):
             return b
 
         assert len(installer.installs) == 2
+        assert not provider.connections[0].closed
+    assert provider.connections[0].closed
 
 
 def test_serve_prints_actionable_onboarding_without_runtime_trace(tmp_path, capsys):
     node = ComputeNode(
         abilities_dir=tmp_path / "abilities",
         ability_control=FakeAbilityControl(),
-        runtime_bootstrap=OnboardingRuntimeBootstrap(),
+        runtime_provider=OnboardingRuntimeProvider(),
     )
 
     node.serve()
@@ -205,10 +224,11 @@ def test_serve_prints_actionable_onboarding_without_runtime_trace(tmp_path, caps
 def test_start_rolls_back_host_when_deploy_fails(short_tmp):
     installer = FakeAbilityControl()
     installer.fail = RuntimeError("deploy failed")
+    provider = ReadyRuntimeProvider()
     node = ComputeNode(
         abilities_dir=short_tmp / "abilities",
         ability_control=installer,
-        runtime_bootstrap=ReadyRuntimeBootstrap(),
+        runtime_provider=provider,
     )
 
     @node.register
@@ -220,6 +240,7 @@ def test_start_rolls_back_host_when_deploy_fails(short_tmp):
 
     assert not node.host_socket.exists()
     assert not node._started
+    assert provider.connections[0].closed
 
 
 def test_post_start_registration_rolls_back_when_deploy_fails(short_tmp):
@@ -227,7 +248,7 @@ def test_post_start_registration_rolls_back_when_deploy_fails(short_tmp):
     node = ComputeNode(
         abilities_dir=short_tmp / "abilities",
         ability_control=installer,
-        runtime_bootstrap=ReadyRuntimeBootstrap(),
+        runtime_provider=ReadyRuntimeProvider(),
     )
 
     @node.register
@@ -237,6 +258,7 @@ def test_post_start_registration_rolls_back_when_deploy_fails(short_tmp):
     with node:
         installer.fail = RuntimeError("late deploy failed")
         with pytest.raises(RuntimeError, match="late deploy failed"):
+
             @node.register
             def late(b: int) -> int:
                 return b
@@ -337,7 +359,7 @@ def test_end_to_end_through_real_socket(short_tmp):
     node = ComputeNode(
         abilities_dir=short_tmp / "abilities",
         ability_control=FakeAbilityControl(),
-        runtime_bootstrap=ReadyRuntimeBootstrap(),
+        runtime_provider=ReadyRuntimeProvider(),
     )
 
     @node.register

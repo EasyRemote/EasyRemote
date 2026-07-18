@@ -6,7 +6,7 @@ ordinary EasyRemote invocations through :class:`easyremote.client.Client`.
 
 The important separation is:
 
-- lifecycle (`DaemonHandle`) starts/stops a daemon process;
+- the EasyNet-Cli SDK owns runtime discovery and process lifecycle;
 - invocation (`Client`) sends complete Axon seven-tuples;
 - control (`AbilityControl` / `AgentControl`) maps product operations
   such as install/list/add into daemon-owned system abilities.

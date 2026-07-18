@@ -10,9 +10,9 @@ plus read-only caller identity, and receives one or many stream frames.
 Unary functions are single-frame streams; generators are multi-frame
 streams.
 
-This module owns packaging and local host registration only. Invocation
-admission, descriptor binding, routing, receipt production, and stream
-terminal semantics stay with ``easynet-daemon`` / Axon.
+This module owns packaging and local host registration only. Runtime process
+lifecycle, Invocation admission, descriptor binding, routing, receipt
+production, and stream terminal semantics stay with the canonical SDK runtime.
 """
 
 from __future__ import annotations
@@ -29,15 +29,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+import easynet_sdk
+
 from ._host import HostServer
 from ._host.server import HostedFunction
 from ._json import dumps_wire
 from ._version import __version__
-from .bootstrap import DeviceRuntimeBootstrap, DeviceRuntimeLease, RuntimeBootstrap
 from .config import settings
 from .context import Context
 from .control import AbilityControl
-from .errors import InvalidArgument, Unavailable
+from .errors import InvalidArgument, Unavailable, error_from_sdk
+from .runtime_provider import LocalRuntimeProvider, RuntimeConnectionProvider
 from .schema import PARAMETER_ORDER_KEY, derive
 
 __all__ = ["AbilityInfo", "ComputeNode", "RegisteredFunction"]
@@ -92,8 +94,8 @@ class ComputeNode:
     from pairing. When both are known and disagree, you get a warning,
     not silent re-routing: changing hubs is `easynet pair`'s job.
 
-    ``ability_control``/``abilities_dir`` are injectable seams (tests);
-    production code never passes them.
+    ``ability_control``/``abilities_dir``/``runtime_provider`` are injectable
+    seams; production code uses the canonical local runtime provider.
     """
 
     def __init__(
@@ -103,7 +105,7 @@ class ComputeNode:
         namespace: str = "er",
         abilities_dir: Path | None = None,
         ability_control: _AbilityInstaller | None = None,
-        runtime_bootstrap: RuntimeBootstrap | None = None,
+        runtime_provider: RuntimeConnectionProvider | None = None,
     ) -> None:
         if not _NAME_PATTERN.match(namespace):
             raise InvalidArgument(
@@ -116,8 +118,8 @@ class ComputeNode:
             _default_easyremote_root() / "abilities"
         )
         self._ability_control = ability_control or AbilityControl()
-        self._runtime_bootstrap = runtime_bootstrap or DeviceRuntimeBootstrap()
-        self._runtime_lease: DeviceRuntimeLease | None = None
+        self._runtime_provider = runtime_provider or LocalRuntimeProvider()
+        self._runtime_connection: easynet_sdk.RuntimeConnection | None = None
         self._host = HostServer(self._abilities_dir.parent / "host.sock")
         self._abilities: dict[str, AbilityInfo] = {}
         self._started = False
@@ -220,28 +222,28 @@ class ComputeNode:
         if self._started:
             return
         self._check_gateway()
-        runtime_lease = self._runtime_bootstrap.ensure()
-        self._host.start()
+        connection = self._runtime_provider.connect()
         try:
+            self._host.start()
             for info in self._abilities.values():
                 self._deploy(info)
         except BaseException:
             self._host.stop()
-            runtime_lease.close()
+            _close_runtime_connection(connection)
             self._started = False
             raise
-        self._runtime_lease = runtime_lease
+        self._runtime_connection = connection
         self._started = True
 
     def stop(self) -> None:
         try:
             self._host.stop()
         finally:
-            lease = self._runtime_lease
-            self._runtime_lease = None
+            connection = self._runtime_connection
+            self._runtime_connection = None
             self._started = False
-            if lease is not None:
-                lease.close()
+            if connection is not None:
+                _close_runtime_connection(connection)
 
     def __enter__(self) -> ComputeNode:
         self.start()
@@ -271,13 +273,11 @@ class ComputeNode:
         self._ability_control.install(info.package_dir, node="local")
 
     def _print_ready(self) -> None:
-        """Show the user what became callable without exposing bootstrap APIs."""
+        """Show the user what became callable through the connected runtime."""
 
-        lease = self._runtime_lease
-        if lease is None:
+        if self._runtime_connection is None:
             return
-        action = "started" if lease.started_daemon else "reused"
-        print(f"✓ {action} easynet-daemon for {lease.identity.device_ura}")
+        print("✓ Connected to canonical runtime")
         for ability in self._abilities.values():
             print(f"✓ Published {ability.ura or ability.qualified_name}")
 
@@ -386,6 +386,13 @@ def _derived_lambda_name(fn: Callable[..., Any]) -> str:
         seed = f"callable:{type(fn).__module__}.{type(fn).__qualname__}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
     return f"fn_{digest}"
+
+
+def _close_runtime_connection(connection: easynet_sdk.RuntimeConnection) -> None:
+    try:
+        connection.close()
+    except easynet_sdk.SDKError as exc:
+        raise error_from_sdk(exc) from exc
 
 
 def _default_easyremote_root() -> Path:

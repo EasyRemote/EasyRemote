@@ -42,39 +42,9 @@ def test_main_rejects_unknown_commands(capsys):
     assert "usage" in capsys.readouterr().err
 
 
-def test_hub_command_starts_gateway_without_blocking(monkeypatch, capsys):
-    started = []
-
-    class FakeGateway:
-        endpoint = "host:9443"
-        fingerprint = "AA:BB"
-        pairing_guidance = "pair host"
-
-        def __init__(self, *, port, realm, tls):
-            self.port = port
-            self.realm = realm
-            self.tls = tls
-
-        def start(self, *, block):
-            started.append((self.port, self.realm, self.tls, block))
-
-        def stop(self):
-            raise AssertionError("no-block should not stop a foreground loop")
-
-    monkeypatch.setattr("easyremote._cli.Gateway", FakeGateway)
-
-    assert main(["hub", "--port", "9443", "--realm", "acme", "--no-block"]) == 0
-
-    out = capsys.readouterr().out
-    assert started == [(9443, "acme", "self-signed", False)]
-    assert "hub endpoint: host:9443" in out
-    assert "tls fingerprint: AA:BB" in out
-    assert "pair host" in out
-
-
-def test_hub_command_requires_cert_key_pair(capsys):
-    assert main(["hub", "--cert-pem", "cert.pem", "--no-block"]) == 2
-    assert "must be provided together" in capsys.readouterr().err
+def test_hub_lifecycle_command_is_not_owned_by_easyremote(capsys):
+    assert main(["hub"]) == 2
+    assert "invalid choice" in capsys.readouterr().err
 
 
 def test_ability_install_command_uses_control(monkeypatch, tmp_path, capsys):
@@ -210,9 +180,7 @@ def test_agent_add_and_list_commands_use_control(monkeypatch, capsys):
         )
         == 0
     )
-    assert calls == [
-        ("caesura", "claude-code", "sonnet", None, None, ["--verbose"])
-    ]
+    assert calls == [("caesura", "claude-code", "sonnet", None, None, ["--verbose"])]
     assert "registered: caesura" in capsys.readouterr().out
 
     assert main(["agent", "list"]) == 0

@@ -75,12 +75,10 @@ Ray, Modal, and RunPod make remote execution *easy*. Tool protocols make agents 
 pip install easyremote
 
 # One-time identity setup (signs invocations and receipt chains).
-# `node.serve()` then starts or reuses the local device daemon automatically.
+# Start the device or Hub runtime with EasyNet-Cli operator tooling.
+# `node.serve()` connects to that operator-managed runtime.
 easynet pair
 easyremote doctor                            # optional runtime diagnosis
-
-# On a hub/VPS, EasyRemote can start the hub daemon facade directly:
-easyremote hub --realm my-team
 
 # Ability and agent control surfaces are also available through the
 # same daemon Invocation facade:
@@ -201,8 +199,6 @@ configured. See [`examples/06_owner_handles.py`](examples/06_owner_handles.py).
 
 | Use case | Minimal facade |
 |---|---|
-| Start this machine as a hub | `Gateway(realm="my-team").start()` or `easyremote hub --realm my-team` |
-| Hold a raw daemon lifecycle handle | `DaemonHandle.start_hub("my-team")`, `DaemonHandle.start_device("gpu-1")` |
 | Publish local functions | `node = ComputeNode(); @node.register; node.serve()` |
 | Result-first call | `Client().execute("ai_inference", prompt="hi")` |
 | Target a device / agent / hub | `Client().device("gpu-2").call(...)`, `Client().agent("u.a").call(...)`, `Client().hub().call(...)` |
@@ -244,8 +240,7 @@ v2 is a clean reimplementation on the EasyNet stack ([EasyNet-Axon](https://gith
 | Three-layer client / `@remote` stubs / async mirror | ✅ |
 | Pipeline → EAL → mission.run | ✅ EasyRemote owns plan/projection/event-tail semantics; `Pipeline.run()` dispatches via generic `Client.invoke` |
 | Direct Mission/EAL run facade | ✅ `Client().missions.run_eal/run_file/track/cancel` plus `easyremote mission run/track/cancel` |
-| Server (hub + self-signed TLS bootstrap) | ✅ |
-| `easyremote hub` | ✅ starts the local daemon in hub mode via the Gateway facade |
+| Runtime connection | ✅ `ComputeNode` acquires an SDK `RuntimeConnection`; EasyNet-Cli owns device/Hub configuration and process lifecycle |
 | `easyremote doctor` | ✅ |
 | Streaming | ✅ host_stream producer/consumer implemented; see `examples/04_streaming_*.py` |
 | Async functions / generators (sync + async) | ✅ |

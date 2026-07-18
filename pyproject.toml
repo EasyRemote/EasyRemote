@@ -47,7 +47,6 @@ Repository = "https://github.com/Qingbolan/EasyRemote.git"
 
 [project.optional-dependencies]
 pydantic = ["pydantic>=2.0"]
-gateway = ["cryptography>=42"]
 
 [dependency-groups]
 dev = [
@@ -96,10 +95,6 @@ addopts = ["--strict-markers", "--strict-config"]
 markers = [
     "integration: requires a running easynet-daemon",
 ]
-
-[[tool.mypy.overrides]]
-module = "cryptography.*"
-ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "easynet_sdk._axon_pb.*"

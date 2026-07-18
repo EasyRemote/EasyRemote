@@ -14,14 +14,13 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import easynet_sdk
 
 from . import config
 from .control import AbilityControl, AgentControl
 from .errors import RemoteError
-from .gateway import Gateway, TLSConfig
 from .mission import MissionControl
 
 __all__ = ["main"]
@@ -99,8 +98,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "doctor":
         return _run_doctor()
-    if args.command == "hub":
-        return _run_hub(args)
     if args.command == "ability":
         return _run_ability(args)
     if args.command == "agent":
@@ -120,32 +117,6 @@ def _run_doctor() -> int:
     failed = sum(1 for check in checks if not check.ok)
     print(f"\n{len(checks) - failed}/{len(checks)} checks passed")
     return failed
-
-
-def _run_hub(args: argparse.Namespace) -> int:
-    if bool(args.cert_pem) != bool(args.key_pem):
-        print(
-            "easyremote hub: --cert-pem and --key-pem must be provided together",
-            file=sys.stderr,
-        )
-        return 2
-    tls = _tls_from_args(args)
-    gateway = Gateway(port=args.port, realm=args.realm, tls=tls)
-    gateway.start(block=False)
-    print(f"hub endpoint: {gateway.endpoint}")
-    print(f"tls fingerprint: {gateway.fingerprint}")
-    print(gateway.pairing_guidance)
-    if args.no_block:
-        return 0
-    try:
-        import threading
-
-        threading.Event().wait()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        gateway.stop()
-    return 0
 
 
 def _run_ability(args: argparse.Namespace) -> int:
@@ -232,8 +203,7 @@ def _run_agent(args: argparse.Namespace) -> int:
             registered = response.get("runtime_registered", 0)
             failed = response.get("runtime_failed", 0)
             print(
-                "refreshed:"
-                f" scanned={scanned} registered={registered} failed={failed}"
+                f"refreshed: scanned={scanned} registered={registered} failed={failed}"
             )
         return 0
     print("easyremote agent: unknown subcommand", file=sys.stderr)
@@ -279,32 +249,11 @@ def _print_ability_rows(records: list[Any]) -> None:
         print(f"{record.ability_ura or record.name}{owner}{state}")
 
 
-def _tls_from_args(args: argparse.Namespace) -> TLSConfig | Literal["self-signed"]:
-    cert = args.cert_pem
-    key = args.key_pem
-    if cert and key:
-        return TLSConfig(cert_pem=Path(cert), key_pem=Path(key))
-    return "self-signed"
-
-
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="easyremote")
     subcommands = parser.add_subparsers(dest="command", required=True)
 
     subcommands.add_parser("doctor", help="diagnose the local EasyNet link")
-
-    hub = subcommands.add_parser(
-        "hub", help="start this machine as an EasyNet hub daemon"
-    )
-    hub.add_argument("--port", type=int, default=8443)
-    hub.add_argument("--realm", default="localhost")
-    hub.add_argument("--cert-pem")
-    hub.add_argument("--key-pem")
-    hub.add_argument(
-        "--no-block",
-        action="store_true",
-        help="start the hub and return immediately",
-    )
 
     ability = subcommands.add_parser(
         "ability", help="install and inspect daemon-published abilities"

@@ -195,9 +195,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-gateway = [
-    { name = "cryptography" },
-]
 pydantic = [
     { name = "pydantic" },
 ]
@@ -212,11 +209,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cryptography", marker = "extra == 'gateway'", specifier = ">=42" },
     { name = "easynet-sdk", editable = "../EasyNet-Cli/sdk/python" },
     { name = "pydantic", marker = "extra == 'pydantic'", specifier = ">=2.0" },
 ]
-provides-extras = ["pydantic", "gateway"]
+provides-extras = ["pydantic"]
 
 [package.metadata.requires-dev]
 dev = [

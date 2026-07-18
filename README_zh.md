@@ -75,12 +75,10 @@ Ray、Modal、RunPod 把远程执行做**易**，工具协议让 agent 变得**�
 pip install easyremote
 
 # 一次性身份配置（为签名调用与回执链建立身份）。
-# 此后 `node.serve()` 会自动复用或启动本机 device daemon。
+# 使用 EasyNet-Cli 运维入口启动 device 或 Hub runtime。
+# `node.serve()` 只连接该 operator-managed runtime。
 easynet pair
 easyremote doctor                            # 可选：逐项体检运行时
-
-# 在 hub/VPS 上，EasyRemote 可直接以 hub 模式启动 daemon facade：
-easyremote hub --realm my-team
 
 # ability / agent 控制面也走同一个 daemon Invocation facade：
 easyremote ability install ./my_ability
@@ -90,8 +88,8 @@ easyremote mission run ./nightly.eal --label nightly
 ```
 
 之后就是上面的 12 行。首次运行若未配对，`node.serve()` 不会伪造身份；它会清楚
-打印唯一需要的操作 `easynet pair` 后退出。配对完成后，同一脚本会依次检查 SDK、
-复用或启动 device daemon、启动 warm host，并发布全部已注册 capability。
+打印唯一需要的操作 `easynet pair` 后退出。配对完成且 EasyNet-Cli 已启动 runtime
+后，同一脚本会连接 runtime、启动 warm host，并发布全部已注册 capability。
 
 ### 三层调用面（渐进暴露）
 
@@ -185,8 +183,6 @@ hub.call("route", target="gpu-2")           # 临时调用，无需 stub
 
 | Use case | 最小 facade |
 |---|---|
-| 把当前机器作为 hub 启动 | `Gateway(realm="my-team").start()` 或 `easyremote hub --realm my-team` |
-| 持有 daemon 生命周期句柄 | `DaemonHandle.start_hub("my-team")`、`DaemonHandle.start_device("gpu-1")` |
 | 发布本地函数 | `node = ComputeNode(); @node.register; node.serve()` |
 | 结果优先调用 | `Client().execute("ai_inference", prompt="hi")` |
 | 指定 device / agent / hub | `Client().device("gpu-2").call(...)`、`Client().agent("u.a").call(...)`、`Client().hub().call(...)` |
@@ -227,8 +223,7 @@ v2 是基于 EasyNet 栈（[EasyNet-Axon](https://github.com/EasyRemote/EasyNet-
 | 三层客户端 / `@remote` stub / async 镜像 | ✅ |
 | Pipeline → EAL → mission.run | ✅ EasyRemote 自有 plan/projection/event-tail 语义，`Pipeline.run()` 通过通用 `Client.invoke` 发起调用 |
 | 直接 Mission/EAL 运行 facade | ✅ `Client().missions.run_eal/run_file/track/cancel` 与 `easyremote mission run/track/cancel` |
-| Server（hub + 自签 TLS 引导） | ✅ |
-| `easyremote hub` | ✅ 通过 Gateway facade 以 hub 模式启动本机 daemon |
+| Runtime 连接 | ✅ `ComputeNode` 获取 SDK `RuntimeConnection`；device/Hub 配置与进程生命周期由 EasyNet-Cli 持有 |
 | `easyremote doctor` | ✅ |
 | 流式 producer/consumer | ✅ host_stream 路径已实现；见 `examples/04_streaming_*.py` |
 | 服务端 Context 只读身份注入 | ✅ 从 host_stream envelope 注入 `ctx.caller` / `ctx.invocation_id` |

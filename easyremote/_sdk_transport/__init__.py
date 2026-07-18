@@ -18,7 +18,6 @@ from ..config import sdk_environment
 from ..errors import error_from_sdk
 
 __all__ = [
-    "DaemonProcess",
     "FrameStream",
     "Transport",
     "UnaryDispatchPool",
@@ -210,61 +209,3 @@ class FrameStream:
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
-
-
-class DaemonProcess:
-    """Lifecycle handle wrapper over the SDK daemon facade."""
-
-    def __init__(self, handle: easynet_sdk.DaemonHandleFacade) -> None:
-        self._handle = handle
-
-    @classmethod
-    def start(
-        cls,
-        config: easynet_sdk.DaemonStartProjection,
-    ) -> DaemonProcess:
-        try:
-            lifecycle = easynet_sdk.DaemonLifecycleFacade(
-                _environment().daemon_control()
-            )
-            return cls(lifecycle.start(config))
-        except easynet_sdk.SDKError as exc:
-            raise error_from_sdk(exc) from exc
-
-    def status(self) -> dict[str, Any]:
-        try:
-            return self._handle.status_dict()
-        except easynet_sdk.SDKError as exc:
-            raise error_from_sdk(exc) from exc
-
-    def invocation_endpoint(self) -> str:
-        try:
-            return self._handle.invocation_endpoint()
-        except easynet_sdk.SDKError as exc:
-            raise error_from_sdk(exc) from exc
-
-    def open_client(self) -> Transport:
-        try:
-            environment = _environment()
-            return Transport(
-                self._handle.open_transport_adapter(),
-                environment.addressing_client(),
-            )
-        except easynet_sdk.SDKError as exc:
-            raise error_from_sdk(exc) from exc
-
-    def stop(self) -> None:
-        try:
-            self._handle.stop()
-        except easynet_sdk.SDKError as exc:
-            raise error_from_sdk(exc) from exc
-
-    def __enter__(self) -> DaemonProcess:
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.stop()
-
-
-def _environment() -> easynet_sdk.SdkEnvironment:
-    return sdk_environment()

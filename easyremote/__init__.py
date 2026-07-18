@@ -9,7 +9,6 @@ implemented and tested.
 """
 
 from ._version import __version__
-from .bootstrap import DeviceRuntimeBootstrap, RuntimeBootstrapState
 from .client import (
     BidiSession,
     CallTarget,
@@ -30,7 +29,6 @@ from .control import (
     AgentStartResult,
     AgentStopResult,
 )
-from .daemon import DaemonHandle, DaemonStartConfig
 from .errors import (
     Cancelled,
     DeadlineExceeded,
@@ -42,7 +40,6 @@ from .errors import (
     SchemaError,
     Unavailable,
 )
-from .gateway import Gateway, Server, TLSConfig
 from .invocation import Invocation, InvocationTuple, PreparedInvocation
 from .invocation_policy import (
     DEFAULT_INVOCATION_POLICY,
@@ -77,14 +74,10 @@ __all__ = [
     "CompleteExplicit",
     "ComputeNode",
     "Context",
-    "DaemonHandle",
-    "DaemonStartConfig",
     "DeadlineExceeded",
-    "DeviceRuntimeBootstrap",
     "ExplicitSubject",
     "FreshCausal",
     "FreshRoot",
-    "Gateway",
     "InternalError",
     "InvalidArgument",
     "Invocation",
@@ -104,11 +97,8 @@ __all__ = [
     "RemoteOwner",
     "ResolvedTargetSubject",
     "ResourceExhausted",
-    "RuntimeBootstrapState",
     "SchemaError",
-    "Server",
     "Stream",
-    "TLSConfig",
     "Unavailable",
     "__version__",
     "configure",

@@ -99,8 +99,7 @@ canonical 文案全文见附录 A（README hero / landing page 母版）。
 |---|---|---|
 | function（用户写的函数） | 实现资源面（implementation plane） | 无网络身份 |
 | capability（注册产物） | **Ability**（网络可见契约） | URA + schema + 验证边界 |
-| ComputeNode | device + 其上的 daemon（device 模式） | 身份来自 pairing |
-| Gateway / Server | hub（daemon hub/both 模式） | TLS 强制 |
+| ComputeNode | device runtime 的下游 authoring consumer | 身份来自 pairing |
 | 一次调用 | **Invocation**（签名七元组） | caller/callee/ability/subject/nonce/causal/args |
 | 调用结果 | Receipt 的 payload | result-first，receipt-always-available |
 | Pipeline | Mission / EAL 程序 | 每 step 是子 invocation |
@@ -144,14 +143,14 @@ input_schema(JSON Schema, 必填), output_schema?, exec(shell|eal), access }`。
   与 lifecycle handle。
 - Addressing：URA 解析与构造、descriptor reference projection。
 - Receipt：receipt reference、验证与因果链投影。
-- Daemon lifecycle：discovery、start/adopt、status、endpoint 与错误 taxonomy。
+- Runtime connection：discovery、handshake、endpoint、连接状态与错误 taxonomy。
 - EasyRemote 只依赖这个 SDK；其内部使用的协议实现由 CLI SDK 维护。
 
 ### 3.6 拓扑约束
 
 hub 绑 TCP 必须 TLS（Invariant 2，无明文后门）；device 禁绑 TCP、只出不
-进（Invariant 1）；hub 统一已落地（EasyNet-Cli `f96bc02`，2026-06-05），
-daemon SDK 已落地（`88bbd86` / `7ea78eb`）。
+进（Invariant 1）。这些部署约束、TLS material 与 process lifecycle 全部由
+EasyNet-Cli provider 持有；EasyRemote 不创建或写入 daemon 配置。
 
 ---
 
@@ -164,7 +163,7 @@ daemon SDK 已落地（`88bbd86` / `7ea78eb`）。
 │  client.py     Client / AsyncClient / @remote / Stream       │
 │  node.py       ComputeNode / RegisteredFunction / AbilityInfo│
 │  context.py    Context（服务端组合）                          │
-│  gateway.py    Gateway(=Server) → hub daemon 包装             │
+│  runtime_provider.py SDK RuntimeConnection consumer seam      │
 │  schema.py     类型注解 → input/output JSON Schema            │
 │  pipeline.py   Pipeline / MissionRun → EAL → mission.run      │
 │  invocation.py SDK InvocationResult 展示 / 版本化公开边缘适配  │
@@ -174,7 +173,7 @@ daemon SDK 已落地（`88bbd86` / `7ea78eb`）。
 │  _sdk_transport/ SDK adapter 与产品错误映射（私有）           │
 │  _host/        warm host_stream 宿主（私有）                   │
 └──────────────┬─────────────────────────┬─────────────────────┘
-               │ Invocation/URA/回执/生命周期
+               │ Invocation/URA/回执/RuntimeConnection
                          ┌──────▼──────────┐
                          │   easynet_sdk   │
                          └──────┬──────────┘
@@ -216,13 +215,11 @@ credentials.json 密钥自动签名。`sign=None` 表示按路径自动判定，
   平台 wheel 可选内置路径（仅当专门的二进制 wheel 产线实际放入该文件）→
   系统路径。ABI 版本握手：`easynet_abi_version() == 3`，不匹配抛
   `Unavailable(reason="abi_mismatch")`。
-- **easynet-daemon 不随 wheel 分发**。client/node/gateway 三角色均要求
-  本机有已安装、已 pairing 的 daemon。缺失时报错信息直接给出安装与
+- **easynet-daemon 不随 wheel 分发**。client/node 均要求本机有已安装、
+  已 pairing 且由 EasyNet-Cli 启动的 daemon。缺失时报错信息直接给出安装与
   `easynet pair` 命令。
 - `easyremote doctor`（CLI 入口）：诊断 lib 加载、control.json、daemon
   存活、credentials、ABI/IPC 版本，输出逐项 ✓/✗。
-- `easyremote hub`（CLI 入口）：通过 `Gateway` facade 以 hub 模式启动本机
-  daemon，打印 endpoint、TLS fingerprint 与 pairing guidance。
 - `easyremote ability install/list/show` 与 `easyremote agent add/list/stop/refresh`
   均为 Python control facade 的薄 CLI 包装；内部走完整 Invocation 调
   daemon system ability，不 shell 到 `easynet` CLI。`ability list --scope realm`
@@ -253,10 +250,9 @@ credentials.json 密钥自动签名。`sign=None` 表示按路径自动判定，
 
 ```python
 __all__ = [
-    # 三件套（Gateway 为 v2 首选名，Server 永久保留为别名）
-    "Gateway", "Server", "ComputeNode", "Client",
-    # daemon lifecycle / control facades
-    "DaemonHandle", "DaemonStartConfig",
+    # 产品 authoring / invocation
+    "ComputeNode", "Client",
+    # daemon control facades（普通 Invocation，不拥有 process lifecycle）
     "AbilityControl", "AbilityRecord", "AbilityInstallResult",
     "AgentControl", "AgentRecord", "AgentStartResult", "AgentStopResult",
     # 调用
@@ -278,14 +274,10 @@ __all__ = [
 ]
 ```
 
-### 5.2 十二行 hello-world（验收基准，P3 必须原样跑通）
+### 5.2 authoring hello-world（验收基准）
 
 ```python
-# 1. 网关（任意 VPS；首次运行自动出自签证书，打印指纹 + 节点配对命令）
-from easyremote import Gateway
-Gateway(port=8443).start()
-
-# 2. 算力节点（你的设备；身份与网关地址来自一次性 easynet pair）
+# EasyNet-Cli 已完成 pairing、runtime 配置与进程启动。
 from easyremote import ComputeNode
 node = ComputeNode()
 
@@ -295,43 +287,18 @@ def ai_inference(prompt: str) -> str:
 
 node.serve()
 
-# 3. 调用方（任何地方）
+# 调用方（任何地方）
 from easyremote import Client
 print(Client().execute("ai_inference", "Hello EasyNet"))
 ```
 
-与 v1 差异仅两处：`Server(port=8080)` → `Gateway(port=8443)`（TLS 强制；
-`Server` 别名仍可用）；节点首次接入前一次性 `easynet pair`。
+### 5.3 Runtime ownership
 
-### 5.3 `Gateway`
-
-```python
-class Gateway:
-    def __init__(
-        self,
-        port: int = 8443,
-        *,
-        realm: str = "localhost",
-        tls: TLSConfig | Literal["self-signed", "acme"] = "self-signed",
-    ): ...
-
-    def start(self, block: bool = False) -> None
-    def stop(self) -> None
-
-    @property
-    def endpoint(self) -> str            # 对外 TLS endpoint
-    @property
-    def pairing_guidance(self) -> str    # endpoint + 指纹校验说明
-    @property
-    def fingerprint(self) -> str         # 自签证书指纹（带外校验）
-
-Server = Gateway   # v1 兼容别名，永久保留
-```
-
-语义：包装 `DaemonHandle.start(DaemonStartConfig.hub(...))`，也可直接调用
-`DaemonHandle.start_hub(realm)` 取得底层生命周期句柄。
-`self-signed` 自动签发、指纹写进 pairing 命令（节点侧 pin）。
-**没有明文 HTTP 选项**——facade 不替底座开 Invariant 2 的口子。
+EasyRemote 不公开 daemon/Hub lifecycle API，不生成 TLS material，不写
+`daemon-config.toml`，也不启动、停止或 adopt daemon process。
+`LocalRuntimeProvider.connect()` 直接返回 SDK `RuntimeConnection`；
+`ComputeNode.stop()` 只关闭该连接与本地 warm host。Hub/device 部署策略、
+配置和 process lifecycle 统一由 EasyNet-Cli provider 管理。
 
 ### 5.4 `ComputeNode`
 
@@ -609,8 +576,8 @@ easyremote.configure(
 
 零配置链路：`Client()` → control.json → daemon.sock；身份 →
 credentials.json。缺失时报错给出 `easynet pair` / `easynet start` 命令。
-CLI 入口：`easyremote doctor` / `easyremote hub` /
-`easyremote ability ...` / `easyremote agent ...`（§4.2）。
+CLI 入口：`easyremote doctor` / `easyremote ability ...` /
+`easyremote agent ...`（§4.2）。
 
 ### 5.11 async 镜像
 
@@ -667,8 +634,7 @@ coroutine；`Stream` 同时实现 `__iter__` 与 `__aiter__`；
 
 | v1 写法 | v2 行为 |
 |---|---|
-| `Server(port).start()` | 可用（别名→Gateway）；自动 TLS + 打印指纹 |
-| `easyremote hub` | 可用；CLI 走同一个 Gateway facade |
+| `Server(port).start()` / `easyremote hub` | **破坏性删除**；Hub 配置与 process lifecycle 归 EasyNet-Cli operator/provider |
 | `easyremote ability install/list/show` | 可用；CLI 走 `AbilityControl`，支持 local/realm catalogue scope |
 | `easyremote agent add/list/stop/refresh` | 可用；CLI 走 `AgentControl` |
 | `easyremote mission run/track/cancel` | 可用；CLI 走 `MissionControl`，运行已有 EAL 源 |
@@ -703,8 +669,8 @@ coroutine；`Stream` 同时实现 `__iter__` 与 `__aiter__`；
 | **P0 链路验证**（1–2 天） | device daemon + SDK Invocation provider + runtime adapter；核实运行时注册路径 | canonical draft、终态和 receipt 均由 SDK 投影；结论写入本文 §6.2 |
 | **P1 `_sdk_transport`**（~3 天） | 组合 SDK adapter、error taxonomy、stream 与 bidi facade | EasyRemote 不加载 C ABI，不复制 stream/unary state machine |
 | **P2 节点侧**（~1 周） | `schema.py` 推导；`register` → ability package → deploy；`_host` host_stream socket | 注册函数可被 daemon `host_stream` executor 调用；无 forwarder 文件 |
-| **P3 客户端侧**（~1 周） | `execute/call/invoke/prepare/stream/session` + `@remote` + `.aio` + read-only `Context` | §5.2 12 行 demo 原样跑通；stream terminal/error 语义有单测 |
-| **P4 gateway + 选点**（~1–2 周） | `Gateway` 包装 + 证书引导；客户端 `pick` 策略 | 双节点同名函数按策略分流；TLS 强制下全链路通 |
+| **P3 客户端侧**（~1 周） | `execute/call/invoke/prepare/stream/session` + `@remote` + `.aio` + read-only `Context` | §5.2 authoring demo 原样跑通；stream terminal/error 语义有单测 |
+| **P4 runtime boundary + 选点**（~1–2 周） | `RuntimeConnection` consumer provider + ownership gate；客户端 `pick` 策略 | 无 daemon/Hub lifecycle authority；双节点同名函数按策略分流 |
 | **P5 pipeline + 退役**（~1 周） | `Pipeline`→EAL→`mission.run`；执行 §7.2 删除清单 | examples smoke tests 全绿；wheel 不含 grpcio；v1 删除矩阵逐项测试 |
 
 阶段间依赖：P1←P0；P2/P3←P1（可并行）；P4←P3；P5←P2+P3。
@@ -740,9 +706,9 @@ coroutine；`Stream` 同时实现 `__iter__` 与 `__aiter__`；
 
 | 风险 | 缓解 |
 |---|---|
-| daemon 无免重启注册路径 | P0 探明；最坏并入 PR 清单，P2 临时用重启注册 |
+| daemon 无免重启注册路径 | P0 探明；缺失则 fail closed 并进入 EasyNet-Cli contract，不在 facade 增加重启逻辑 |
 | axon Python SDK stream 包装未定稿 | 流式一律走 C ABI（§3.5），不依赖 SDK 进度 |
-| hub TLS 提高上手门槛 | self-signed + pairing 命令内嵌指纹；`doctor` 诊断 |
+| Hub TLS 提高上手门槛 | EasyNet-Cli provider 统一 provisioning 与诊断；EasyRemote 不读取或生成 TLS material |
 | 平台 wheel 构建矩阵成本 | 复用 EasyNet-Cli 现有交叉编译产物；首版可只发 mac/linux |
 
 ---
@@ -750,9 +716,7 @@ coroutine；`Stream` 同时实现 `__iter__` 与 `__aiter__`；
 ## 12. 开放问题（待 CTO 拍板）
 
 1. namespace `er`（§6.1）。
-2. `Gateway(tls="acme")` 进首版，还是先 self-signed + pin。
-3. v1 兼容层保留几个 minor 版本。
-4. PyPI 沿用 `easyremote`（major bump 2.0）还是新包名。
+2. PyPI 沿用 `easyremote`（major bump 2.0）还是新包名。
 
 ---
 
@@ -863,9 +827,8 @@ coroutine；`Stream` 同时实现 `__iter__` 与 `__aiter__`；
   InvokeBidi）@ `~/.easynet/daemon.sock`；发现经 `~/.easynet/control.json`
   （socket_path / invocation_endpoint / daemon_identity / IPC 版本协商）。
 - 系统 ability（~60，facade 消费子集见 §3.3）；ability manifest 见 §3.4。
-- `DaemonStartConfig`：`device(node_id)` / `hub()` / `with_realm` /
-  `with_env` / `with_log_path` / `detached` / `start()`；`DaemonMode =
-  Device | Hub | Both`。
+- runtime host start/configuration API 属于 EasyNet-Cli provider；
+  EasyRemote 不导入或投影这些类型。
 - 约束：hub TCP 必须 TLS；device 禁绑 TCP；SIGHUP 仅热载 federated_peers
   与 quota。
 
@@ -876,6 +839,6 @@ coroutine；`Stream` 同时实现 `__iter__` 与 `__aiter__`；
 - `AddressingClient`：URA、ability descriptor reference 与 owner projection。
 - `ReceiptClient`：verification、causal receipt reference 与 terminal receipt
   projection。
-- `DaemonLifecycleFacade`：daemon start/adopt/status/endpoint；私钥仍由 daemon
-  key-service 托管，EasyRemote 不接触密钥材料。
+- `RuntimeConnection`：discovery、handshake、连接状态与关闭；私钥仍由 daemon
+  key-service 托管，EasyRemote 不接触密钥材料或 daemon lifecycle。
 - EasyRemote 不直接依赖或实例化底层协议 SDK/runtime。
