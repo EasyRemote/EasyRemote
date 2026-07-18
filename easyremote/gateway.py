@@ -21,11 +21,11 @@ certificates pass :class:`TLSConfig` and need nothing extra.
 
 from __future__ import annotations
 
-import socket
-import threading
 import base64
 import hashlib
 import json
+import socket
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -268,7 +268,7 @@ class _GatewayConfig:
     tls_key_path: Path
     hostname: str
 
-    def validate(self) -> "_GatewayConfig":
+    def validate(self) -> _GatewayConfig:
         if not 1 <= self.port <= 65535:
             raise InvalidArgument(
                 "gateway port must be between 1 and 65535",

@@ -47,5 +47,7 @@ if __name__ == "__main__":
     result = client.execute("slow_add", a=2, b=3)
     ms = (time.perf_counter() - t0) * 1000
     print("\n=== async unary (slow_add) ===")
-    print(f"   slow_add(2, 3) = {result}  in {ms:.0f} ms"
-          f"  (expect ≳ {GAP * 1000:.0f} ms = the awaited sleep)")
+    print(
+        f"   slow_add(2, 3) = {result}  in {ms:.0f} ms"
+        f"  (expect ≳ {GAP * 1000:.0f} ms = the awaited sleep)"
+    )

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from ..errors import InvalidArgument, RemoteError
+from ..errors import InvalidArgument
 
 EMPTY_OUTPUT_HASH = (
     "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -24,12 +24,14 @@ class HostRequest:
     parent_receipt: dict[str, object] | None = None
 
     @classmethod
-    def from_envelope(cls, raw: str) -> "HostRequest":
+    def from_envelope(cls, raw: str) -> HostRequest:
         try:
             decoded = json.loads(raw)
         except (TypeError, json.JSONDecodeError) as exc:
             raise _invalid(f"host_stream envelope is not valid JSON: {exc}") from exc
-        if not isinstance(decoded, dict) or not isinstance(decoded.get("request"), dict):
+        if not isinstance(decoded, dict) or not isinstance(
+            decoded.get("request"), dict
+        ):
             raise _invalid("host_stream envelope requires a request object")
         request = decoded["request"]
         for field_name in ("fn", "call_id", "caller"):
@@ -69,7 +71,7 @@ class HostSession:
     output_hash: str = EMPTY_OUTPUT_HASH
 
     @classmethod
-    def from_envelope(cls, raw: str) -> "HostSession":
+    def from_envelope(cls, raw: str) -> HostSession:
         return cls(HostRequest.from_envelope(raw))
 
     def emit(self, value: object) -> HostFrame:

@@ -247,7 +247,10 @@ class MissionExecutionAdapter:
         args: Mapping[str, object],
     ) -> dict[str, object]:
         try:
-            result = self._client.invoke(str(ability), **dict(args)).result()
+            result = self._client.invoke(
+                str(ability),
+                **dict(args),
+            ).result()
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
         except RemoteError:
@@ -575,7 +578,9 @@ def _optional_mapping(
     return dict(value)
 
 
-def _validate_receipt_anchor(value: Mapping[str, object]) -> easynet_sdk.ReceiptReference:
+def _validate_receipt_anchor(
+    value: Mapping[str, object],
+) -> easynet_sdk.ReceiptReference:
     receipt_ura = _required_text(value, "receipt_ura")
     receipt_hash = _required_text(value, "receipt_hash")
     try:

@@ -147,7 +147,9 @@ def test_pipeline_validates_daemon_child_invocation_facts():
               "ledger_state": "completed",
               "receipt": {
                 "receipt_ura": "easynet:///r/acme/resource/agent.easyremote.test/invocation/r-1/receipt",
-                "receipt_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                "receipt_hash": """
+        b'"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"'
+        b"""
               }
             }
           ],

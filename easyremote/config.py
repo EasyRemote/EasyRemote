@@ -111,7 +111,9 @@ def sdk_environment(
     """
 
     current = settings()
-    library_path = str(current.library_path) if current.library_path is not None else None
+    library_path = (
+        str(current.library_path) if current.library_path is not None else None
+    )
     return easynet_sdk.SdkEnvironment(
         library_path=library_path,
         control_path=str(control_path or current.control_path),
