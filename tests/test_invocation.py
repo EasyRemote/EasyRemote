@@ -6,8 +6,8 @@ from typing import cast
 import easynet_sdk
 import pytest
 
-from easyremote.errors import InternalError, InvalidArgument
-from easyremote.invocation import Invocation, PreparedInvocation
+from easyremote.errors import InternalError
+from easyremote.invocation import Invocation
 
 CALLER = "easynet:///r/test/device/caller"
 ABILITY = "easynet:///r/test/ability/device.callee.observe.health"
@@ -150,42 +150,6 @@ def test_transport_response_rejects_unknown_or_nonterminal_state(
                 state=easynet_sdk.InvocationLifecycleState.UNSPECIFIED,
             )
         )
-
-
-def test_prepared_invocation_adjustments_round_trip_through_sdk(
-    runtime_receipt,
-) -> None:
-    sent = []
-
-    def dispatch(prepared):
-        sent.append(prepared.draft)
-        return Invocation.from_transport_response(
-            runtime_response(
-                prepared.draft,
-                runtime_receipt,
-                output_json={"answer": 42},
-            )
-        )
-
-    prepared = PreparedInvocation(draft=canonical_draft(), dispatcher=dispatch)
-    adjusted = prepared.with_subject("easynet:///r/test/device/other").with_causal(
-        {"form": "none"}
-    )
-
-    assert prepared.draft.subject_ura == SUBJECT
-    assert adjusted.draft.subject_ura == "easynet:///r/test/device/other"
-    assert adjusted.send().result() == {"answer": 42}
-    assert sent == [adjusted.draft]
-
-
-def test_prepared_invocation_rejects_invalid_sdk_adjustment() -> None:
-    prepared = PreparedInvocation(
-        draft=canonical_draft(),
-        dispatcher=lambda _: pytest.fail("must not dispatch"),
-    )
-
-    with pytest.raises(InvalidArgument):
-        prepared.with_subject("")
 
 
 def test_transport_response_rejects_incomplete_receipt_proof(

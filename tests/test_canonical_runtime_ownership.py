@@ -111,25 +111,17 @@ def test_policy_adapters_have_zero_new_internal_callers() -> None:
     assert _internal_adapter_callers(sources, policy) == []
 
 
-def test_receipt_chain_adapter_contains_no_local_chain_rule() -> None:
-    source = (PACKAGE / "receipts.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    receipt_chain = _class_node(tree, "ReceiptChain")
-    verify = _method_node(receipt_chain, "verify_continuity")
-    attributes = {
-        node.attr for node in ast.walk(verify) if isinstance(node, ast.Attribute)
-    }
+def test_product_exports_no_canonical_invocation_or_receipt_model() -> None:
+    package = (PACKAGE / "__init__.py").read_text(encoding="utf-8")
+    invocation = (PACKAGE / "invocation.py").read_text(encoding="utf-8")
 
-    assert "prev_receipt_hash" not in attributes
-    assert "self_hash" not in attributes
-    assert any(isinstance(node, ast.Raise) for node in ast.walk(verify))
-    assert "easynet_sdk.ReceiptClient.verify_chain" in source
-
-
-def test_receipt_lifecycle_is_fail_closed_by_the_sdk_type() -> None:
-    source = (PACKAGE / "receipts.py").read_text(encoding="utf-8")
-
-    assert _receipt_lifecycle_authority_violations(source) == []
+    assert not (PACKAGE / "receipts.py").exists()
+    assert "class InvocationTuple:" not in invocation
+    assert "InvocationWireProjector" not in invocation
+    assert "with_subject" not in invocation
+    assert "with_causal" not in invocation
+    for symbol in RESERVED_ADAPTER_NAMES:
+        assert f'"{symbol}"' not in package
 
 
 def test_edge_adapter_warning_matches_policy_removal_version() -> None:
@@ -148,7 +140,6 @@ def test_sdk_provider_path_is_load_bearing() -> None:
     client = (PACKAGE / "client.py").read_text(encoding="utf-8")
     transport = (PACKAGE / "_sdk_transport" / "__init__.py").read_text(encoding="utf-8")
     invocation = (PACKAGE / "invocation.py").read_text(encoding="utf-8")
-    receipts = (PACKAGE / "receipts.py").read_text(encoding="utf-8")
     addressing = (PACKAGE / "_addressing.py").read_text(encoding="utf-8")
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
@@ -156,12 +147,11 @@ def test_sdk_provider_path_is_load_bearing() -> None:
     assert 'candidate.get("ability_ura")' in client
     assert "info.ability_ura" in addressing
     assert "easynet_sdk.AbilityInvocationClient" in transport
-    assert "class InvocationTuple:" in invocation
-    assert "easynet_sdk.InvocationWireProjector" in invocation
+    assert "class InvocationTuple:" not in invocation
+    assert "easynet_sdk.InvocationWireProjector" not in invocation
     assert 'state_code = response.get("state")' in invocation
     assert 'frame.get("terminal")' not in transport
     assert "hasattr(config" not in transport
-    assert "easynet_sdk.RuntimeReceipt.from_required_mapping" in receipts
     assert '"edge-adapter-policy.v1.json"' in pyproject
     assert "../EasyNet-Axon/sdk/python" not in pyproject
 
@@ -400,18 +390,18 @@ def _receipt_lifecycle_authority_violations(source: str) -> list[str]:
     if len(decoders) != 1:
         return ["receipt lifecycle must have exactly one canonical decoder"]
     decoder = decoders[0]
-    sdk_lookups = [
+    sdk_projections = [
         node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Subscript)
-        and isinstance(node.value, ast.Attribute)
-        and isinstance(node.value.value, ast.Name)
-        and node.value.value.id == "easynet_sdk"
-        and node.value.attr == "InvocationLifecycleState"
+        for node in ast.walk(decoder)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "receipt"
+        and node.attr == "lifecycle_state"
     ]
-    if len(sdk_lookups) != 1:
+    if len(sdk_projections) != 1:
         violations.append(
-            "receipt lifecycle projection must use exactly one SDK enum lookup"
+            "receipt lifecycle projection must use exactly one "
+            "RuntimeReceipt lifecycle state"
         )
     for node in ast.walk(tree):
         if (
@@ -453,6 +443,7 @@ def _receipt_lifecycle_authority_violations(source: str) -> list[str]:
                 "removesuffix",
                 "replace",
                 "strip",
+                "upper",
             }
         ):
             violations.append("local receipt lifecycle normalization")
@@ -462,23 +453,6 @@ def _receipt_lifecycle_authority_violations(source: str) -> list[str]:
             and node.func.id == "int"
         ):
             violations.append("numeric receipt lifecycle normalization")
-    for lookup in sdk_lookups:
-        guarded = next(
-            (
-                node
-                for node in ast.walk(decoder)
-                if isinstance(node, ast.Try)
-                and any(lookup is child for child in ast.walk(node))
-            ),
-            None,
-        )
-        if guarded is None or not any(
-            isinstance(handler.type, ast.Name)
-            and handler.type.id == "KeyError"
-            and any(isinstance(child, ast.Raise) for child in ast.walk(handler))
-            for handler in guarded.handlers
-        ):
-            violations.append("SDK receipt lifecycle lookup is not fail closed")
     return violations
 
 

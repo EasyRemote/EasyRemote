@@ -12,7 +12,6 @@ from .client import CallTarget, Client, Stream
 from .context import ContextTarget
 from .errors import Unavailable
 from .invocation import Invocation
-from .receipts import receipt_reference
 
 
 def dispatcher_from_parent_receipt(
@@ -101,7 +100,7 @@ def _parent_reference(
     receipt: easynet_sdk.RuntimeReceipt,
 ) -> easynet_sdk.ReceiptReference:
     try:
-        return receipt_reference(receipt)
+        return easynet_sdk.ReceiptReference.from_runtime_receipt(receipt)
     except easynet_sdk.SDKError as exc:
         raise Unavailable(
             "Context child dispatch requires a parent receipt_ura and"

@@ -33,7 +33,6 @@ from .._context_dispatch import dispatcher_from_parent_receipt
 from .._json import dumps_wire
 from ..context import Context, ContextChildDispatcher
 from ..errors import InternalError, InvalidArgument, RemoteError
-from ..receipts import receipt_from_mapping
 from ..schema import PARAMETER_ORDER_KEY, VAR_POSITIONAL_KEY, DerivedSignature
 from .protocol import HostFrame, HostRequest, HostSession
 
@@ -371,7 +370,9 @@ class HostServer:
 
     def _context_for_request(self, request: HostRequest) -> Context:
         parent = (
-            receipt_from_mapping(dict(request.parent_receipt))
+            easynet_sdk.RuntimeReceipt.from_required_mapping(
+                dict(request.parent_receipt)
+            )
             if request.parent_receipt is not None
             else None
         )

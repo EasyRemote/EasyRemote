@@ -14,6 +14,7 @@ from typing import Any, cast
 import easynet_sdk
 import pytest
 from conftest import canonical_runtime_receipt_pair
+from easynet_sdk import InvocationLifecycleState as InvocationState
 
 from easyremote.client import (
     BidiSession,
@@ -38,7 +39,6 @@ from easyremote.invocation_policy import (
     ResolvedTargetSubject,
 )
 from easyremote.mission import MissionControl
-from easyremote.receipts import InvocationState
 from easyremote.schema import PARAMETER_ORDER_KEY, VAR_POSITIONAL_KEY
 
 IDENTITY = LocalIdentity(
@@ -771,16 +771,6 @@ def test_policy_must_produce_an_sdk_request_before_dispatch():
 
     assert exc_info.value.reason == "invalid_invocation_derivation_policy"
     assert transport.invocations == []
-
-
-def test_prepare_inspect_adjust_send():
-    client, transport = make_client()
-    prepared = client.prepare("fn", x=1)
-    assert prepared.tuple.subject_ura == DEVICE_URA
-    adjusted = prepared.with_subject("easynet:///r/acme/device/other")
-    invocation = adjusted.send()
-    assert transport.invocations[0]["subject_ura"] == "easynet:///r/acme/device/other"
-    assert invocation.state is InvocationState.COMPLETED
 
 
 def test_sign_true_is_honest_about_pending_path():

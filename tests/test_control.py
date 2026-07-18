@@ -7,12 +7,12 @@ from typing import cast
 import easynet_sdk
 import pytest
 from conftest import canonical_runtime_receipt_pair
+from easynet_sdk import InvocationLifecycleState as InvocationState
 
 from easyremote.client import Client
 from easyremote.control import AbilityControl, AgentControl
 from easyremote.errors import InvalidArgument, Unavailable
 from easyremote.identity import LocalIdentity
-from easyremote.receipts import InvocationState
 
 IDENTITY = LocalIdentity(
     realm="acme", node_id="dev-a", username="u-alice", hub_endpoint="hub:443"

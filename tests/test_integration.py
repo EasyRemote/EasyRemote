@@ -17,8 +17,7 @@ from pathlib import Path
 
 import easynet_sdk
 import pytest
-
-from easyremote.receipts import InvocationState
+from easynet_sdk import InvocationLifecycleState as InvocationState
 
 
 def _live_daemon_available() -> str | None:

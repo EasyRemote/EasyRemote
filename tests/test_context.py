@@ -2,6 +2,7 @@
 
 import easynet_sdk
 import pytest
+from easynet_sdk import InvocationLifecycleState as InvocationState
 
 from easyremote._context_dispatch import dispatcher_from_parent_receipt
 from easyremote.context import Context, ContextTarget
@@ -11,7 +12,6 @@ from easyremote.invocation_policy import (
     FreshContextChild,
     ResolvedTargetSubject,
 )
-from easyremote.receipts import InvocationState
 
 
 class FakeChildDispatcher:
