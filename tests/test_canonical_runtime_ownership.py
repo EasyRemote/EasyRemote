@@ -149,7 +149,8 @@ def test_sdk_provider_path_is_load_bearing() -> None:
     assert "easynet_sdk.AbilityInvocationClient" in transport
     assert "class InvocationTuple:" not in invocation
     assert "easynet_sdk.InvocationWireProjector" not in invocation
-    assert 'state_code = response.get("state")' in invocation
+    assert "result.lifecycle_state" in invocation
+    assert _raw_result_lifecycle_authority_violations(invocation) == []
     assert 'frame.get("terminal")' not in transport
     assert "hasattr(config" not in transport
     assert '"edge-adapter-policy.v1.json"' in pyproject
@@ -214,6 +215,10 @@ def _decode_runtime_receipt(value):
             return receipt, state
     return receipt, InvocationState.UNSPECIFIED
 """
+    raw_result_lifecycle = """
+def project(response):
+    return easynet_sdk.InvocationLifecycleState(response.get("state"))
+"""
 
     assert _canonical_model_violations(renamed_invocation, adapters)
     assert _canonical_model_violations(renamed_receipt, adapters)
@@ -222,6 +227,7 @@ def _decode_runtime_receipt(value):
     assert _ura_violations(embedded_grammar)
     assert _ura_violations(retired_address_term)
     assert _receipt_lifecycle_authority_violations(fail_open_receipt_lifecycle)
+    assert _raw_result_lifecycle_authority_violations(raw_result_lifecycle)
 
 
 def _policy() -> dict[str, Any]:
@@ -454,6 +460,34 @@ def _receipt_lifecycle_authority_violations(source: str) -> list[str]:
         ):
             violations.append("numeric receipt lifecycle normalization")
     return violations
+
+
+def _raw_result_lifecycle_authority_violations(source: str) -> list[str]:
+    violations: list[str] = []
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "response"
+            and node.func.attr == "get"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value in {"state", "terminal_state"}
+        ):
+            violations.append("raw response lifecycle interpretation")
+        if isinstance(node, ast.Call) and (
+            (isinstance(node.func, ast.Name) and node.func.id == "InvocationState")
+            or (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "easynet_sdk"
+                and node.func.attr == "InvocationLifecycleState"
+            )
+        ):
+            violations.append("product-owned result lifecycle interpretation")
+    return sorted(set(violations))
 
 
 def _public_class_fields(node: ast.ClassDef) -> set[str]:

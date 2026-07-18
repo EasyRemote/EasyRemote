@@ -137,19 +137,26 @@ def test_transport_response_requires_sdk_runtime_result() -> None:
         Invocation.from_transport_response({"ok": True})
 
 
-def test_transport_response_rejects_unknown_or_nonterminal_state(
+def test_transport_response_uses_only_sdk_owned_terminal_state(
     runtime_receipt,
 ) -> None:
     draft = canonical_draft()
 
-    with pytest.raises(InternalError, match="non-terminal Invocation state"):
-        Invocation.from_transport_response(
-            runtime_response(
-                draft,
-                runtime_receipt,
-                state=easynet_sdk.InvocationLifecycleState.UNSPECIFIED,
-            )
+    invocation = Invocation.from_transport_response(
+        runtime_response(
+            draft,
+            runtime_receipt,
+            state=easynet_sdk.InvocationLifecycleState.UNSPECIFIED,
         )
+    )
+    assert invocation.state is easynet_sdk.InvocationLifecycleState.COMPLETED
+
+    response = runtime_response(draft, runtime_receipt)
+    runtime_result = response["sdk_runtime_result"]
+    assert isinstance(runtime_result, dict)
+    runtime_result["terminal_state"] = "Running"
+    with pytest.raises(InternalError, match="terminal_receipt state does not match"):
+        Invocation.from_transport_response(response)
 
 
 def test_transport_response_rejects_incomplete_receipt_proof(

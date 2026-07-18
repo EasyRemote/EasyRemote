@@ -80,20 +80,7 @@ class Invocation:
                 f"SDK runtime result projection is malformed: {exc}",
                 reason="protocol",
             ) from exc
-        state_code = response.get("state")
-        if not isinstance(state_code, int) or isinstance(state_code, bool):
-            raise InternalError(
-                "SDK transport response has no recognized canonical terminal state",
-                reason="protocol",
-            )
-        try:
-            state = easynet_sdk.InvocationLifecycleState(state_code)
-        except ValueError as exc:
-            raise InternalError(
-                "SDK transport response has no recognized canonical terminal state",
-                reason="protocol",
-            ) from exc
-        return cls(result, state, response)
+        return cls(result, result.lifecycle_state, response)
 
     @property
     def tuple(self) -> easynet_sdk.InvocationDraft:
