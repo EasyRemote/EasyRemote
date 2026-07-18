@@ -1,5 +1,6 @@
 """Daemon lifecycle facade: typed start config and handle delegation."""
 
+import easynet_sdk
 import pytest
 
 from easyremote.daemon import DaemonHandle, DaemonStartConfig
@@ -47,11 +48,14 @@ def test_factory_options_are_carried_in_wire(tmp_path):
 
 
 def test_explicit_foreground_is_preserved():
-    assert DaemonStartConfig(
-        mode="device",
-        node_id="dev-a",
-        detached=False,
-    ).to_wire()["detach"] is False
+    assert (
+        DaemonStartConfig(
+            mode="device",
+            node_id="dev-a",
+            detached=False,
+        ).to_wire()["detach"]
+        is False
+    )
 
 
 def test_device_start_config_requires_node_id():
@@ -105,7 +109,10 @@ def test_handle_convenience_start_methods(monkeypatch):
 
     assert isinstance(hub, DaemonHandle)
     assert isinstance(device, DaemonHandle)
+    assert all(
+        isinstance(config, easynet_sdk.DaemonStartProjection) for config in started
+    )
     assert [config.to_wire_dict() for config in started] == [
-        {"mode": "hub", "realm": "acme", "detach": True},
-        {"mode": "device", "node_id": "dev-a"},
+        {"mode": "hub", "realm": "acme", "detached": True},
+        {"mode": "device", "device_id": "dev-a"},
     ]

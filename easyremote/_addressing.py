@@ -1,11 +1,4 @@
-"""Ability addressing helpers for the Python facade.
-
-This module projects user-facing EasyRemote targets into the explicit
-Invocation tuple fields consumed by the EasyNet-Cli SDK. It uses the SDK
-identity facade for URA semantics, but it must not consult daemon product
-state on disk or shell out to CLI commands; route policy stays inside
-easynet-daemon.
-"""
+"""EasyRemote target selection over the canonical SDK Addressing provider."""
 
 from __future__ import annotations
 
@@ -14,9 +7,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-from . import _sdk_identity
+import easynet_sdk
+
 from .errors import InvalidArgument
-from .identity import LocalIdentity, device_ura
+from .identity import LocalIdentity
 
 PICK_POLICIES = frozenset({"round_robin", "random"})
 CallCarrier = Literal["stream", "unary"]
@@ -24,10 +18,10 @@ CallCarrier = Literal["stream", "unary"]
 
 class Candidate(Protocol):
     @property
-    def name(self) -> str: ...  # verb, e.g. "ai_inference"
+    def name(self) -> str: ...
 
     @property
-    def qualified_name(self) -> str: ...  # full ability URA
+    def ability_ura(self) -> str: ...
 
     @property
     def input_schema(self) -> dict[str, Any] | None: ...
@@ -35,53 +29,37 @@ class Candidate(Protocol):
 
 @dataclass(frozen=True)
 class ResolvedAbility:
-    """One concrete invocation target plus its argument schema."""
+    """Product selection facts consumed by the SDK Invocation provider."""
 
-    callee: str
-    ability: str
+    ability_ura: str
+    default_subject_ura: str
     call_carrier: CallCarrier
     input_schema: dict[str, Any] | None = None
-    ability_ura: str | None = None
-    subject: str | None = None
     argument_label: str | None = None
 
 
 class DiscoveryCache:
-    """Discovery results plus the round-robin selection cursor.
-
-    ``functions()`` populates one of these from a ``discover`` response;
-    targeting reads it back. The selection cursor lives here — the one
-    place that owns mutable selection state — so no collaborator has to
-    thread a cursor dict through every call. An empty cache (no discovery
-    run yet) simply has no candidates and falls back to local addressing.
-    """
+    """Discovery results plus one owned round-robin cursor."""
 
     def __init__(self) -> None:
-        self._schemas: dict[str, dict[str, Any]] = {}  # unambiguous verb → schema
+        self._schemas: dict[str, dict[str, Any]] = {}
         self._schemas_by_ura: dict[str, dict[str, Any]] = {}
-        self._candidates: dict[str, list[Candidate]] = {}  # verb → discover hits
+        self._candidates: dict[str, list[Candidate]] = {}
         self._round_robin: dict[str, int] = {}
 
     def replace(self, candidates: Iterable[Candidate]) -> None:
-        """Adopt a fresh discovery result, discarding the prior one.
-
-        A bare verb schema is cached only when every owner advertising
-        that verb agrees on it: two devices may expose the same verb with
-        different parameter order, so an ambiguous verb stays schema-less
-        until owner selection pins one candidate.
-        """
         self._schemas.clear()
         self._schemas_by_ura.clear()
         self._candidates.clear()
         self._round_robin.clear()
         for info in candidates:
-            if info.name and info.qualified_name:
+            if info.name and info.ability_ura:
                 self._candidates.setdefault(info.name, []).append(info)
-            if info.qualified_name and info.input_schema:
-                self._schemas_by_ura[info.qualified_name] = info.input_schema
+            if info.ability_ura and info.input_schema:
+                self._schemas_by_ura[info.ability_ura] = info.input_schema
         for verb, group in self._candidates.items():
             schemas = [info.input_schema for info in group]
-            if schemas and all(s and s == schemas[0] for s in schemas):
+            if schemas and all(schema and schema == schemas[0] for schema in schemas):
                 assert schemas[0] is not None
                 self._schemas[verb] = schemas[0]
 
@@ -92,11 +70,6 @@ class DiscoveryCache:
         return self._schemas_by_ura.get(ability_ura)
 
     def select(self, verb: str, policy: str) -> Candidate | None:
-        """Pick one discovered candidate for ``verb`` under ``policy``.
-
-        O(1) per call: candidates are pre-grouped by verb, so selection
-        is a single index/choice, not a scan of the discovery result.
-        """
         group = self._candidates.get(verb, ())
         if not group:
             return None
@@ -107,52 +80,26 @@ class DiscoveryCache:
         return group[index % len(group)]
 
 
-def is_ability_ura(value: str) -> bool:
-    """Return true only for canonical EasyNet Ability URAs."""
-    try:
-        parsed = _sdk_identity.parse_ura(value.strip())
-    except _sdk_identity.IdentityFacadeError:
-        return False
-    return str(parsed.kind) == "ability"
-
-
-def _is_owner_ura(value: str) -> bool:
-    try:
-        parsed = _sdk_identity.parse_ura(value.strip())
-    except _sdk_identity.IdentityFacadeError:
-        return False
-    return str(parsed.kind) in {"agent", "device", "hub"}
-
-
 class AbilityAddressResolver:
-    """Resolve EasyRemote target syntax without owning daemon routing policy.
+    """Own EasyRemote selection state while delegating every URA fact to SDK."""
 
-    Holds the per-client :class:`DiscoveryCache` (populated by
-    ``functions()``) so targeting reads discovery results and the
-    round-robin cursor from one owner instead of parallel client dicts.
-    """
-
-    def __init__(self, namespace: str) -> None:
+    def __init__(
+        self,
+        namespace: str,
+        addressing: easynet_sdk.AddressingClient,
+    ) -> None:
         self._namespace = namespace
+        self._addressing = addressing
         self.cache = DiscoveryCache()
 
+    def close(self) -> None:
+        self._addressing.close()
+
     def namespaced(self, function: str) -> str:
-        """Apply the client namespace without guessing daemon-owned aliases."""
-        if is_ability_ura(function) or "." in function:
+        if self.is_ability_ura(function) or "." in function:
             return function
-        if _is_owner_ura(self._namespace):
-            try:
-                ability_ura = _sdk_identity.owner_ability_ura(
-                    self._namespace,
-                    function,
-                )
-            except _sdk_identity.IdentityFacadeError as exc:
-                raise InvalidArgument(
-                    f"cannot derive Ability URA for owner namespace {self._namespace!r}"
-                    f" and function {function!r}",
-                    reason="invalid_owner_namespace",
-                ) from exc
-            return ability_ura
+        if self.is_owner_ura(self._namespace):
+            return self._owner_ability_ura(self._namespace, function)
         return f"{self._namespace}.{function}"
 
     def resolve(
@@ -167,7 +114,7 @@ class AbilityAddressResolver:
         if owner_ura is not None:
             return self._resolve_owner(function, owner_ura)
         function = self.namespaced(function)
-        if is_ability_ura(function):
+        if self.is_ability_ura(function):
             if node is not None or pick is not None:
                 raise InvalidArgument(
                     "a canonical Ability URA already names the callable;"
@@ -180,60 +127,52 @@ class AbilityAddressResolver:
                 argument_label=function,
             )
 
-        ability = function
-        verb = ability.rsplit(".", 1)[-1]
+        verb = function.rsplit(".", 1)[-1]
         if node is not None:
-            return ResolvedAbility(
-                callee=device_ura(identity.realm, node),
-                ability=ability,
-                call_carrier="stream",
-                input_schema=self.cache.schema_for_verb(verb),
-                argument_label=ability,
+            owner = self._sdk_call(
+                lambda: self._addressing.device_ura(identity.realm, node),
+                reason="invalid_device_owner",
             )
+            return self._resolved_short_name(function, owner, verb)
         if pick is not None:
             selected = self._pick(verb, pick)
             if selected is not None:
                 return selected
+        return self._resolved_short_name(function, identity.device_ura, verb)
+
+    def _resolved_short_name(
+        self,
+        function: str,
+        owner_ura: str,
+        verb: str,
+    ) -> ResolvedAbility:
+        ability_ura = self._owner_ability_ura(owner_ura, function)
         return ResolvedAbility(
-            callee=identity.device_ura,
-            ability=ability,
-            call_carrier="stream",
+            ability_ura=ability_ura,
+            default_subject_ura=owner_ura,
+            call_carrier=_call_carrier_for_kind(self.owner_kind(owner_ura)),
             input_schema=self.cache.schema_for_verb(verb),
-            argument_label=ability,
+            argument_label=function,
         )
 
     def _resolve_owner(self, function: str, owner_ura: str) -> ResolvedAbility:
-        """Resolve a function against an explicit owner handle.
-
-        A full Ability URA passes through verbatim. A short name is
-        namespaced (a bare verb gets this client's namespace, a dotted name
-        passes through) and projected onto the owner via the SDK identity
-        facade. The daemon later checks owner == callee descriptor binding.
-        """
-        if is_ability_ura(function):
+        if self.is_ability_ura(function):
             return self.from_ability_ura(
                 function,
                 input_schema=self.cache.schema_for_ura(function),
                 argument_label=function,
             )
         ability_name = function if "." in function else f"{self._namespace}.{function}"
-        try:
-            ability_ura = _sdk_identity.owner_ability_ura(owner_ura, ability_name)
-        except _sdk_identity.IdentityFacadeError as exc:
-            raise InvalidArgument(
-                f"owner {owner_ura!r} cannot publish abilities (users own none;"
-                " ability owners are device, agent, or hub)",
-                reason="invalid_owner_for_ability",
-            ) from exc
+        ability_ura = self._owner_ability_ura(owner_ura, ability_name)
         return self.from_ability_ura(
             ability_ura,
             input_schema=self.cache.schema_for_ura(ability_ura),
             argument_label=ability_ura,
-            call_carrier=_call_carrier_for_owner(owner_ura),
+            call_carrier=_call_carrier_for_kind(self.owner_kind(owner_ura)),
         )
 
-    @staticmethod
     def from_ability_ura(
+        self,
         ability_ura: str,
         *,
         input_schema: dict[str, Any] | None = None,
@@ -241,88 +180,85 @@ class AbilityAddressResolver:
         call_carrier: CallCarrier | None = None,
     ) -> ResolvedAbility:
         try:
-            parsed = _sdk_identity.parse_ura(ability_ura)
-        except _sdk_identity.IdentityFacadeError as exc:
+            projection = self._addressing.project_ability_ura(ability_ura)
+            owner_ura = projection.owner_ura
+        except easynet_sdk.SDKError as exc:
             raise InvalidArgument(
                 f"invalid Ability URA {ability_ura!r}: {exc}",
                 reason="invalid_ability_ura",
             ) from exc
-        if parsed.kind != "ability":
-            raise InvalidArgument(
-                f"expected an Ability URA, got {ability_ura!r}",
-                reason="invalid_ability_ura",
-            )
-
-        # The callee is the ability owner. Axon owns that derivation (it
-        # is the same `AbilitySelector::owner_ura()` the daemon uses to
-        # check owner == callee); the facade must not re-derive it from
-        # owner kinds, or the two could disagree as Axon owners evolve.
-        try:
-            callee = _sdk_identity.owner_ura_for_ability(ability_ura)
-        except _sdk_identity.IdentityFacadeError as exc:
-            raise InvalidArgument(
-                f"cannot derive callee owner for Ability URA {ability_ura!r}",
-                reason="unsupported_ability_owner",
-            ) from exc
-
-        ability = parsed.public_name or _public_name_from_projection(parsed)
-        if not ability:
-            raise InvalidArgument(
-                f"cannot derive public ability name for Ability URA {ability_ura!r}",
-                reason="invalid_ability_ura",
-            )
         return ResolvedAbility(
-            callee=callee,
-            ability=ability,
-            call_carrier=call_carrier or _call_carrier_for_owner(callee),
+            ability_ura=projection.ura,
+            default_subject_ura=projection.ura,
+            call_carrier=call_carrier
+            or _call_carrier_for_kind(self.owner_kind(owner_ura)),
             input_schema=input_schema,
-            ability_ura=ability_ura,
-            subject=ability_ura,
-            argument_label=argument_label or ability_ura,
+            argument_label=argument_label or projection.ura,
+        )
+
+    def owner_kind(self, owner_ura: str) -> str:
+        try:
+            kind = self._addressing.parse_ura(owner_ura.strip()).kind
+        except easynet_sdk.SDKError as exc:
+            raise InvalidArgument(
+                f"invalid owner URA {owner_ura!r}: {exc}",
+                reason="invalid_owner_ura",
+            ) from exc
+        if kind not in {"device", "agent", "hub"}:
+            raise InvalidArgument(
+                f"owner {owner_ura!r} cannot publish abilities",
+                reason="invalid_owner_for_ability",
+            )
+        return kind
+
+    def is_ability_ura(self, value: str) -> bool:
+        try:
+            self._addressing.project_ability_ura(value.strip())
+        except easynet_sdk.SDKError:
+            return False
+        return True
+
+    def is_owner_ura(self, value: str) -> bool:
+        try:
+            kind = self._addressing.parse_ura(value.strip()).kind
+        except easynet_sdk.SDKError:
+            return False
+        return kind in {"agent", "device", "hub"}
+
+    def _owner_ability_ura(self, owner_ura: str, ability_name: str) -> str:
+        return self._sdk_call(
+            lambda: self._addressing.owner_ability_ura(owner_ura, ability_name),
+            reason="invalid_owner_for_ability",
         )
 
     def _pick(self, verb: str, policy: str) -> ResolvedAbility | None:
         if policy not in PICK_POLICIES:
             raise InvalidArgument(
                 f"pick must be one of {sorted(PICK_POLICIES)}, got {policy!r}"
-                " (resource_aware needs daemon-side load metrics — Cli PR-3)",
+                " (resource_aware needs daemon-side load metrics)",
                 reason="invalid_pick_policy",
             )
         info = self.cache.select(verb, policy)
         if info is None:
             return None
         return self.from_ability_ura(
-            info.qualified_name,
+            info.ability_ura,
             input_schema=info.input_schema
-            or self.cache.schema_for_ura(info.qualified_name),
-            argument_label=info.qualified_name,
+            or self.cache.schema_for_ura(info.ability_ura),
+            argument_label=info.ability_ura,
         )
 
-
-def owner_kind(owner_ura: str) -> str:
-    """The canonical owner kind for a device/agent/hub owner URA."""
-    try:
-        parsed = _sdk_identity.parse_ura(owner_ura.strip())
-    except _sdk_identity.IdentityFacadeError as exc:
-        raise InvalidArgument(
-            f"invalid owner URA {owner_ura!r}: {exc}",
-            reason="invalid_owner_ura",
-        ) from exc
-    kind = str(parsed.kind)
-    if kind not in {"device", "agent", "hub"}:
-        raise InvalidArgument(
-            f"owner {owner_ura!r} cannot publish abilities (users own none;"
-            " ability owners are device, agent, or hub)",
-            reason="invalid_owner_for_ability",
-        )
-    return kind
+    @staticmethod
+    def _sdk_call(operation: Any, *, reason: str) -> str:
+        try:
+            return str(operation())
+        except easynet_sdk.SDKError as exc:
+            raise InvalidArgument(str(exc), reason=reason) from exc
 
 
-def _call_carrier_for_owner(owner_ura: str) -> CallCarrier:
-    return "stream" if owner_kind(owner_ura) == "device" else "unary"
+def canonical_addressing_client() -> easynet_sdk.AddressingClient:
+    return easynet_sdk.AddressingClient(easynet_sdk.AxonAddressingTransport())
 
 
-def _public_name_from_projection(projection: _sdk_identity.UraProjection) -> str:
-    if projection.namespace and projection.local_name:
-        return f"{projection.namespace}.{projection.local_name}"
-    return projection.local_name
+def _call_carrier_for_kind(kind: str) -> CallCarrier:
+    return "stream" if kind == "device" else "unary"

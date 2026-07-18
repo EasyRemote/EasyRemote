@@ -19,5 +19,5 @@ print(ai_inference("hello again"))
 # abilities register as host_stream, so dispatch them with call()/stream()
 # after inspection rather than PreparedInvocation.send() / invoke().
 prepared = client.prepare("ai_inference", prompt="inspect me")
-print("tuple.subject:", prepared.tuple.subject)
+print("tuple.subject:", prepared.tuple.subject_ura)
 print("result:", client.call("ai_inference", prompt="inspect me"))

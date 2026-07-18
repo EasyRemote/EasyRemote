@@ -15,9 +15,9 @@ import json
 import os
 from pathlib import Path
 
+import easynet_sdk
 import pytest
 
-from easyremote import _sdk_identity
 from easyremote.receipts import InvocationState
 
 
@@ -59,8 +59,8 @@ def _an_agent_ura() -> str:
 
 def _agent_ability_ura(agent_ura: str, ability: str) -> str:
     try:
-        ability_ura = _sdk_identity.owner_ability_ura(agent_ura, ability)
-    except _sdk_identity.IdentityFacadeError:
+        ability_ura = easynet_sdk.owner_ability_ura(agent_ura, ability)
+    except easynet_sdk.SDKError:
         pytest.skip(f"cannot build Ability URA for {agent_ura}#{ability}")
     return ability_ura
 
@@ -91,7 +91,7 @@ def test_discover_round_trip_and_receipt_shape(client):
         query="",
     )
 
-    assert invocation.state in (InvocationState.COMPLETED, InvocationState.UNSPECIFIED)
+    assert invocation.state is InvocationState.COMPLETED
     result = invocation.result()
     assert isinstance(result, dict)
     assert "candidates" in result, f"discover shape drifted: {sorted(result)}"
@@ -99,9 +99,9 @@ def test_discover_round_trip_and_receipt_shape(client):
     # P0 pin: does the daemon return an admission receipt summary on
     # the unary path, and does it parse through our wrapper?
     receipt = invocation.receipt
-    if receipt is not None:
-        assert receipt.invocation_id
-        assert len(receipt.self_hash) == 32
+    assert isinstance(receipt, easynet_sdk.RuntimeReceipt)
+    assert receipt.invocation_id
+    assert len(receipt.self_receipt_hash()) == 32
 
 
 def test_functions_facade_parses_live_candidates():
@@ -114,4 +114,4 @@ def test_functions_facade_parses_live_candidates():
         infos = scoped.functions(scope="self")
     assert isinstance(infos, list)
     for info in infos:
-        assert info.qualified_name.startswith("easynet:///r/")
+        assert info.ability_ura.startswith("easynet:///r/")

@@ -3,9 +3,8 @@
 Source of truth is the EasyNet-Cli SDK runtime identity projection. EasyRemote
 does not parse daemon credentials directly.
 
-URA policy (ura-discipline): **the EasyNet-Cli SDK owns URA truth**.
-All builders below delegate through ``easyremote._sdk_identity`` so
-EasyRemote does not carry Axon parser or builder imports in product code.
+URA policy: **the EasyNet-Cli SDK owns URA truth**. Product helpers below
+delegate directly to the SDK and never parse or encode URA grammar.
 """
 
 from __future__ import annotations
@@ -14,7 +13,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from . import _sdk_identity
+import easynet_sdk
+
 from .config import runtime_identity_projection
 from .errors import InternalError, Unavailable
 
@@ -29,26 +29,28 @@ __all__ = [
 
 
 def device_ura(realm: str, node_id: str) -> str:
-    """RFC-001 device shape, built by the SDK identity facade."""
-    return _validated_build(lambda: _sdk_identity.device_ura(realm, node_id))
+    """Build a device URA through the canonical SDK provider."""
+    return _validated_build(lambda: easynet_sdk.device_ura(realm, node_id))
 
 
 def agent_ura(realm: str, owner_token: str) -> str:
-    """RFC-001 agent owner shape, built by the SDK identity facade.
+    """Build an agent URA through the canonical SDK provider.
 
-    ``owner_token`` is the ``<user-id>.<agent-id>`` token (the same form the
-    Ability URA carries).
+    ``owner_token`` is EasyRemote's product input ``<user-id>.<agent-id>``.
     """
-    return _validated_build(lambda: _sdk_identity.agent_ura(realm, owner_token))
+    user_id, separator, agent_id = owner_token.strip().partition(".")
+    if not user_id or not separator or not agent_id:
+        raise _identity_internal_error("agent owner token must be user-id.agent-id")
+    return _validated_build(lambda: easynet_sdk.agent_ura(realm, user_id, agent_id))
 
 
 def hub_ura(realm: str) -> str:
-    """RFC-001 hub singleton shape, built by the SDK identity facade."""
-    return _validated_build(lambda: _sdk_identity.hub_ura(realm))
+    """Build the realm hub URA through the canonical SDK provider."""
+    return _validated_build(lambda: easynet_sdk.hub_ura(realm))
 
 
 def resource_ura(realm: str, owner_id: str, path: str) -> str:
-    """Resource URA shape, built by the SDK identity facade."""
+    """Build a device-owned resource URA through the canonical SDK provider."""
     clean_path = path.strip().strip("/")
     if not clean_path:
         raise InternalError(
@@ -61,15 +63,15 @@ def resource_ura(realm: str, owner_id: str, path: str) -> str:
             reason="invalid_resource_owner",
         )
     owner = device_ura(realm, owner_id.removeprefix("device."))
-    return _validated_build(lambda: _sdk_identity.resource_ura(owner, clean_path))
+    return _validated_build(lambda: easynet_sdk.resource_ura(owner, clean_path))
 
 
 def device_ability_ura(
     realm: str, node_id: str, namespace: str, local_name: str
 ) -> str:
-    """Device-owned ability URA, built by the SDK identity facade."""
+    """Build a device-owned Ability URA through the canonical SDK provider."""
     return _validated_build(
-        lambda: _sdk_identity.device_ability_ura(
+        lambda: easynet_sdk.device_ability_ura(
             realm,
             node_id,
             namespace,
@@ -81,21 +83,21 @@ def device_ability_ura(
 def _validated_build(build: Callable[[], str]) -> str:
     try:
         return _validated(build())
-    except _sdk_identity.IdentityFacadeError as exc:
+    except easynet_sdk.SDKError as exc:
         raise _identity_internal_error(
-            f"SDK identity facade rejected constructed URA ({exc}) — likely"
+            f"SDK Addressing provider rejected constructed URA ({exc}) — likely"
             " corrupt credentials; re-pair with `easynet pair`"
         ) from exc
 
 
 def _validated(candidate: str) -> str:
-    """AXIOM 22.2: every URA must round-trip through the SDK facade."""
+    """Every emitted URA must round-trip through the SDK provider."""
     try:
-        _sdk_identity.parse_ura(candidate)
-    except _sdk_identity.IdentityFacadeError as exc:
+        easynet_sdk.parse_ura(candidate)
+    except easynet_sdk.SDKError as exc:
         raise _identity_internal_error(
-            f"constructed URA {candidate!r} is rejected by the SDK identity"
-            f" facade ({exc}) — likely corrupt credentials; re-pair with"
+            f"constructed URA {candidate!r} is rejected by the SDK Addressing"
+            f" provider ({exc}) — likely corrupt credentials; re-pair with"
             " `easynet pair`",
         ) from exc
     return candidate
@@ -120,7 +122,8 @@ class LocalIdentity:
 
     @classmethod
     def from_runtime_projection(
-        cls, projection: Any,
+        cls,
+        projection: Any,
     ) -> LocalIdentity:
         try:
             realm = str(projection.realm)

@@ -1,8 +1,8 @@
 """Product profile ownership gates for EasyRemote production modules."""
 
 import ast
-from pathlib import Path
 import tomllib
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "easyremote"
@@ -76,10 +76,26 @@ def test_retired_mixed_profile_bridge_is_absent() -> None:
     assert imports == []
 
 
+def test_canonical_signing_model_is_sdk_owned() -> None:
+    invocation = ast.parse(
+        (PACKAGE / "invocation.py").read_text(encoding="utf-8"),
+        filename="easyremote/invocation.py",
+    )
+    local_models = {
+        node.name
+        for node in ast.walk(invocation)
+        if isinstance(node, ast.ClassDef)
+        and node.name in {"CallerSignature", "Signer", "SigningMaterial"}
+    }
+    assert local_models == set()
+
+
 def test_product_manifest_has_one_sdk_entrypoint() -> None:
     manifest = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     dependencies = manifest["project"]["dependencies"]
-    assert all(not dependency.startswith("easynet-run-axon") for dependency in dependencies)
+    assert all(
+        not dependency.startswith("easynet-run-axon") for dependency in dependencies
+    )
     assert "easynet-run-axon" not in manifest["tool"]["uv"]["sources"]
 
 

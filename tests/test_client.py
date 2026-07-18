@@ -6,11 +6,14 @@ Invocation contract the same way test_invocation pins the codec half.
 """
 
 import base64
+import inspect
 import json
 import time
+from typing import Any, cast
 
 import easynet_sdk
 import pytest
+from conftest import canonical_runtime_receipt_pair
 
 from easyremote.client import (
     BidiSession,
@@ -28,6 +31,12 @@ from easyremote.errors import (
     Unavailable,
 )
 from easyremote.identity import LocalIdentity
+from easyremote.invocation_policy import (
+    DEFAULT_INVOCATION_POLICY,
+    CompleteExplicit,
+    FreshRoot,
+    InvocationDerivationPolicy,
+)
 from easyremote.mission import MissionControl
 from easyremote.receipts import InvocationState
 from easyremote.schema import PARAMETER_ORDER_KEY, VAR_POSITIONAL_KEY
@@ -36,12 +45,14 @@ IDENTITY = LocalIdentity(
     realm="acme", node_id="dev-a", username="silan", hub_endpoint="hub.example:443"
 )
 DEVICE_URA = "easynet:///r/acme/device/dev-a"
+NONCE = bytes(range(1, 17))
 
 
 def ok_response(result=None, content_type="application/json"):
     payload = (
         json.dumps(result).encode() if content_type == "application/json" else result
     )
+    admission, terminal = canonical_runtime_receipt_pair()
     return {
         "ok": True,
         "state": int(InvocationState.COMPLETED),
@@ -51,7 +62,8 @@ def ok_response(result=None, content_type="application/json"):
         "result_content_type": content_type,
         "result_base64": base64.b64encode(payload).decode() if payload else "",
         "result_json": result if content_type == "application/json" else None,
-        "admission_receipt": None,
+        "admission_receipt": admission,
+        "terminal_receipt": terminal,
     }
 
 
@@ -115,15 +127,29 @@ class FakeTransport:
         self.delay = 0.0
         self.closed = False
         self.bidi_channel = None
+        self._addressing = easynet_sdk.AddressingClient(
+            easynet_sdk.AxonAddressingTransport()
+        )
+        self._invoker = easynet_sdk.AbilityInvocationClient(
+            cast(easynet_sdk.RuntimeClient, object()),
+            self._addressing,
+        )
 
-    def invoke(self, wire):
+    def build_target_invocation(self, request):
+        return self._invoker.build_target_invocation(request)
+
+    def invoke(self, draft):
         if self.delay:
             time.sleep(self.delay)
+        wire = draft.to_json_dict()
         self.invocations.append(wire)
         self.carriers.append("unary")
-        return self.responses.pop(0) if self.responses else ok_response({"echo": True})
+        response = (
+            self.responses.pop(0) if self.responses else ok_response({"echo": True})
+        )
+        return self._canonical_response(draft, response)
 
-    def invoke_signed(self, wire, *, signer=None, options=None):
+    def invoke_signed(self, draft, *, signer=None, options=None):
         _ = options
         if signer is None:
             raise easynet_sdk.SDKError(
@@ -139,12 +165,16 @@ class FakeTransport:
             )
         if self.delay:
             time.sleep(self.delay)
+        wire = draft.to_json_dict()
         self.invocations.append(wire)
         self.carriers.append("signed")
         self.signers.append(signer)
-        return self.responses.pop(0) if self.responses else ok_response({"echo": True})
+        response = (
+            self.responses.pop(0) if self.responses else ok_response({"echo": True})
+        )
+        return self._canonical_response(draft, response)
 
-    def stream(self, wire):
+    def stream(self, draft):
         # execute/call now drain a host_stream; record the wire (same
         # assertions as the old invoke path) and yield the ability result
         # as a single chunk frame followed by terminal. Queued responses
@@ -153,6 +183,7 @@ class FakeTransport:
         # unwrap `result_json` to mirror that.
         if self.delay:
             time.sleep(self.delay)
+        wire = draft.to_json_dict()
         self.invocations.append(wire)
         self.carriers.append("stream")
         response = self.responses.pop(0) if self.responses else {"echo": True}
@@ -162,9 +193,11 @@ class FakeTransport:
             result = response
         return _FakeFrames(result)
 
-    def bidi(self, wire):
+    def bidi(self, draft, streams=()):
         if self.delay:
             time.sleep(self.delay)
+        wire = draft.to_json_dict()
+        self.streams = tuple(streams)
         self.invocations.append(wire)
         self.carriers.append("bidi")
         self.bidi_channel = _FakeBidi()
@@ -172,10 +205,32 @@ class FakeTransport:
 
     def close(self):
         self.closed = True
+        self._addressing.close()
+
+    @staticmethod
+    def _canonical_response(draft, response):
+        value = dict(response)
+        value["sdk_runtime_result"] = {
+            "ok": True,
+            "tuple": draft.to_json_dict(),
+            "invocation_id": "inv-1",
+            "terminal_state": "completed",
+            "output_content_type": value.get("result_content_type", ""),
+            "output_base64": value.get("result_base64", ""),
+            "output_json": value.get("result_json"),
+            "selected_node_id": value.get("selected_node_id", ""),
+            "scheduling_reason": value.get("scheduling_reason", ""),
+            "elapsed_ms": value.get("elapsed_ms", 0),
+            "admission_receipt": value.get("admission_receipt"),
+            "terminal_receipt": value.get("terminal_receipt"),
+            "error": None,
+        }
+        return value
 
 
 class RouteNegativeTransport(FakeTransport):
-    def invoke(self, wire):
+    def invoke(self, draft):
+        wire = draft.to_json_dict()
         self.invocations.append(wire)
         self.carriers.append("unary")
         raise InternalError(
@@ -237,7 +292,10 @@ def test_execute_addresses_local_device_with_namespaced_ability():
 
 def test_dotted_names_pass_through_and_node_targets_device():
     client, transport = make_client()
-    client.call(Client.target("team.fetch_sales", node="gpu-1"), quarter="Q2")
+    client.call(
+        Client.target("team.fetch_sales", node="gpu-1"),
+        quarter="Q2",
+    )
     wire = transport.invocations[0]
     assert (
         wire["descriptor_ref"]
@@ -248,11 +306,7 @@ def test_dotted_names_pass_through_and_node_targets_device():
 
 def test_ability_ura_projects_to_explicit_invocation_tuple():
     ability_ura = "easynet:///r/acme/ability/device.gpu-1.team.fetch_sales"
-    client, transport = make_client(
-        responses=[
-            ok_response({"rows": 3})
-        ]
-    )
+    client, transport = make_client(responses=[ok_response({"rows": 3})])
 
     result = client.call(ability_ura, quarter="Q2")
 
@@ -341,7 +395,7 @@ def test_ability_ura_cannot_be_combined_with_python_targeting():
             Client.target(
                 "easynet:///r/acme/ability/user-1.claude.weather",
                 node="gpu-1",
-            )
+            ),
         )
     assert exc_info.value.reason == "target_override_for_ability_ura"
 
@@ -427,7 +481,7 @@ def test_discovery_enables_positionals_and_fills_defaults():
         "candidates": [
             {
                 "ability": "fn",
-                "qualified_name": "easynet:///r/acme/ability/user.er.fn",
+                "ability_ura": "easynet:///r/acme/ability/user.er.fn",
                 "owner": "er",
                 "description": "",
                 "input_schema": {
@@ -448,6 +502,7 @@ def test_discovery_enables_positionals_and_fills_defaults():
     client, transport = make_client(responses=[ok_response(candidates)])
 
     infos = client.functions()
+    assert infos[0].ability_ura == "easynet:///r/acme/ability/user.er.fn"
     assert infos[0].qualified_name == "easynet:///r/acme/ability/user.er.fn"
     assert (
         transport.invocations[0]["descriptor_ref"]
@@ -570,10 +625,171 @@ def test_discovery_rejects_varargs_duplicate():
 # -- L2 surface ---------------------------------------------------------------------
 
 
+def test_public_invocation_method_shapes_do_not_expose_policy_parameters():
+    client, _ = make_client()
+    mirrors = (client, client.aio)
+
+    for mirror in mirrors:
+        for method_name in ("execute", "call", "stream", "invoke", "prepare"):
+            parameters = inspect.signature(getattr(mirror, method_name)).parameters
+            assert parameters["function"].kind is inspect.Parameter.POSITIONAL_ONLY
+            assert parameters["args"].kind is inspect.Parameter.VAR_POSITIONAL
+            assert parameters["kwargs"].kind is inspect.Parameter.VAR_KEYWORD
+            assert "policy" not in parameters
+
+        session_parameters = inspect.signature(mirror.session).parameters
+        assert session_parameters["function"].kind is inspect.Parameter.POSITIONAL_ONLY
+        assert session_parameters["kwargs"].kind is inspect.Parameter.VAR_KEYWORD
+        assert "policy" not in session_parameters
+
+
+def test_client_exposes_read_only_default_product_policy():
+    client, _ = make_client()
+
+    assert client.invocation_policy is DEFAULT_INVOCATION_POLICY
+    with pytest.raises(AttributeError):
+        client.invocation_policy = DEFAULT_INVOCATION_POLICY  # type: ignore[misc]
+
+
+def test_prepare_preserves_complete_explicit_derivation():
+    policy = CompleteExplicit(
+        subject_ura="easynet:///r/acme/resource/job-1",
+        nonce_base64=base64.b64encode(NONCE).decode("ascii"),
+        causal_context={"form": "none"},
+    )
+    transport = FakeTransport()
+    client = Client(
+        transport=transport,
+        identity=IDENTITY,
+        invocation_policy=policy,
+    )
+
+    prepared = client.prepare("fn", x=1)
+
+    assert client.invocation_policy is policy
+    assert prepared.tuple.subject_ura == "easynet:///r/acme/resource/job-1"
+    assert prepared.tuple.nonce_base64 == base64.b64encode(NONCE).decode("ascii")
+    assert prepared.tuple.causal_context == {"form": "none"}
+
+
+def test_target_policy_overrides_client_policy():
+    client_policy = CompleteExplicit(
+        subject_ura="easynet:///r/acme/resource/client-default",
+        nonce_base64=base64.b64encode(NONCE).decode("ascii"),
+        causal_context={"form": "none"},
+    )
+    target_policy = CompleteExplicit(
+        subject_ura="easynet:///r/acme/resource/target-override",
+        nonce_base64=base64.b64encode(NONCE[::-1]).decode("ascii"),
+        causal_context={"form": "none"},
+    )
+    transport = FakeTransport()
+    client = Client(
+        transport=transport,
+        identity=IDENTITY,
+        invocation_policy=client_policy,
+    )
+
+    prepared = client.prepare(
+        Client.target("fn", invocation_policy=target_policy),
+        x=1,
+    )
+
+    assert prepared.tuple.subject_ura.endswith("/target-override")
+    assert prepared.tuple.nonce_base64 == base64.b64encode(NONCE[::-1]).decode("ascii")
+
+
+def test_released_target_subject_kwarg_lowers_to_one_product_policy():
+    client, transport = make_client()
+
+    with pytest.deprecated_call(match="EasyRemote 1.0.0"):
+        target = Client.target(
+            "fn",
+            subject="easynet:///r/acme/resource/job-1",
+        )
+    prepared = client.prepare(target, x=1)
+
+    assert prepared.tuple.subject_ura == "easynet:///r/acme/resource/job-1"
+    assert transport.invocations == []
+
+
+def test_released_target_causal_kwarg_lowers_to_sdk_receipt_reference():
+    client, _ = make_client()
+    parent = easynet_sdk.ReceiptReference(
+        receipt_ura="easynet:///r/acme/resource/agent.worker/invocation/parent/receipt",
+        receipt_hash=b"\xab" * 32,
+    )
+
+    with pytest.deprecated_call(match="EasyRemote 1.0.0"):
+        target = Client.target("fn", causal=parent)
+    prepared = client.prepare(target, x=1)
+
+    assert prepared.tuple.causal_context == parent.causal_context()
+
+
+def test_target_rejects_legacy_and_canonical_policy_combination():
+    with pytest.raises(InvalidArgument) as exc_info:
+        Client.target(
+            "fn",
+            subject="easynet:///r/acme/resource/job-1",
+            invocation_policy=DEFAULT_INVOCATION_POLICY,
+        )
+    assert exc_info.value.reason == "ambiguous_invocation_derivation_policy"
+
+
+def test_policy_keyword_is_forwarded_as_an_ability_argument():
+    client, transport = make_client()
+
+    client.execute("fn", policy={"mode": "ability-owned"})
+
+    assert transport.invocations[0]["args"] == {"policy": {"mode": "ability-owned"}}
+
+
+def test_invalid_or_underspecified_policies_fail_before_dispatch():
+    transport = FakeTransport()
+    with pytest.raises(InvalidArgument) as exc_info:
+        Client(
+            transport=transport,
+            identity=IDENTITY,
+            invocation_policy=cast(Any, object()),
+        )
+    assert exc_info.value.reason == "invalid_invocation_derivation_policy"
+
+    with pytest.raises(InvalidArgument) as exc_info:
+        Client.target("fn", invocation_policy=cast(Any, object()))
+    assert exc_info.value.reason == "invalid_invocation_derivation_policy"
+
+    client, transport = make_client()
+    target = Client.target(
+        "fn",
+        invocation_policy=FreshRoot(cast(Any, None)),
+    )
+    with pytest.raises(InvalidArgument) as exc_info:
+        client.prepare(target, x=1)
+    assert exc_info.value.reason == "invalid_invocation_subject_policy"
+    assert transport.invocations == []
+
+
+def test_policy_must_produce_an_sdk_request_before_dispatch():
+    class InvalidPolicy(InvocationDerivationPolicy):
+        def request(self, **kwargs: object) -> easynet_sdk.AbilityTargetRequest:
+            del kwargs
+            return cast(Any, None)
+
+    client, transport = make_client()
+    target = Client.target("fn", invocation_policy=InvalidPolicy())
+
+    with pytest.raises(InvalidArgument) as exc_info:
+        client.prepare(target, x=1)
+
+    assert exc_info.value.reason == "invalid_invocation_derivation_policy"
+    assert transport.invocations == []
+
+
 def test_prepare_inspect_adjust_send():
     client, transport = make_client()
     prepared = client.prepare("fn", x=1)
-    assert prepared.tuple.subject == DEVICE_URA
+    assert prepared.tuple.subject_ura == DEVICE_URA
     adjusted = prepared.with_subject("easynet:///r/acme/device/other")
     invocation = adjusted.send()
     assert transport.invocations[0]["subject_ura"] == "easynet:///r/acme/device/other"
@@ -1097,7 +1313,6 @@ def test_invalid_pick_policy_rejected():
     with pytest.raises(InvalidArgument) as exc_info:
         client.execute(Client.target("fn", pick="resource_aware"))
     assert exc_info.value.reason == "invalid_pick_policy"
-    assert "PR-3" in str(exc_info.value)
 
 
 # -- async mirror -------------------------------------------------------------
@@ -1121,8 +1336,8 @@ def test_aio_mirror_exposes_prepare_stream_and_session():
     client, transport = make_client()
 
     prepared = asyncio.run(client.aio.prepare("fn", x=1))
-    assert prepared.tuple.ability == "er.fn"
-    assert prepared.tuple.arguments.json_value == {"x": 1}
+    assert prepared.tuple.descriptor_ref.endswith(".er.fn@1.0.0")
+    assert prepared.tuple.args == {"x": 1}
 
     stream = asyncio.run(client.aio.stream("fn", x=2))
     assert list(stream) == [{"echo": True}]
@@ -1136,7 +1351,7 @@ def test_aio_mirror_exposes_prepare_stream_and_session():
         transport.invocations[1]["descriptor_ref"]
         == "easynet:///r/acme/ability/device.dev-a.er.fn@1.0.0"
     )
-    assert transport.invocations[1]["bidi_streams"][0]["stream_id"] == 0
+    assert transport.streams[0].stream_id == 1
     session.send({"payload": "hi"})
     assert transport.bidi_channel.sent == [{"payload": "hi"}]
     session.close()

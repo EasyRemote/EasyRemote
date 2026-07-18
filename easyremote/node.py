@@ -1,11 +1,8 @@
 """ComputeNode: publish local functions as device-owned abilities.
 
 Ontology, corrected: **a node is a device, not an agent.** Registered
-functions become device-owned abilities —
-
-    easynet:///r/<realm>/ability/device.<node-id>.<namespace>.<fn>
-
-— deployed through the Python ``AbilityControl`` facade, which invokes
+functions become SDK-addressed device-owned abilities, deployed through the
+Python ``AbilityControl`` facade, which invokes
 the daemon's canonical ``ability.deploy`` install transaction. Every
 EasyRemote ability binds to the daemon-owned ``host_stream`` executor:
 the daemon opens the warm host socket, sends the JSON argument object

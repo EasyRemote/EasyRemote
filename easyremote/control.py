@@ -24,12 +24,16 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import easynet_sdk
 
-from . import _sdk_identity
 from ._product_abilities import AgentAbility
 from .errors import InvalidArgument, RemoteError, Unavailable, error_from_sdk
+from .identity import LocalIdentity
+from .invocation_policy import (
+    ExplicitSubject,
+    FreshRoot,
+)
 
 if TYPE_CHECKING:
-    from .client import Client
+    from .client import CallTarget, Client
 
 __all__ = [
     "AbilityControl",
@@ -206,8 +210,12 @@ class AbilityControl:
                 reason="ability_package_not_directory",
             )
         ref = _local_resource_ref(package, self._client._who())
+        resource_ura = str(ref["resource_ura"])
         result = self._invoke(
-            self._client.target("ability.deploy", subject=str(ref["resource_ura"])),
+            self._client.target(
+                "ability.deploy",
+                invocation_policy=FreshRoot(ExplicitSubject(resource_ura)),
+            ),
             resource_ref=ref,
             node_id=node_id,
         )
@@ -232,32 +240,58 @@ class AbilityControl:
         value is any canonical ability owner URA accepted by the daemon.
         """
         if scope not in {"local", "realm"}:
-            raise InvalidArgument("unsupported ability list scope", reason="invalid_ability_scope")
+            raise InvalidArgument(
+                "unsupported ability list scope", reason="invalid_ability_scope"
+            )
         args: dict[str, object] = {}
         if scope == "realm":
             args["scope"] = scope
         if owner_ura:
-            _require_ura_kind(owner_ura, {"device", "agent", "hub", "user"}, "owner_ura")
+            _require_ura_kind(
+                owner_ura, {"device", "agent", "hub", "user"}, "owner_ura"
+            )
             args["agent_ura"] = owner_ura
         if subject_ura:
             _require_ura_kind(subject_ura, {"ability"}, "subject_ura")
             args["subject_ura"] = subject_ura
-        owner = self._client._who().device_ura if not node else self._client.device(node).owner_ura
-        result = self._invoke(self._client.target("meta.list_abilities", owner_ura=owner), **args)
+        owner = (
+            self._client._who().device_ura
+            if not node
+            else self._client.device(node).owner_ura
+        )
+        result = self._invoke(
+            self._client.target("meta.list_abilities", owner_ura=owner),
+            **args,
+        )
         rows = result.get("abilities") or []
-        if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
-            raise InvalidArgument("meta.list_abilities response field 'abilities' is not an object array", reason="invalid_daemon_response")
-        records = [AbilityRecord.from_wire(row) for row in rows if isinstance(row, Mapping)]
+        if not isinstance(rows, list) or not all(
+            isinstance(row, Mapping) for row in rows
+        ):
+            raise InvalidArgument(
+                "meta.list_abilities response field 'abilities' is not an object array",
+                reason="invalid_daemon_response",
+            )
+        records = [
+            AbilityRecord.from_wire(row) for row in rows if isinstance(row, Mapping)
+        ]
         if user_id:
             user = user_id.strip()
             if not user:
-                raise InvalidArgument("user_id must not be empty", reason="empty_user_id")
-            records = [record for record in records if _record_belongs_to_user(record, user)]
+                raise InvalidArgument(
+                    "user_id must not be empty", reason="empty_user_id"
+                )
+            records = [
+                record for record in records if _record_belongs_to_user(record, user)
+            ]
         return records
 
     def list_device(self, device: str | None = None) -> builtins.list[AbilityRecord]:
         """List abilities owned by this device, or another device owner."""
-        owner = self._client._who().device_ura if device is None else self._client.device(device).owner_ura
+        owner = (
+            self._client._who().device_ura
+            if device is None
+            else self._client.device(device).owner_ura
+        )
         return self.list(owner_ura=owner)
 
     def list_user(
@@ -269,7 +303,10 @@ class AbilityControl:
         """List abilities owned by this paired user across catalogue rows."""
         user = user_id if user_id is not None else self._client._who().username
         if not user or not user.strip():
-            raise InvalidArgument("user_id is required because credentials have no username", reason="missing_user_id")
+            raise InvalidArgument(
+                "user_id is required because credentials have no username",
+                reason="missing_user_id",
+            )
         return self.list(user_id=user.strip(), scope=scope)
 
     def show(
@@ -289,7 +326,11 @@ class AbilityControl:
             reason="ability_not_found",
         )
 
-    def _invoke(self, target: object, **kwargs: object) -> dict[str, Any]:
+    def _invoke(
+        self,
+        target: str | CallTarget,
+        **kwargs: object,
+    ) -> dict[str, Any]:
         try:
             result = self._client.invoke(target, **kwargs).result()
         except easynet_sdk.SDKError as exc:
@@ -297,7 +338,10 @@ class AbilityControl:
         except RemoteError:
             raise
         except Exception as exc:
-            raise Unavailable(f"ability control invocation failed: {exc}", reason="ability_invocation_failed") from exc
+            raise Unavailable(
+                f"ability control invocation failed: {exc}",
+                reason="ability_invocation_failed",
+            ) from exc
         return _dict(result)
 
 
@@ -389,7 +433,10 @@ class AgentControl:
         **kwargs: object,
     ) -> dict[str, Any]:
         try:
-            result = self._client.invoke(str(ability), **kwargs).result()
+            result = self._client.invoke(
+                str(ability),
+                **kwargs,
+            ).result()
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
         except RemoteError:
@@ -407,17 +454,32 @@ class AgentControl:
         return dict(result)
 
 
-def _local_resource_ref(path: Path, identity: object) -> dict[str, object]:
+def _local_resource_ref(path: Path, identity: LocalIdentity) -> dict[str, object]:
     absolute = path if path.is_absolute() else Path.cwd() / path
     resolved = absolute.resolve(strict=True)
-    for label, root in (("workspace", Path.cwd()), ("tmp", Path(tempfile.gettempdir())), ("home", Path.home())):
+    for label, root in (
+        ("workspace", Path.cwd()),
+        ("tmp", Path(tempfile.gettempdir())),
+        ("home", Path.home()),
+    ):
         try:
             relative = resolved.relative_to(root.resolve(strict=True)).as_posix()
         except (FileNotFoundError, ValueError):
             continue
-        if relative and all(part not in {"", ".", ".."} for part in relative.split("/")):
-            owner = str(getattr(identity, "device_ura"))
-            resource = _sdk_identity.resource_ura(owner, f"fs/{label}/{relative}")
+        if relative and all(
+            part not in {"", ".", ".."} for part in relative.split("/")
+        ):
+            owner = identity.device_ura
+            try:
+                resource = easynet_sdk.resource_ura(
+                    owner,
+                    f"fs/{label}/{relative}",
+                )
+            except easynet_sdk.SDKError as exc:
+                raise InvalidArgument(
+                    f"cannot build local resource URA: {exc}",
+                    reason="invalid_resource_path",
+                ) from exc
             return {
                 "resource_ura": resource,
                 "owner_ura": owner,
@@ -427,7 +489,10 @@ def _local_resource_ref(path: Path, identity: object) -> dict[str, object]:
                 "revision": "fs-local-mapping-v1",
                 "display_path": f"{label}/{relative}",
             }
-    raise InvalidArgument(f"resource path {path} is outside workspace, temp, and home roots", reason="invalid_resource_path")
+    raise InvalidArgument(
+        f"resource path {path} is outside workspace, temp, and home roots",
+        reason="invalid_resource_path",
+    )
 
 
 def _require_ura_kind(value: str, kinds: set[str], field: str) -> None:
@@ -435,22 +500,32 @@ def _require_ura_kind(value: str, kinds: set[str], field: str) -> None:
     if not candidate:
         raise InvalidArgument(f"{field} must not be empty", reason=f"empty_{field}")
     try:
-        projection = _sdk_identity.parse_ura(candidate)
-    except _sdk_identity.IdentityFacadeError as exc:
-        raise InvalidArgument(f"invalid {field}: {exc}", reason=f"invalid_{field}") from exc
+        projection = easynet_sdk.parse_ura(candidate)
+    except easynet_sdk.SDKError as exc:
+        raise InvalidArgument(
+            f"invalid {field}: {exc}", reason=f"invalid_{field}"
+        ) from exc
     if projection.kind not in kinds:
-        raise InvalidArgument(f"unexpected {field} kind {projection.kind!r}", reason=f"invalid_{field}")
+        raise InvalidArgument(
+            f"unexpected {field} kind {projection.kind!r}", reason=f"invalid_{field}"
+        )
 
 
 def _record_belongs_to_user(record: AbilityRecord, user_id: str) -> bool:
-    if any(str(record.metadata.get(key) or "") == user_id for key in ("owner_user", "owner_user_id", "user_id", "local_user_id")):
+    if any(
+        str(record.metadata.get(key) or "") == user_id
+        for key in ("owner_user", "owner_user_id", "user_id", "local_user_id")
+    ):
         return True
     try:
-        owner = _sdk_identity.parse_ura(record.owner_ura)
-    except _sdk_identity.IdentityFacadeError:
+        owner = easynet_sdk.parse_ura(record.owner_ura)
+    except easynet_sdk.SDKError:
         return False
     components = owner.components or {}
-    return owner.kind in {"agent", "user"} and str(components.get("user_id") or "") == user_id
+    return (
+        owner.kind in {"agent", "user"}
+        and str(components.get("user_id") or "") == user_id
+    )
 
 
 def _dict(value: Any) -> dict[str, Any]:

@@ -107,21 +107,45 @@ starts the warm host and publishes every registered capability.
 ### Three call layers, progressively disclosed
 
 ```python
+from easyremote import Client
+
 client = Client()
 
 # L0 — result-first
 client.execute("ai_inference", prompt="hi")
 
 # L1 — targeting / streams / timeouts without stealing ability arg names
-client.call(Client.target("ai_inference", node="gpu-1", timeout=10), prompt="hi")
+client.call(
+    Client.target("ai_inference", node="gpu-1", timeout=10),
+    prompt="hi",
+)
 
 # L2 — inspect the seven-tuple before dispatch
 prepared = client.prepare("ai_inference", prompt="inspect me")
-prepared.tuple.subject
+prepared.tuple.subject_ura
 
 # send() is for daemon unary/system abilities; EasyRemote-hosted
 # abilities are host_stream and should be consumed with call()/stream().
 ```
+
+`Client.invocation_policy` exposes the read-only EasyRemote product policy
+used to derive ordinary calls. Its documented default is
+`DEFAULT_INVOCATION_POLICY`, a `FreshRoot(ResolvedTargetSubject())`. Supply a
+different policy with `Client(invocation_policy=...)`, or attach a collision-free
+single-call override with `Client.target(..., invocation_policy=...)`. A normal
+ability argument named `policy` remains an ability argument.
+
+The released `Client.target(..., subject=..., causal=...)` keywords remain as a
+versioned edge adapter until EasyRemote 1.0.0. They lower immediately to the
+same product policy object and are not a second invocation builder.
+
+The released `InvocationTuple`, `Receipt`, `ReceiptChain`, and
+`PreparedInvocation.with_causal` shapes are also bounded product-edge adapters.
+They preserve their released constructors and fields while delegating
+Invocation projection, receipt parsing, and causal projection to `easynet_sdk`.
+`easyremote/edge-adapter-policy.v1.json` is the machine-readable allowlist; it
+records package version `2.0.0a0`, removal version `1.0.0`, and prohibits new
+internal callers.
 
 ### `@remote` as a class attribute
 

@@ -26,12 +26,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import easynet_sdk
+
 from .. import _codec
 from .._context_dispatch import dispatcher_from_parent_receipt
 from .._json import dumps_wire
 from ..context import Context, ContextChildDispatcher
 from ..errors import InternalError, InvalidArgument, RemoteError
-from ..receipts import Receipt
+from ..receipts import receipt_from_mapping
 from ..schema import PARAMETER_ORDER_KEY, VAR_POSITIONAL_KEY, DerivedSignature
 from .protocol import HostFrame, HostRequest, HostSession
 
@@ -50,9 +52,7 @@ class HostedFunction:
     fn: Callable[..., Any]
     signature: DerivedSignature
     _hints: dict[str, Any] = field(init=False, repr=False, compare=False)
-    _inspect_signature: inspect.Signature = field(
-        init=False, repr=False, compare=False
-    )
+    _inspect_signature: inspect.Signature = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         try:
@@ -189,7 +189,7 @@ class HostServer:
         socket_path: Path,
         *,
         context_dispatcher_factory: Callable[
-            [Receipt | None], ContextChildDispatcher | None
+            [easynet_sdk.RuntimeReceipt | None], ContextChildDispatcher | None
         ]
         | None = None,
     ) -> None:
@@ -291,14 +291,9 @@ class HostServer:
                 return
             self._serve_stream(connection, session)
 
-    def _send_frame(
-        self, connection: socket.socket, frame: HostFrame
-    ) -> None:
+    def _send_frame(self, connection: socket.socket, frame: HostFrame) -> None:
         connection.sendall(
-            (
-                dumps_wire(frame.wire, what="host_stream frame")
-                + "\n"
-            ).encode("utf-8")
+            (dumps_wire(frame.wire, what="host_stream frame") + "\n").encode("utf-8")
         )
 
     def _send_error(
@@ -309,9 +304,7 @@ class HostServer:
             HostFrame({"error": {"kind": kind, "reason": reason, "message": message}}),
         )
 
-    def _serve_stream(
-        self, connection: socket.socket, session: HostSession
-    ) -> None:
+    def _serve_stream(self, connection: socket.socket, session: HostSession) -> None:
         """Stream a generator ability's frames per the host_stream wire.
 
         Emits `{"stream_item", "seq"}` per frame with a rolling hash
@@ -376,11 +369,9 @@ class HostServer:
                 context.close()
         self._send_frame(connection, session.finish())
 
-    def _context_for_request(
-        self, request: HostRequest
-    ) -> Context:
+    def _context_for_request(self, request: HostRequest) -> Context:
         parent = (
-            Receipt.from_wire(dict(request.parent_receipt))
+            receipt_from_mapping(dict(request.parent_receipt))
             if request.parent_receipt is not None
             else None
         )
@@ -389,6 +380,7 @@ class HostServer:
             caller=request.caller,
             _child_dispatcher=self._context_dispatcher_factory(parent),
         )
+
 
 def _drain_async_gen(gen: Any) -> Iterator[Any]:
     """Drain an async generator on a private event loop, yielding each

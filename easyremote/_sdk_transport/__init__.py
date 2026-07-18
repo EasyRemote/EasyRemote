@@ -8,9 +8,9 @@ EasyRemote.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any, cast
 
 import easynet_sdk
 
@@ -26,25 +26,48 @@ __all__ = [
 
 
 class Transport:
-    """EasyRemote transport wrapper over ``easynet_sdk`` Invocation transport."""
+    """SDK-owned draft provider and Invocation transport."""
 
-    def __init__(self, adapter: easynet_sdk.InvocationResultAdapter) -> None:
+    def __init__(
+        self,
+        adapter: easynet_sdk.InvocationResultAdapter,
+        addressing: easynet_sdk.AddressingClient,
+    ) -> None:
         self._adapter = adapter
+        self._addressing = addressing
+        self._invoker = easynet_sdk.AbilityInvocationClient(
+            adapter.transport.runtime,
+            addressing,
+        )
 
     @classmethod
     def connect(cls, control_path: str | None = None) -> Transport:
         environment = sdk_environment(control_path=control_path)
         try:
+            adapter = easynet_sdk.InvocationResultAdapter.connect(
+                control_path=environment.resolved_control_path(),
+                library_path=environment.library_path,
+            )
             return cls(
-                easynet_sdk.InvocationResultAdapter.connect(
-                    control_path=environment.resolved_control_path(),
-                    library_path=environment.library_path,
-                )
+                adapter,
+                environment.addressing_client(),
             )
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
-    def invoke(self, invocation: Mapping[str, object]) -> dict[str, Any]:
+    def build_target_invocation(
+        self,
+        request: easynet_sdk.AbilityTargetRequest,
+    ) -> easynet_sdk.InvocationDraft:
+        try:
+            return self._invoker.build_target_invocation(request)
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
+
+    def invoke(
+        self,
+        invocation: easynet_sdk.InvocationDraft,
+    ) -> dict[str, Any]:
         try:
             return dict(self._adapter.invoke(invocation))
         except easynet_sdk.SDKError as exc:
@@ -52,7 +75,7 @@ class Transport:
 
     def invoke_signed(
         self,
-        invocation: Mapping[str, object],
+        invocation: easynet_sdk.InvocationDraft,
         *,
         signer: easynet_sdk.Signer | None,
     ) -> dict[str, Any]:
@@ -61,23 +84,35 @@ class Transport:
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
-    def stream(self, invocation: Mapping[str, object]) -> FrameStream:
+    def stream(self, invocation: easynet_sdk.InvocationDraft) -> FrameStream:
         try:
             return FrameStream(self._adapter.stream(invocation))
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
-    def bidi(self, invocation: Mapping[str, object]) -> easynet_sdk.DaemonBidiChannel:
+    def bidi(
+        self,
+        invocation: easynet_sdk.InvocationDraft,
+        streams: Iterable[easynet_sdk.BidiStreamDescriptor],
+    ) -> easynet_sdk.DaemonBidiChannel:
         try:
-            return self._adapter.bidi(invocation)
+            return self._adapter.bidi(invocation, streams)
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
     def close(self) -> None:
+        first_error: easynet_sdk.SDKError | None = None
         try:
             self._adapter.close()
         except easynet_sdk.SDKError as exc:
-            raise error_from_sdk(exc) from exc
+            first_error = exc
+        try:
+            self._addressing.close()
+        except easynet_sdk.SDKError as exc:
+            if first_error is None:
+                first_error = exc
+        if first_error is not None:
+            raise error_from_sdk(first_error) from first_error
 
     def __enter__(self) -> Transport:
         return self
@@ -108,7 +143,10 @@ class UnaryDispatchPool:
         )
 
     def invoke(
-        self, invocation: Mapping[str, object], *, timeout: float | None = None
+        self,
+        invocation: easynet_sdk.InvocationDraft,
+        *,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         try:
             return dict(self._pool.invoke(invocation, timeout=timeout))
@@ -117,7 +155,7 @@ class UnaryDispatchPool:
 
     def invoke_signed(
         self,
-        invocation: Mapping[str, object],
+        invocation: easynet_sdk.InvocationDraft,
         *,
         signer: easynet_sdk.Signer | None,
         timeout: float | None = None,
@@ -167,15 +205,6 @@ class FrameStream:
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
-    def __iter__(self) -> Iterator[dict[str, Any]]:
-        while True:
-            frame = self.recv()
-            if frame is None:
-                return
-            yield frame
-            if frame.get("terminal") is True:
-                return
-
     def __enter__(self) -> FrameStream:
         return self
 
@@ -191,14 +220,14 @@ class DaemonProcess:
 
     @classmethod
     def start(
-        cls, config: easynet_sdk.DaemonStartProjection | _DaemonStartProjectionSource
+        cls,
+        config: easynet_sdk.DaemonStartProjection,
     ) -> DaemonProcess:
         try:
-            sdk_config = config._to_sdk() if hasattr(config, "_to_sdk") else config
             lifecycle = easynet_sdk.DaemonLifecycleFacade(
                 _environment().daemon_control()
             )
-            return cls(lifecycle.start(sdk_config))
+            return cls(lifecycle.start(config))
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
@@ -216,8 +245,10 @@ class DaemonProcess:
 
     def open_client(self) -> Transport:
         try:
+            environment = _environment()
             return Transport(
-                self._handle.open_transport_adapter()
+                self._handle.open_transport_adapter(),
+                environment.addressing_client(),
             )
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
@@ -237,7 +268,3 @@ class DaemonProcess:
 
 def _environment() -> easynet_sdk.SdkEnvironment:
     return sdk_environment()
-
-
-class _DaemonStartProjectionSource(Protocol):
-    def _to_sdk(self) -> easynet_sdk.DaemonStartProjection: ...

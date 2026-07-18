@@ -12,6 +12,25 @@ wheels = [
 ]
 
 [[package]]
+name = "axon-sdk"
+version = "0.129.23"
+source = { editable = "../EasyNet-Axon/sdk/python" }
+dependencies = [
+    { name = "cryptography" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "black", marker = "extra == 'dev'", specifier = ">=24" },
+    { name = "cryptography", specifier = ">=41" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
+    { name = "tomli", marker = "python_full_version < '3.11' and extra == 'dev'", specifier = ">=2" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "cffi"
 version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -150,35 +169,20 @@ wheels = [
 ]
 
 [[package]]
-name = "easynet-run-axon"
-version = "0.129.23"
-source = { editable = "../EasyNet-Axon/sdk/python" }
-dependencies = [
-    { name = "cryptography" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "cryptography", specifier = ">=41" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "easynet-sdk"
 version = "0.91.30"
 source = { editable = "../EasyNet-Cli/sdk/python" }
 dependencies = [
+    { name = "axon-sdk" },
     { name = "cryptography" },
-    { name = "easynet-run-axon" },
     { name = "grpcio" },
     { name = "protobuf" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "axon-sdk", editable = "../EasyNet-Axon/sdk/python" },
     { name = "cryptography", specifier = ">=41" },
-    { name = "easynet-run-axon", editable = "../EasyNet-Axon/sdk/python" },
     { name = "grpcio", specifier = ">=1.60" },
     { name = "protobuf", specifier = ">=4.25" },
 ]

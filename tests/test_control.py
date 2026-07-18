@@ -2,8 +2,11 @@
 
 import base64
 import json
+from typing import cast
 
+import easynet_sdk
 import pytest
+from conftest import canonical_runtime_receipt_pair
 
 from easyremote.client import Client
 from easyremote.control import AbilityControl, AgentControl
@@ -19,6 +22,7 @@ DEVICE_URA = "easynet:///r/acme/device/dev-a"
 
 def ok_response(result):
     payload = json.dumps(result).encode()
+    admission, terminal = canonical_runtime_receipt_pair()
     return {
         "ok": True,
         "state": int(InvocationState.COMPLETED),
@@ -28,7 +32,8 @@ def ok_response(result):
         "result_content_type": "application/json",
         "result_base64": base64.b64encode(payload).decode(),
         "result_json": result,
-        "admission_receipt": None,
+        "admission_receipt": admission,
+        "terminal_receipt": terminal,
     }
 
 
@@ -36,10 +41,40 @@ class FakeTransport:
     def __init__(self, responses):
         self.responses = list(responses)
         self.invocations = []
+        self._addressing = easynet_sdk.AddressingClient(
+            easynet_sdk.AxonAddressingTransport()
+        )
+        self._invoker = easynet_sdk.AbilityInvocationClient(
+            cast(easynet_sdk.RuntimeClient, object()),
+            self._addressing,
+        )
 
-    def invoke(self, wire):
+    def build_target_invocation(self, request):
+        return self._invoker.build_target_invocation(request)
+
+    def invoke(self, draft):
+        wire = draft.to_json_dict()
         self.invocations.append(wire)
-        return self.responses.pop(0)
+        response = dict(self.responses.pop(0))
+        response["sdk_runtime_result"] = {
+            "ok": True,
+            "tuple": wire,
+            "invocation_id": "inv-1",
+            "terminal_state": "completed",
+            "output_content_type": response["result_content_type"],
+            "output_base64": response["result_base64"],
+            "output_json": response["result_json"],
+            "selected_node_id": response["selected_node_id"],
+            "scheduling_reason": response["scheduling_reason"],
+            "elapsed_ms": response["elapsed_ms"],
+            "admission_receipt": response["admission_receipt"],
+            "terminal_receipt": response["terminal_receipt"],
+            "error": None,
+        }
+        return response
+
+    def close(self):
+        self._addressing.close()
 
 
 def client_with(*responses):
@@ -69,9 +104,7 @@ def test_install_invokes_ability_deploy_with_resource_ref(tmp_path):
         wire["descriptor_ref"]
         == "easynet:///r/acme/ability/device.dev-a.ability.deploy@1.0.0"
     )
-    assert wire["subject_ura"].startswith(
-        "easynet:///r/acme/resource/device.dev-a/fs/"
-    )
+    assert wire["subject_ura"].startswith("easynet:///r/acme/resource/device.dev-a/fs/")
     assert wire["args"]["node_id"] == "local"
     ref = wire["args"]["resource_ref"]
     assert ref["resource_ura"] == wire["subject_ura"]

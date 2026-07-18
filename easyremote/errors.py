@@ -160,11 +160,22 @@ def error_from_sdk(error: easynet_sdk.SDKError) -> RemoteError:
             invocation_id=error.invocation_id,
             retry_after=_retry_after(error.details),
         )
-    cls = _SDK_ERROR_OVERRIDES.get(
-        error.code,
-        _SDK_ERROR_CLASS_MAP[error.error_class],
+    canonical_code = (
+        error.code if isinstance(error.code, easynet_sdk.ErrorCode) else None
     )
-    reason = _SDK_REASON_OVERRIDES.get(error.code, error.code.value.lower())
+    cls = (
+        _SDK_ERROR_OVERRIDES.get(
+            canonical_code,
+            _SDK_ERROR_CLASS_MAP[error.error_class],
+        )
+        if canonical_code is not None
+        else _SDK_ERROR_CLASS_MAP[error.error_class]
+    )
+    reason = (
+        _SDK_REASON_OVERRIDES.get(canonical_code, canonical_code.value.lower())
+        if canonical_code is not None
+        else error.code.lower()
+    )
     if isinstance(detail_reason, str) and detail_reason:
         reason = detail_reason
     return cls(

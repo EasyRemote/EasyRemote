@@ -73,7 +73,7 @@ where = ["."]
 include = ["easyremote*"]
 
 [tool.setuptools.package-data]
-easyremote = ["py.typed"]
+easyremote = ["edge-adapter-policy.v1.json", "py.typed"]
 
 [tool.ruff]
 line-length = 88
@@ -85,6 +85,10 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+follow_imports = "silent"
+mypy_path = [
+    "../EasyNet-Cli/sdk/python",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -96,3 +100,8 @@ markers = [
 [[tool.mypy.overrides]]
 module = "cryptography.*"
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "easynet_sdk._axon_pb.*"
+follow_imports = "skip"
+ignore_errors = true

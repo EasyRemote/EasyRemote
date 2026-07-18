@@ -96,21 +96,42 @@ easyremote mission run ./nightly.eal --label nightly
 ### 三层调用面（渐进暴露）
 
 ```python
+from easyremote import Client
+
 client = Client()
 
 # L0 —— 结果优先
 client.execute("ai_inference", prompt="hi")
 
 # L1 —— 选点 / 流 / 超时，不占用能力参数名
-client.call(Client.target("ai_inference", node="gpu-1", timeout=10), prompt="hi")
+client.call(
+    Client.target("ai_inference", node="gpu-1", timeout=10),
+    prompt="hi",
+)
 
 # L2 —— 发出前检视七元组
 prepared = client.prepare("ai_inference", prompt="inspect me")
-prepared.tuple.subject
+prepared.tuple.subject_ura
 
 # send()/invoke() 保留给 daemon unary/system ability；
 # EasyRemote-hosted ability 是 host_stream，消费面用 call()/stream()。
 ```
+
+`Client.invocation_policy` 公开只读的 EasyRemote 产品派生策略。文档化默认值
+`DEFAULT_INVOCATION_POLICY` 等于 `FreshRoot(ResolvedTargetSubject())`。可通过
+`Client(invocation_policy=...)` 配置 client，也可通过
+`Client.target(..., invocation_policy=...)` 对单个目标覆盖。ability 自身名为
+`policy` 的普通参数仍原样传递。
+
+已发布的 `Client.target(..., subject=..., causal=...)` 关键字在 EasyRemote
+1.0.0 前作为版本化边缘适配保留；它们会立即降低为同一个产品策略对象，不构成
+第二套 Invocation builder。
+
+已发布的 `InvocationTuple`、`Receipt`、`ReceiptChain` 和
+`PreparedInvocation.with_causal` 形状同样是有边界的产品边缘适配器。它们保留
+公开构造器和字段，但 Invocation 投影、receipt 解析与 causal 投影全部委托给
+`easynet_sdk`。`easyremote/edge-adapter-policy.v1.json` 是机器可读白名单，
+记录当前包版本 `2.0.0a0`、删除版本 `1.0.0`，并禁止新增内部调用者。
 
 ### `@remote` 作为类属性
 

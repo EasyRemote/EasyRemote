@@ -8,13 +8,10 @@ Three layers, two daemon carriers:
 - L2 ``invoke`` / ``prepare`` — daemon unary/system abilities, with
   the seven-tuple inspectable before dispatch.
 
-Addressing: the caller is this device (pairing identity); the callee
-defaults to the local daemon's device URA, which owns routing — one
-``_address()`` seam encodes that assumption so the P0 link
-verification adjusts exactly one place if the dispatch contract says
-otherwise. Ability URAs from `discover` are projected into explicit
-tuple fields through the SDK identity facade; daemon route policy still
-lives behind easynet-daemon.
+Addressing: the caller is this device (pairing identity). Product target
+selection is projected to an Ability URA through the SDK Addressing provider,
+and the SDK Invocation provider derives the complete canonical draft. Daemon
+route policy remains behind easynet-daemon.
 
 Per-call timeouts are client-side only: the caller's wait is bounded,
 while server-side execution remains governed by the manifest's
@@ -28,19 +25,20 @@ import functools
 import inspect
 import math
 import threading
+import warnings
 import weakref
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import easynet_sdk
 
-from . import _codec, _sdk_identity
+from . import _codec
 from ._addressing import (
     PICK_POLICIES,
     AbilityAddressResolver,
     ResolvedAbility,
-    owner_kind,
+    canonical_addressing_client,
 )
 from ._sdk_transport import FrameStream, Transport, UnaryDispatchPool
 from .errors import (
@@ -50,14 +48,15 @@ from .errors import (
 )
 from .identity import LocalIdentity, agent_ura, device_ura, hub_ura
 from .invocation import (
-    Arguments,
-    Causal,
     Invocation,
-    InvocationTuple,
     PreparedInvocation,
     StreamSpec,
-    encode_invocation,
-    fresh_nonce,
+)
+from .invocation_policy import (
+    DEFAULT_INVOCATION_POLICY,
+    InvocationDerivationPolicy,
+    legacy_target_policy,
+    require_invocation_policy,
 )
 from .schema import PARAMETER_ORDER_KEY, VAR_POSITIONAL_KEY
 
@@ -79,7 +78,11 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class FunctionInfo:
-    """One discoverable capability (a `discover` candidate, verbatim)."""
+    """One discoverable capability.
+
+    ``qualified_name`` remains the public EasyRemote field while
+    ``ability_ura`` is the canonical name used by runtime collaborators.
+    """
 
     name: str  # verb, e.g. "ai_inference"
     qualified_name: str  # full ability URA, daemon-issued
@@ -89,11 +92,17 @@ class FunctionInfo:
     visibility: str
     score: float
 
+    @property
+    def ability_ura(self) -> str:
+        return self.qualified_name
+
     @classmethod
     def from_candidate(cls, candidate: dict[str, Any]) -> FunctionInfo:
         return cls(
             name=str(candidate.get("ability", "")),
-            qualified_name=str(candidate.get("qualified_name", "")),
+            qualified_name=str(
+                candidate.get("ability_ura") or candidate.get("qualified_name") or ""
+            ),
             owner=str(candidate.get("owner", "")),
             description=str(candidate.get("description", "")),
             input_schema=dict(candidate.get("input_schema") or {}),
@@ -107,7 +116,7 @@ class CallTarget:
     """An invocation target plus client-side dispatch options.
 
     Ability arguments live only in ``Client.call/stream/invoke`` kwargs.
-    Targeting, selection, timeout, metadata, and tuple adjustments live
+    Targeting, selection, timeout, metadata, and a per-target product policy live
     here so user functions may legitimately expose parameters named
     ``node``, ``pick``, ``timeout``, ``subject``, or ``metadata`` without
     colliding with the client control plane.
@@ -117,11 +126,12 @@ class CallTarget:
     node: str | None = None
     pick: Literal["round_robin", "random"] | None = None
     timeout: float | None = None
-    subject: str | None = None
-    causal: Causal = None
+    subject: str | None = field(default=None, repr=False, compare=False)
+    causal: object = field(default=None, repr=False, compare=False)
     sign: bool | None = None
     metadata: Mapping[str, str] | None = None
     owner_ura: str | None = None
+    invocation_policy: InvocationDerivationPolicy | None = None
 
     def __post_init__(self) -> None:
         if not self.function.strip():
@@ -144,7 +154,7 @@ class CallTarget:
         if self.pick is not None and self.pick not in PICK_POLICIES:
             raise InvalidArgument(
                 f"pick must be one of {sorted(PICK_POLICIES)}, got {self.pick!r}"
-                " (resource_aware needs daemon-side load metrics — Cli PR-3)",
+                " (resource_aware selection is not supported)",
                 reason="invalid_pick_policy",
             )
         if self.timeout is not None and (
@@ -157,6 +167,33 @@ class CallTarget:
             )
         if self.metadata is not None:
             object.__setattr__(self, "metadata", dict(self.metadata))
+        if self.invocation_policy is not None and (
+            self.subject is not None or self.causal is not None
+        ):
+            raise InvalidArgument(
+                "target cannot combine invocation_policy with subject or causal",
+                reason="ambiguous_invocation_derivation_policy",
+            )
+        if self.subject is not None or self.causal is not None:
+            warnings.warn(
+                "CallTarget subject/causal are deprecated and will be removed"
+                " in EasyRemote 1.0.0; use invocation_policy",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            object.__setattr__(
+                self,
+                "invocation_policy",
+                legacy_target_policy(
+                    subject_ura=self.subject,
+                    causal=self.causal,
+                ),
+            )
+        if self.invocation_policy is not None:
+            require_invocation_policy(
+                self.invocation_policy,
+                field="target invocation_policy",
+            )
 
 
 class Stream:
@@ -170,7 +207,7 @@ class Stream:
     def __init__(self, frames: FrameStream, *, timeout: float | None = None) -> None:
         self._frames = frames
         self._adapter = easynet_sdk.StreamValueAdapter(
-            frames,
+            cast(easynet_sdk.FrameStream, frames),
             timeout=timeout,
         )
 
@@ -252,6 +289,7 @@ class Client:
         transport: Transport | None = None,
         identity: LocalIdentity | None = None,
         signer: easynet_sdk.Signer | None = None,
+        invocation_policy: InvocationDerivationPolicy = DEFAULT_INVOCATION_POLICY,
     ) -> None:
         self._gateway = gateway
         self._gateway_checked = False
@@ -260,9 +298,16 @@ class Client:
                 f"timeout must be a positive finite number of seconds, got {timeout!r}",
                 reason="invalid_timeout",
             )
+        self._invocation_policy = require_invocation_policy(
+            invocation_policy,
+            field="client invocation_policy",
+        )
         self._timeout = timeout
         self._namespace = namespace
-        self._addressing = AbilityAddressResolver(namespace)
+        self._addressing = AbilityAddressResolver(
+            namespace,
+            canonical_addressing_client(),
+        )
         self._identity_override = identity
         self._signer = signer
         self._lock = threading.Lock()
@@ -312,8 +357,10 @@ class Client:
         self, prepared: PreparedInvocation, *, timeout: float | None
     ) -> Stream:
         wait_budget = self._timeout if timeout is None else timeout
-        wire = encode_invocation(prepared.tuple, metadata=prepared.metadata)
-        return Stream(self._connected().stream(wire), timeout=wait_budget)
+        return Stream(
+            self._connected().stream(prepared.draft),
+            timeout=wait_budget,
+        )
 
     def session(
         self,
@@ -325,14 +372,13 @@ class Client:
     ) -> BidiSession:
         target = self._target(function)
         prepared = self.prepare(target, **kwargs)
-        wire = encode_invocation(
-            prepared.tuple,
-            metadata=prepared.metadata,
-            bidi_streams=streams
-            or [StreamSpec(stream_id=0, content_type="application/json")],
-        )
+        descriptors = streams or [
+            StreamSpec(stream_id=1, content_type="application/json")
+        ]
         return BidiSession(
-            easynet_sdk.BidiSessionAdapter(self._connected().bidi(wire))
+            easynet_sdk.BidiSessionAdapter(
+                self._connected().bidi(prepared.draft, descriptors)
+            )
         )
 
     # -- L2 ------------------------------------------------------------------
@@ -358,17 +404,19 @@ class Client:
             target.function, target.node, target.pick, target.owner_ura
         )
         payload = self._named_arguments(resolved, args, kwargs)
-        tuple_ = InvocationTuple(
-            caller=self._who().device_ura,
-            callee=resolved.callee,
-            ability=resolved.ability,
-            subject=target.subject
-            if target.subject is not None
-            else (resolved.subject or resolved.callee),
-            nonce=fresh_nonce(),
-            causal=target.causal,
-            arguments=Arguments.from_json(payload),
+        policy = (
+            target.invocation_policy
+            if target.invocation_policy is not None
+            else self._invocation_policy
         )
+        request = policy.derive(
+            caller_ura=self._who().device_ura,
+            ability_ura=resolved.ability_ura,
+            resolved_subject_ura=resolved.default_subject_ura,
+            args=payload,
+            metadata=target.metadata or {},
+        )
+        draft = self._connected().build_target_invocation(request)
 
         def dispatch(prepared: PreparedInvocation) -> Invocation:
             if prepared.sign:
@@ -376,8 +424,7 @@ class Client:
             return self._dispatch(prepared, timeout=target.timeout)
 
         return PreparedInvocation(
-            tuple=tuple_,
-            metadata=target.metadata,
+            draft=draft,
             sign=target.sign,
             call_carrier=resolved.call_carrier,
             dispatcher=dispatch,
@@ -392,10 +439,11 @@ class Client:
         pick: Literal["round_robin", "random"] | None = None,
         timeout: float | None = None,
         subject: str | None = None,
-        causal: Causal = None,
+        causal: object = None,
         sign: bool | None = None,
         metadata: Mapping[str, str] | None = None,
         owner_ura: str | None = None,
+        invocation_policy: InvocationDerivationPolicy | None = None,
     ) -> CallTarget:
         """Build a collision-free target for one client call.
 
@@ -412,6 +460,7 @@ class Client:
             sign=sign,
             metadata=metadata,
             owner_ura=owner_ura,
+            invocation_policy=invocation_policy,
         )
 
     # -- owner handles ---------------------------------------------------------
@@ -439,8 +488,8 @@ class Client:
         return RemoteOwner(self, hub_ura(self._who().realm))
 
     def _owner_ura(self, spec: str, kind: Literal["device", "agent"]) -> str:
-        if _sdk_identity.is_easynet_ura_text(spec):
-            actual = owner_kind(spec)
+        if self._addressing.is_owner_ura(spec):
+            actual = self._addressing.owner_kind(spec)
             if actual != kind:
                 raise InvalidArgument(
                     f"expected a {kind} owner URA, got {actual}: {spec}",
@@ -467,6 +516,11 @@ class Client:
         return AsyncClient(self)
 
     @property
+    def invocation_policy(self) -> InvocationDerivationPolicy:
+        """The EasyRemote product policy used when a target has no override."""
+        return self._invocation_policy
+
+    @property
     def abilities(self) -> AbilityControl:
         """Daemon ability install/catalogue operations for this client."""
         from .control import AbilityControl
@@ -488,7 +542,10 @@ class Client:
         return MissionControl(self)
 
     def close(self) -> None:
-        self._unary_pool.close()
+        try:
+            self._unary_pool.close()
+        finally:
+            self._addressing.close()
 
     def __enter__(self) -> Client:
         return self
@@ -501,22 +558,20 @@ class Client:
     def _dispatch(
         self, prepared: PreparedInvocation, timeout: float | None = None
     ) -> Invocation:
-        wire = encode_invocation(prepared.tuple, metadata=prepared.metadata)
         budget = timeout if timeout is not None else self._timeout
-        response = self._unary_pool.invoke(wire, timeout=budget)
-        return Invocation(prepared.tuple, response)
+        response = self._unary_pool.invoke(prepared.draft, timeout=budget)
+        return Invocation.from_transport_response(response)
 
     def _dispatch_signed(
         self, prepared: PreparedInvocation, timeout: float | None = None
     ) -> Invocation:
-        wire = encode_invocation(prepared.tuple, metadata=prepared.metadata)
         budget = timeout if timeout is not None else self._timeout
         response = self._unary_pool.invoke_signed(
-            wire,
+            prepared.draft,
             signer=self._signer,
             timeout=budget,
         )
-        return Invocation(prepared.tuple, response)
+        return Invocation.from_transport_response(response)
 
     def _address(
         self,
@@ -525,15 +580,7 @@ class Client:
         pick: str | None = None,
         owner_ura: str | None = None,
     ) -> ResolvedAbility:
-        """(callee URA, qualified ability name) for a function reference.
-
-        Short names get this client's namespace; dotted names pass
-        through. An explicit ``owner_ura`` (an owner handle) projects the
-        function onto that owner instead of the local device. Canonical
-        Ability URAs are projected through the SDK identity facade into
-        explicit Invocation tuple fields; daemon route policy still lives
-        behind easynet-daemon.
-        """
+        """Resolve product target selection into one SDK-owned Ability URA."""
         return self._addressing.resolve(
             function,
             identity=self._who(),
@@ -549,7 +596,7 @@ class Client:
         schema = target.input_schema
         order: list[str] | None = schema.get(PARAMETER_ORDER_KEY) if schema else None
         payload = dict(kwargs)
-        argument_label = target.argument_label or target.ability
+        argument_label = target.argument_label or target.ability_ura
         if args:
             if order is None:
                 raise InvalidArgument(
@@ -676,7 +723,10 @@ class AsyncClient:
         **kwargs: Any,
     ) -> BidiSession:
         result = await self._to_thread(
-            self._client.session, function, streams=streams, **kwargs
+            self._client.session,
+            function,
+            streams=streams,
+            **kwargs,
         )
         return cast(BidiSession, result)
 
@@ -792,7 +842,10 @@ class RemoteFunction:
         )
 
     def stream(self, *args: Any, **kwargs: Any) -> Stream:
-        return self._bound_client().stream(self._target, **self._bind(args, kwargs))
+        return self._bound_client().stream(
+            self._target,
+            **self._bind(args, kwargs),
+        )
 
     async def aio(self, *args: Any, **kwargs: Any) -> Any:
         import asyncio
@@ -964,10 +1017,18 @@ class RemoteOwner:
         )
 
     def call(self, function: str, /, *args: Any, **kwargs: Any) -> Any:
-        return self._client.call(self._target(function), *args, **kwargs)
+        return self._client.call(
+            self._target(function),
+            *args,
+            **kwargs,
+        )
 
     def stream(self, function: str, /, *args: Any, **kwargs: Any) -> Stream:
-        return self._client.stream(self._target(function), *args, **kwargs)
+        return self._client.stream(
+            self._target(function),
+            *args,
+            **kwargs,
+        )
 
     def _target(self, function: str) -> CallTarget:
         return CallTarget(function=function, owner_ura=self._owner_ura)

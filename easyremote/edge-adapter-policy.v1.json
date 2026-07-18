@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "package": {
+    "name": "easyremote",
+    "current_version": "2.0.0a0"
+  },
+  "removal_version": "3.0.0",
+  "zero_new_internal_callers": true,
+  "reexport_modules": [
+    "easyremote/__init__.py"
+  ],
+  "adapters": [
+    {
+      "module": "easyremote/client.py",
+      "symbol": "CallTarget.subject/causal",
+      "capability": "seam",
+      "public_fields": [],
+      "canonical_delegates": [
+        "easyremote.invocation_policy.legacy_target_policy",
+        "easynet_sdk.AbilityTargetRequest"
+      ],
+      "internal_callers": []
+    },
+    {
+      "module": "easyremote/invocation.py",
+      "symbol": "Arguments",
+      "capability": "seam",
+      "public_fields": [
+        "content_type",
+        "json_value",
+        "raw"
+      ],
+      "canonical_delegates": [
+        "easynet_sdk.InvocationWireProjector"
+      ],
+      "internal_callers": []
+    },
+    {
+      "module": "easyremote/invocation.py",
+      "symbol": "CausalRef",
+      "capability": "seam",
+      "public_fields": [
+        "receipt_hash",
+        "receipt_ura"
+      ],
+      "canonical_delegates": [
+        "easynet_sdk.ReceiptReference"
+      ],
+      "internal_callers": []
+    },
+    {
+      "module": "easyremote/invocation.py",
+      "symbol": "MerkleAnchor",
+      "capability": "seam",
+      "public_fields": [
+        "root",
+        "proof_ura"
+      ],
+      "canonical_delegates": [
+        "easynet_sdk.InvocationWireProjector"
+      ],
+      "internal_callers": []
+    },
+    {
+      "module": "easyremote/invocation.py",
+      "symbol": "InvocationTuple",
+      "capability": "seam",
+      "public_fields": [
+        "caller",
+        "callee",
+        "ability",
+        "subject",
+        "nonce",
+        "causal",
+        "arguments"
+      ],
+      "canonical_delegates": [
+        "easynet_sdk.InvocationWireProjector"
+      ],
+      "internal_callers": []
+    },
+    {
+      "module": "easyremote/invocation.py",
+      "symbol": "PreparedInvocation.with_causal",
+      "capability": "seam",
+      "public_fields": [],
+      "canonical_delegates": [
+        "easynet_sdk.InvocationWireProjector"
+      ],
+      "internal_callers": []
+    },
+    {
+      "module": "easyremote/receipts.py",
+      "symbol": "Receipt",
+      "capability": "seam",
+      "public_fields": [
+        "index",
+        "invocation_id",
+        "receipt_type",
+        "state",
+        "timestamp_unix_ms",
+        "prev_receipt_hash",
+        "self_hash",
+        "payload_content_type",
+        "cleanup_complete",
+        "reason",
+        "child_invocation_id",
+        "raw"
+      ],
+      "canonical_delegates": [
+        "easynet_sdk.RuntimeReceipt",
+        "easynet_sdk.ReceiptReference"
+      ],
+      "internal_callers": []
+    },
+    {
+      "module": "easyremote/receipts.py",
+      "symbol": "ReceiptChain",
+      "capability": "seam",
+      "public_fields": [],
+      "canonical_delegates": [
+        "easynet_sdk.ReceiptClient.verify_chain"
+      ],
+      "internal_callers": []
+    }
+  ]
+}

@@ -299,7 +299,7 @@ def test_stream_context_function_reads_caller_each_frame(host):
     ]
 
 
-def test_context_child_call_uses_parent_receipt_dispatcher(short_tmp):
+def test_context_child_call_uses_parent_receipt_dispatcher(short_tmp, runtime_receipt):
     from easyremote import Context
     from easyremote._host.server import HostServer
 
@@ -334,20 +334,13 @@ def test_context_child_call_uses_parent_receipt_dispatcher(short_tmp):
     def parent(ctx: Context, q: str):
         return ctx.call("er.child", q=q)
 
-    parent_receipt = {
-        "index": 0,
-        "invocation_id": "inv-parent-1",
-        "receipt_type": "completed",
-        "state": "completed",
-        "timestamp_unix_ms": 1_700_000_000_000,
-        "prev_receipt_hash_hex": "00" * 32,
-        "self_hash_hex": "aa" * 32,
-        "receipt_ura": "easynet:///r/example/resource/agent.easyremote.test/invocation/parent-1/receipt",
-        "payload_content_type": "application/json",
-        "cleanup_complete": True,
-        "reason": "",
-        "child_invocation_id": "",
-    }
+    parent_receipt = runtime_receipt(
+        invocation_id="inv-parent-1",
+        receipt_type="completed",
+        state="completed",
+        receipt_ura="easynet:///r/example/resource/agent.easyremote.test/invocation/parent-1/receipt",
+        cleanup_complete=True,
+    )
 
     with HostServer(
         short_tmp / "host.sock", context_dispatcher_factory=factory

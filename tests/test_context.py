@@ -1,11 +1,13 @@
 """Server-side Context child dispatch semantics."""
 
+import easynet_sdk
 import pytest
 
 from easyremote._context_dispatch import dispatcher_from_parent_receipt
 from easyremote.context import Context
 from easyremote.errors import Unavailable
-from easyremote.receipts import InvocationState, Receipt
+from easyremote.invocation_policy import ChildCausal
+from easyremote.receipts import InvocationState
 
 
 class FakeChildDispatcher:
@@ -79,23 +81,18 @@ class FakeClient:
         self.closed = True
 
 
-def test_sdk_dispatcher_projects_parent_receipt_into_child_causal_ref():
+def test_sdk_dispatcher_projects_parent_receipt_into_child_causal_ref(
+    runtime_receipt,
+):
     fake = FakeClient()
-    parent = Receipt.from_wire(
-        {
-            "index": 0,
-            "invocation_id": "inv-parent-1",
-            "receipt_type": "completed",
-            "state": int(InvocationState.COMPLETED),
-            "timestamp_unix_ms": 1_700_000_000_000,
-            "prev_receipt_hash_hex": "00" * 32,
-            "self_hash_hex": "aa" * 32,
-            "receipt_ura": "easynet:///r/example/resource/agent.easyremote.test/invocation/parent-1/receipt",
-            "payload_content_type": "application/json",
-            "cleanup_complete": True,
-            "reason": "",
-            "child_invocation_id": "",
-        }
+    parent = easynet_sdk.RuntimeReceipt.from_required_mapping(
+        runtime_receipt(
+            invocation_id="inv-parent-1",
+            receipt_type="completed",
+            state=int(InvocationState.COMPLETED),
+            receipt_ura="easynet:///r/example/resource/agent.easyremote.test/invocation/parent-1/receipt",
+            cleanup_complete=True,
+        )
     )
 
     dispatcher = dispatcher_from_parent_receipt(parent, client_factory=lambda: fake)
@@ -104,9 +101,13 @@ def test_sdk_dispatcher_projects_parent_receipt_into_child_causal_ref():
 
     _, target, args, kwargs = fake.seen[0]
     assert target.function == "er.child"
-    assert target.causal is not None
-    assert target.causal.receipt_ura == "easynet:///r/example/resource/agent.easyremote.test/invocation/parent-1/receipt"
-    assert target.causal.receipt_hash == b"\xaa" * 32
+    policy = target.invocation_policy
+    assert isinstance(policy, ChildCausal)
+    assert (
+        policy.parent.receipt_ura
+        == "easynet:///r/example/resource/agent.easyremote.test/invocation/parent-1/receipt"
+    )
+    assert policy.parent.receipt_hash == b"\xaa" * 32
     assert args == ()
     assert kwargs == {"q": "hi"}
 
@@ -114,21 +115,14 @@ def test_sdk_dispatcher_projects_parent_receipt_into_child_causal_ref():
     assert fake.closed
 
 
-def test_sdk_dispatcher_rejects_parent_receipt_without_anchor():
-    parent = Receipt.from_wire(
-        {
-            "index": 0,
-            "invocation_id": "inv-parent-1",
-            "receipt_type": "completed",
-            "state": int(InvocationState.COMPLETED),
-            "timestamp_unix_ms": 1_700_000_000_000,
-            "prev_receipt_hash_hex": "00" * 32,
-            "self_hash_hex": "aa" * 32,
-            "payload_content_type": "application/json",
-            "cleanup_complete": True,
-            "reason": "",
-            "child_invocation_id": "",
-        }
+def test_sdk_dispatcher_rejects_parent_receipt_without_anchor(runtime_receipt):
+    parent = easynet_sdk.RuntimeReceipt.from_required_mapping(
+        runtime_receipt(
+            invocation_id="inv-parent-1",
+            receipt_type="completed",
+            state=int(InvocationState.COMPLETED),
+            cleanup_complete=True,
+        )
     )
 
     with pytest.raises(Unavailable) as exc_info:

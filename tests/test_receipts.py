@@ -1,104 +1,51 @@
-"""Receipt summaries: parsing, chain continuity, honest verify()."""
+"""Internal EasyRemote receipt operations use canonical SDK facts directly."""
 
+import easynet_sdk
 import pytest
 
-from easyremote.errors import InternalError, Unavailable
-from easyremote.receipts import InvocationState, Receipt, ReceiptChain
+from easyremote.receipts import (
+    InvocationState,
+    receipt_from_mapping,
+    receipt_reference,
+)
 
 
-def wire_receipt(index=0, prev_hex="00" * 32, self_hex="aa" * 32, **overrides):
-    wire = {
-        "index": index,
-        "invocation_id": "inv-1",
-        "receipt_type": 1,
-        "state": int(InvocationState.ADMITTED),
-        "timestamp_unix_ms": 1_700_000_000_000,
-        "prev_receipt_hash_hex": prev_hex,
-        "self_hash_hex": self_hex,
-        "payload_content_type": "application/json",
-        "cleanup_complete": False,
-        "reason": "",
-        "child_invocation_id": "",
-    }
-    wire.update(overrides)
-    return wire
+def test_receipt_is_the_sdk_runtime_projection(runtime_receipt) -> None:
+    receipt = receipt_from_mapping(runtime_receipt())
 
-
-def test_from_wire_parses_all_fields():
-    receipt = Receipt.from_wire(wire_receipt())
+    assert isinstance(receipt, easynet_sdk.RuntimeReceipt)
     assert receipt.index == 0
     assert receipt.invocation_id == "inv-1"
-    assert receipt.receipt_type == "1"
-    assert receipt.state is InvocationState.ADMITTED
-    assert receipt.prev_receipt_hash == bytes(32)
-    assert receipt.self_hash == b"\xaa" * 32
-    assert receipt.raw["self_hash_hex"] == "aa" * 32  # nothing lost
+    assert receipt.state == "admitted"
+    assert receipt.prev_receipt_hash() == bytes(32)
+    assert receipt.self_receipt_hash() == b"\xaa" * 32
 
 
-def test_reference_uses_sdk_receipt_anchor_projection():
-    receipt = Receipt.from_wire(
-        wire_receipt(
-            receipt_ura="easynet:///r/example/resource/agent.easyremote.test/invocation/r-1/receipt"
+def test_sdk_rejects_missing_proof_facts(runtime_receipt) -> None:
+    value = runtime_receipt()
+    value.pop("authority_proof")
+
+    with pytest.raises(easynet_sdk.SDKError, match="authority_proof"):
+        receipt_from_mapping(value)
+
+
+def test_receipt_reference_uses_sdk_projection(runtime_receipt) -> None:
+    receipt = receipt_from_mapping(
+        runtime_receipt(
+            receipt_ura=(
+                "easynet:///r/example/resource/agent.easyremote.test/"
+                "invocation/r-1/receipt"
+            )
         )
     )
 
-    reference = receipt.reference()
+    reference = receipt_reference(receipt)
 
-    assert reference.receipt_ura == (
-        "easynet:///r/example/resource/agent.easyremote.test/invocation/r-1/receipt"
-    )
     assert reference.receipt_hash == b"\xaa" * 32
     assert reference.causal_context()["receipt_hash_hex"] == "aa" * 32
 
 
-def test_from_wire_accepts_current_string_receipt_type_and_state():
-    receipt = Receipt.from_wire(wire_receipt(receipt_type="admitted", state="admitted"))
-    assert receipt.receipt_type == "admitted"
-    assert receipt.state is InvocationState.ADMITTED
-
-
-def test_unknown_state_degrades_to_unspecified_not_crash():
-    receipt = Receipt.from_wire(wire_receipt(state=999))
-    assert receipt.state is InvocationState.UNSPECIFIED
-    assert receipt.raw["state"] == 999
-
-
-def test_malformed_summary_is_protocol_error():
-    with pytest.raises(InternalError, match="malformed"):
-        Receipt.from_wire({"index": "zero"})
-
-
-def test_verify_is_honest_about_the_abi_gap():
-    with pytest.raises(Unavailable) as exc_info:
-        Receipt.from_wire(wire_receipt()).verify()
-    assert exc_info.value.reason == "full_receipt_unavailable"
-
-
-def test_chain_continuity_holds():
-    first = Receipt.from_wire(wire_receipt(index=0, self_hex="aa" * 32))
-    second = Receipt.from_wire(
-        wire_receipt(index=1, prev_hex="aa" * 32, self_hex="bb" * 32)
-    )
-    ReceiptChain([first, second]).verify_continuity()  # no raise
-
-
-def test_chain_break_is_reported_with_index():
-    first = Receipt.from_wire(wire_receipt(index=0, self_hex="aa" * 32))
-    second = Receipt.from_wire(
-        wire_receipt(index=1, prev_hex="cc" * 32, self_hex="bb" * 32)
-    )
-    with pytest.raises(InternalError) as exc_info:
-        ReceiptChain([first, second]).verify_continuity()
-    assert exc_info.value.reason == "receipt_chain_broken"
-    assert "index 1" in str(exc_info.value)
-
-
-def test_terminal_states():
-    terminal = {
-        InvocationState.COMPLETED,
-        InvocationState.FAILED,
-        InvocationState.TIMED_OUT,
-        InvocationState.CANCELLED,
-    }
-    for state in InvocationState:
-        assert state.is_terminal == (state in terminal)
+def test_invocation_state_is_the_sdk_lifecycle_type() -> None:
+    assert InvocationState is easynet_sdk.InvocationLifecycleState
+    assert InvocationState.COMPLETED.is_terminal
+    assert not InvocationState.ADMITTED.is_terminal

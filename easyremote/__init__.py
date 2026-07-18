@@ -44,12 +44,24 @@ from .errors import (
 )
 from .gateway import Gateway, Server, TLSConfig
 from .invocation import Invocation, InvocationTuple, PreparedInvocation
+from .invocation_policy import (
+    DEFAULT_INVOCATION_POLICY,
+    ChildCausal,
+    CompleteExplicit,
+    ExplicitSubject,
+    FreshCausal,
+    FreshRoot,
+    InvocationDerivationPolicy,
+    InvocationSubjectPolicy,
+    ResolvedTargetSubject,
+)
 from .mission import MissionControl
 from .node import ComputeNode
 from .pipeline import MissionRun, Pipeline
 from .receipts import InvocationState, Receipt, ReceiptChain
 
 __all__ = [
+    "DEFAULT_INVOCATION_POLICY",
     "AbilityControl",
     "AbilityInstallResult",
     "AbilityRecord",
@@ -60,18 +72,25 @@ __all__ = [
     "BidiSession",
     "CallTarget",
     "Cancelled",
+    "ChildCausal",
     "Client",
+    "CompleteExplicit",
     "ComputeNode",
     "Context",
     "DaemonHandle",
     "DaemonStartConfig",
     "DeadlineExceeded",
     "DeviceRuntimeBootstrap",
+    "ExplicitSubject",
+    "FreshCausal",
+    "FreshRoot",
     "Gateway",
     "InternalError",
     "InvalidArgument",
     "Invocation",
+    "InvocationDerivationPolicy",
     "InvocationState",
+    "InvocationSubjectPolicy",
     "InvocationTuple",
     "MissionControl",
     "MissionRun",
@@ -83,6 +102,7 @@ __all__ = [
     "RemoteError",
     "RemoteFunction",
     "RemoteOwner",
+    "ResolvedTargetSubject",
     "ResourceExhausted",
     "RuntimeBootstrapState",
     "SchemaError",

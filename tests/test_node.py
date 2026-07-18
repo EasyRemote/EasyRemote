@@ -144,7 +144,7 @@ def test_device_ontology_naming_paired(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "_settings", None)
     credentials = tmp_path / "credentials.json"
     credentials.write_text(
-        json.dumps({"realm": "acme", "node_id": "dev-a", "hub_endpoint": "h:443"})
+        json.dumps({"realm": "acme", "device_id": "dev-a", "hub_endpoint": "h:443"})
     )
     monkeypatch.setenv("EASYNET_CREDENTIALS", str(credentials))
     node = ComputeNode(

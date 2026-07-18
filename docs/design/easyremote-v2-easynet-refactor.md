@@ -1,6 +1,6 @@
 # EasyRemote v2 迁移规格说明书（SPEC）
 
-> 状态：**SPEC v1.0**（2026-06-11 定稿；含同日七轮叙事裁定）
+> 状态：**SPEC v1.1**（2026-07-18 canonical runtime ownership 修订）
 > 作者：Claude 起草，CTO Silan.Hu 逐轮裁定
 > 读者：EasyRemote / EasyNet 工程团队
 > 性质：normative——实现与本文冲突时，以本文为准或先修订本文
@@ -86,8 +86,8 @@ canonical 文案全文见附录 A（README hero / landing page 母版）。
    `causal=none`）必须暴露在对象属性上，不得埋进字符串。
 3. 产品调用只走 daemon.sock 的 `axon.v1.Invocation`；**不碰 JSON control
    帧**（已降级为 boot/status 专用）。
-4. URA 一律 builder 生成（`build_device_ability_ura` / `parse_ura`），
-   禁止手写字符串插值。
+4. URA 一律通过 `easynet_sdk.AddressingClient` 或 SDK 顶层 builder
+   生成、投影和校验，禁止手写字符串插值或在 facade 内实现语法。
 5. register 产出的 capability 必须三面同源（callable / discoverable /
    composable 来自同一个 ability 注册），任何让三者分叉的设计被拒绝。
 
@@ -167,11 +167,11 @@ daemon SDK 已落地（`88bbd86` / `7ea78eb`）。
 │  gateway.py    Gateway(=Server) → hub daemon 包装             │
 │  schema.py     类型注解 → input/output JSON Schema            │
 │  pipeline.py   Pipeline / MissionRun → EAL → mission.run      │
-│  invocation.py Invocation / PreparedInvocation / Tuple        │
-│  receipts.py   Receipt / ReceiptChain（re-export 包装）        │
+│  invocation.py SDK InvocationResult 展示 / 版本化公开边缘适配  │
+│  receipts.py   SDK RuntimeReceipt 投影 / 版本化公开边缘适配    │
 │  errors.py     8 类异常                                       │
 │  config.py     configure() / 发现链 / doctor                  │
-│  _transport/   ctypes 绑定 C ABI（私有）                      │
+│  _sdk_transport/ SDK adapter 与产品错误映射（私有）           │
 │  _host/        warm host_stream 宿主（私有）                   │
 └──────────────┬─────────────────────────┬─────────────────────┘
                │ Invocation/URA/回执/生命周期
@@ -241,7 +241,8 @@ credentials.json 密钥自动签名。`sign=None` 表示按路径自动判定，
    （Pipeline 引用 + `Context.call`）。任何让三者不同源的设计被拒绝。
 1. **12 行体验不破坏。** 唯一新增前置是一次性 `easynet pair`。
 2. **三层渐进暴露。** L0：`register`/`execute`，零协议词汇；L1：选点、
-   流、超时；L2：七元组、回执链、causal、签名。每层升级只隔一个属性访问。
+   流、超时；L2：SDK canonical draft、runtime receipts、causal、签名。
+   每层升级只隔一个属性访问。
 3. **Result-first，receipt-always-available。**
 4. **错误即 taxonomy**，不发明第 8 类运行期错误。
 5. **不留 pickle。** 参数默认 JSON；二进制媒体显式 `content_type` + 流。
@@ -262,8 +263,8 @@ __all__ = [
     "remote", "Invocation", "PreparedInvocation", "InvocationState",
     # 服务端组合
     "Context",
-    # 回执（C ABI receipt summary wrapper）
-    "Receipt", "ReceiptChain",
+    # 1.0.0 删除的版本化公开边缘适配
+    "InvocationTuple", "Receipt", "ReceiptChain",
     # 流
     "Stream", "BidiSession",
     # 编排
@@ -382,7 +383,8 @@ class ComputeNode:
 | 首参注解为 `Context` | 注入，schema 推导跳过 |
 
 注册产物：`AbilityManifest` 写盘 → ability deploy → URA 由
-`build_device_ability_ura(realm, device_id, namespace, fn_name)` 生成。
+`easynet_sdk.device_ability_ura(...)` 生成并经 SDK Addressing provider
+往返校验。
 调用期参数校验在 daemon 侧由 input_schema 执行；facade 客户端做同 schema
 的 fail-fast 预检。
 
@@ -446,9 +448,13 @@ class Client:
         gateway: str | None = None,        # None → credentials.json
         *,
         timeout: float = 30.0,
+        invocation_policy: InvocationDerivationPolicy = DEFAULT_INVOCATION_POLICY,
         retry: RetryPolicy | None = None,  # 默认仅对带 retry_after 的
                                            # UNAVAILABLE/RESOURCE_EXHAUSTED 退避重试
     ): ...
+
+    @property
+    def invocation_policy(self) -> InvocationDerivationPolicy: ...
 
     # L0：v1 兼容
     def execute(self, target: str | CallTarget, /, *args, **kwargs) -> Any
@@ -461,8 +467,10 @@ class Client:
     @staticmethod
     def target(function: str, /, *, node: str | None = None,
                pick: Literal["round_robin", "random"] | None = None,
-               timeout: float | None = None, subject: str | None = None,
-               metadata: dict[str, str] | None = None) -> CallTarget
+               timeout: float | None = None,
+               metadata: dict[str, str] | None = None,
+               invocation_policy: InvocationDerivationPolicy | None = None
+               ) -> CallTarget
 
     # L2：完整调用对象
     def invoke(self, target: str | CallTarget, /, *args, **kwargs) -> Invocation
@@ -485,8 +493,8 @@ ai_inference.stream("hi")             # L1 流
 await ai_inference.aio("hi")          # async 镜像
 Client().call(Client.target("ai_inference", node="gpu-1"), prompt="hi")
 
-prepared = Client().prepare("ai_inference", prompt="hi")  # L2：七元组检视
-prepared.tuple.subject
+prepared = Client().prepare("ai_inference", prompt="hi")  # L2：draft 检视
+prepared.tuple.subject_ura
 # PreparedInvocation.send()/Client.invoke() 保留给 daemon unary/system ability；
 # EasyRemote-hosted ability 统一由 call()/stream() 消费 host_stream carrier。
 ```
@@ -499,33 +507,33 @@ prepared.tuple.subject
 
 ```python
 class PreparedInvocation:
-    tuple: InvocationTuple        # caller/callee/ability/subject/nonce/causal/args_digest
+    draft: easynet_sdk.InvocationDraft
+    tuple: easynet_sdk.InvocationDraft | InvocationTuple
     def with_subject(self, ura: str) -> "PreparedInvocation"
-    def with_causal(self, *receipts: Receipt) -> "PreparedInvocation"
+    def with_causal(self, causal: LegacyCausal) -> "PreparedInvocation"
     def send(self) -> Invocation
 
 class Invocation:
     id: str
-    state: InvocationState        # 镜像 Axon 九态
-    tuple: InvocationTuple        # 七元组永远可读（不变式 2）
+    state: easynet_sdk.InvocationLifecycleState
+    tuple: easynet_sdk.InvocationDraft
+    sdk_result: easynet_sdk.InvocationResult
 
-    def result(self, timeout: float | None = None) -> Any
-    def events(self, from_offset: int = 0) -> Iterator[InvocationEvent]
-    def cancel(self, reason: str = "") -> None
-    def send(self, payload: dict | bytes, message_id: str | None = None) -> MessageAck
+    def result(self) -> Any
 
     @property
-    def receipt(self) -> Receipt          # 终态回执
-    def receipts(self) -> ReceiptChain
-    def verify(self, resolver: KeyResolver | None = None) -> VerifiedReceipt
-        # None → daemon/SDK 的 realm 默认验证器
-
-class Receipt:                    # thin wrapper；.raw 暴露 SDK receipt projection
-    type: str; state: str; timestamp_ms: int; invocation_id: str
-    def verify(self, resolver=None) -> VerifiedReceipt
-    def trace(self) -> CausalTrace
-    raw: "easynet_sdk.RuntimeReceipt"
+    def receipt(self) -> easynet_sdk.RuntimeReceipt | None
+    def receipts(self) -> tuple[easynet_sdk.RuntimeReceipt, ...]
 ```
+
+EasyRemote 不定义 canonical bytes、receipt chain continuity、签名或
+admission 规则。已发布的 `InvocationTuple`、`Receipt`、`ReceiptChain` 与
+`PreparedInvocation.with_causal` 仅作为 policy 枚举的产品边缘形状保留；
+构造后立即委托 SDK 生成或解析 canonical 对象，内部生产路径不得调用这些
+适配器。机器策略 `easyremote/edge-adapter-policy.v1.json` 记录当前包版本
+`2.0.0a0`、删除版本 `1.0.0`、精确公开字段及零新增内部调用者约束。
+`ReceiptChain.verify_continuity()` 不在 runtime summary 上重写 chain 规则；
+完整回执链验证使用 `easynet_sdk.ReceiptClient.verify_chain`。
 
 ### 5.8 错误层级
 
@@ -616,16 +624,15 @@ coroutine；`Stream` 同时实现 `__iter__` 与 `__aiter__`；
 
 | 实体 | canonical 形状（一律 builder 生成） |
 |---|---|
-| 注册函数 → ability | `build_device_ability_ura(realm, device_id, "er", fn_name)` → `easynet:///r/<realm>/ability/device.<device-id>.er.<fn>` |
-| caller | credentials.json 的 agent/user URA |
-| subject 默认值 | `= callee`（可检视、可覆盖） |
+| 注册函数 → ability | `easynet_sdk.device_ability_ura(...)` |
+| caller | SDK runtime identity projection 的 device URA |
+| subject | 显式 `InvocationSubjectPolicy` 选择的 SDK-validated URA |
 
 **调用侧 URA 纪律**：当用户传入 canonical Ability URA（通常来自
-`FunctionInfo.qualified_name`）时，facade 不解析 owner/callee/ability，不
-调用本地 helper 反推 route；它只把该字符串作为
-`<self>.invoke {ability_ura, args}` 的参数交给 daemon。`pick` 也是如此：
-客户端只在 discovery 候选中选择一个 `ability_ura`，语义投影由
-EasyNet-Cli / Axon 负责。
+`FunctionInfo.ability_ura`）时，facade 只做产品 target selection；owner
+投影、descriptor binding 和完整 Invocation draft 构建分别委托给 SDK
+`AddressingClient` 与 `AbilityInvocationClient`。`pick` 也只选择候选项，
+不在 EasyRemote 内解析或重建 URA。
 
 **待拍板 / spec 缺口：**
 
@@ -645,8 +652,8 @@ EasyNet-Cli / Axon 负责。
 | # | 结论 | facade 影响 |
 |---|---|---|
 | ① | 磁盘上的 release dylib 曾是 v1/v2 旧产物（只导出已弃用的 `easynet_ability_invoke` 面）；重建后 17 符号与头文件逐一对齐 | 绑定层已加固：先握手后声明全集，旧库报 `abi_mismatch`/`abi_symbol_missing` + 重建指引 |
-| ② | unary 路径 `admission_receipt = null`（此 daemon 版本不返回执摘要） | 回执链验证暂无数据源——强化缺口 4 的优先级；`Invocation.receipt` 正确返回 None |
-| ③ | ability URA 实例形状确认：`easynet:///r/localhost/ability/dev.demo.chat`（user.agent.verb 三段 owner） | `FunctionInfo.qualified_name` 透传正确 |
+| ② | 历史 daemon 曾在 unary 路径返回空 receipt | 不保留兼容 fallback；当前 live contract 要求 SDK `RuntimeReceipt`，缺失即集成失败 |
+| ③ | Ability URA 形状由 SDK Addressing provider 验证 | `FunctionInfo.ability_ura` 为内部 canonical 字段，`qualified_name` 保留产品读取兼容 |
 | ④ | **本体修正（CTO 裁定）：node = device，不是 agent**。正确通路是 `ability.deploy` system ability + ability.json，URA = `easynet:///r/<realm>/ability/device.<node-id>.<ns>.<fn>` | `ComputeNode` 只打包 device-owned ability，不再写 agents.json/TOML，不再调用 agent refresh |
 | ⑤ | **闭环执行模型唯一化**：register → ability.json → Python ResourceRef → daemon `ability.deploy` Invocation → daemon `host_stream` executor → warm host → stream frames/terminal | `Client.call()` drains host_stream for result-first use；`Client.stream()` exposes live frames；`Client.invoke()`/`PreparedInvocation.send()` 保留给 daemon unary/system ability |
 | ⑥ | **无 forwarder 旁路**：warm host 路径不维护 shell forwarder / Python shim / C fast forwarder 三套实现 | latency 与正确性只看 daemon `host_stream` executor 直接连 Unix socket 的正式路径 |
@@ -693,8 +700,8 @@ EasyNet-Cli / Axon 负责。
 
 | 阶段 | 内容 | 验收标准 |
 |---|---|---|
-| **P0 链路验证**（1–2 天） | device daemon + 手写 shell-exec ability + axiom.py 七元组 + C ABI invoke；核实运行时注册路径 | receipt 经 `verify()` 验签通过；运行时注册结论写入本文 §6.2 |
-| **P1 `_transport`**（~3 天） | ctypes 封装 15 函数；ABI 握手；错误映射；stream→迭代器、bidi→双队列 | unary/stream/bidi + 超时/取消 pytest 全绿 |
+| **P0 链路验证**（1–2 天） | device daemon + SDK Invocation provider + runtime adapter；核实运行时注册路径 | canonical draft、终态和 receipt 均由 SDK 投影；结论写入本文 §6.2 |
+| **P1 `_sdk_transport`**（~3 天） | 组合 SDK adapter、error taxonomy、stream 与 bidi facade | EasyRemote 不加载 C ABI，不复制 stream/unary state machine |
 | **P2 节点侧**（~1 周） | `schema.py` 推导；`register` → ability package → deploy；`_host` host_stream socket | 注册函数可被 daemon `host_stream` executor 调用；无 forwarder 文件 |
 | **P3 客户端侧**（~1 周） | `execute/call/invoke/prepare/stream/session` + `@remote` + `.aio` + read-only `Context` | §5.2 12 行 demo 原样跑通；stream terminal/error 语义有单测 |
 | **P4 gateway + 选点**（~1–2 周） | `Gateway` 包装 + 证书引导；客户端 `pick` 策略 | 双节点同名函数按策略分流；TLS 强制下全链路通 |

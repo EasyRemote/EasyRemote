@@ -148,7 +148,7 @@ class DaemonHandle:
 
 def _start_process(config: DaemonStartConfig) -> DaemonProcess:
     try:
-        return DaemonProcess.start(config)
+        return DaemonProcess.start(config._to_sdk())
     except RemoteError:
         raise
     except easynet_sdk.SDKError as exc:
