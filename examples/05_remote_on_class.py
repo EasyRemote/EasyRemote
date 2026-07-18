@@ -12,7 +12,7 @@ its own client. Module-level `@remote` (see 02_hello_client.py) still
 works exactly as before.
 """
 
-from easyremote import Client, remote
+from easyremote import Client, FreshRoot, ResolvedTargetSubject, remote
 
 
 class GPUCluster:
@@ -37,7 +37,7 @@ class GPUCluster:
 
 
 if __name__ == "__main__":
-    cluster = GPUCluster(Client())
+    cluster = GPUCluster(Client(invocation_policy=FreshRoot(ResolvedTargetSubject())))
 
     print("ai_inference ->", cluster.ai_inference("hello easynet"))
     print("embed        ->", cluster.embed("vectorise me"))

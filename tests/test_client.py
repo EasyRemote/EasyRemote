@@ -32,10 +32,10 @@ from easyremote.errors import (
 )
 from easyremote.identity import LocalIdentity
 from easyremote.invocation_policy import (
-    DEFAULT_INVOCATION_POLICY,
     CompleteExplicit,
     FreshRoot,
     InvocationDerivationPolicy,
+    ResolvedTargetSubject,
 )
 from easyremote.mission import MissionControl
 from easyremote.receipts import InvocationState
@@ -243,8 +243,17 @@ class RouteNegativeTransport(FakeTransport):
 
 def make_client(**kwargs):
     signer = kwargs.pop("signer", None)
+    invocation_policy = kwargs.pop(
+        "invocation_policy",
+        FreshRoot(ResolvedTargetSubject()),
+    )
     transport = FakeTransport(**kwargs)
-    client = Client(transport=transport, identity=IDENTITY, signer=signer)
+    client = Client(
+        transport=transport,
+        identity=IDENTITY,
+        signer=signer,
+        invocation_policy=invocation_policy,
+    )
     return client, transport
 
 
@@ -274,13 +283,13 @@ def test_identity_uras_are_canonical():
     assert IDENTITY.hub_ura == "easynet:///r/acme/hub"
 
 
-def test_execute_addresses_local_device_with_namespaced_ability():
+def test_explicit_root_policy_addresses_local_device_with_namespaced_ability():
     client, transport = make_client()
     client.execute("ai_inference", prompt="hi")
     wire = transport.invocations[0]
     assert wire["caller_ura"] == DEVICE_URA
     assert wire["callee_ura"] == DEVICE_URA
-    assert wire["subject_ura"] == DEVICE_URA  # default subject = callee
+    assert wire["subject_ura"] == DEVICE_URA
     assert (
         wire["descriptor_ref"]
         == "easynet:///r/acme/ability/device.dev-a.er.ai_inference@1.0.0"
@@ -346,7 +355,12 @@ def test_agent_owned_ability_ura_uses_same_daemon_invoke_path():
 def test_owner_ura_namespace_projects_short_function_to_ability_ura():
     owner_ura = "easynet:///r/acme/agent/dev.caesura"
     transport = FakeTransport(responses=[ok_response("ok")])
-    client = Client(namespace=owner_ura, transport=transport, identity=IDENTITY)
+    client = Client(
+        namespace=owner_ura,
+        transport=transport,
+        identity=IDENTITY,
+        invocation_policy=FreshRoot(ResolvedTargetSubject()),
+    )
 
     assert client.call("discover", query="") == "ok"
 
@@ -402,7 +416,11 @@ def test_ability_ura_cannot_be_combined_with_python_targeting():
 
 def test_route_negative_surfaces_without_cli_subprocess_retry():
     transport = RouteNegativeTransport()
-    client = Client(transport=transport, identity=IDENTITY)
+    client = Client(
+        transport=transport,
+        identity=IDENTITY,
+        invocation_policy=FreshRoot(ResolvedTargetSubject()),
+    )
 
     with pytest.raises(InternalError) as exc_info:
         client.invoke("observe.health")
@@ -630,12 +648,24 @@ def test_public_invocation_method_shapes_do_not_expose_policy_parameters():
         assert "policy" not in session_parameters
 
 
-def test_client_exposes_read_only_default_product_policy():
-    client, _ = make_client()
+def test_client_exposes_only_an_explicit_read_only_product_policy():
+    policy = FreshRoot(ResolvedTargetSubject())
+    client, _ = make_client(invocation_policy=policy)
 
-    assert client.invocation_policy is DEFAULT_INVOCATION_POLICY
+    assert client.invocation_policy is policy
     with pytest.raises(AttributeError):
-        client.invocation_policy = DEFAULT_INVOCATION_POLICY  # type: ignore[misc]
+        client.invocation_policy = policy  # type: ignore[misc]
+
+
+def test_client_without_policy_fails_closed_before_sdk_request_construction():
+    transport = FakeTransport()
+    client = Client(transport=transport, identity=IDENTITY)
+
+    with pytest.raises(InvalidArgument) as exc_info:
+        client.prepare("fn", x=1)
+
+    assert exc_info.value.reason == "missing_invocation_derivation_policy"
+    assert transport.invocations == []
 
 
 def test_prepare_preserves_complete_explicit_derivation():
@@ -686,42 +716,12 @@ def test_target_policy_overrides_client_policy():
     assert prepared.tuple.nonce_base64 == base64.b64encode(NONCE[::-1]).decode("ascii")
 
 
-def test_released_target_subject_kwarg_lowers_to_one_product_policy():
-    client, transport = make_client()
+def test_target_surface_contains_no_legacy_tuple_derivation_fields():
+    parameters = inspect.signature(Client.target).parameters
 
-    with pytest.deprecated_call(match="EasyRemote 3.0.0"):
-        target = Client.target(
-            "fn",
-            subject="easynet:///r/acme/resource/job-1",
-        )
-    prepared = client.prepare(target, x=1)
-
-    assert prepared.tuple.subject_ura == "easynet:///r/acme/resource/job-1"
-    assert transport.invocations == []
-
-
-def test_released_target_causal_kwarg_lowers_to_sdk_receipt_reference():
-    client, _ = make_client()
-    parent = easynet_sdk.ReceiptReference(
-        receipt_ura="easynet:///r/acme/resource/agent.worker/invocation/parent/receipt",
-        receipt_hash=b"\xab" * 32,
-    )
-
-    with pytest.deprecated_call(match="EasyRemote 3.0.0"):
-        target = Client.target("fn", causal=parent)
-    prepared = client.prepare(target, x=1)
-
-    assert prepared.tuple.causal_context == parent.causal_context()
-
-
-def test_target_rejects_legacy_and_canonical_policy_combination():
-    with pytest.raises(InvalidArgument) as exc_info:
-        Client.target(
-            "fn",
-            subject="easynet:///r/acme/resource/job-1",
-            invocation_policy=DEFAULT_INVOCATION_POLICY,
-        )
-    assert exc_info.value.reason == "ambiguous_invocation_derivation_policy"
+    assert "subject" not in parameters
+    assert "causal" not in parameters
+    assert "invocation_policy" in parameters
 
 
 def test_policy_keyword_is_forwarded_as_an_ability_argument():
@@ -833,7 +833,13 @@ def test_context_manager_exit_after_timeout_is_bounded(monkeypatch):
     monkeypatch.setattr("easyremote.client.Transport.connect", lambda: first)
 
     started = time.perf_counter()
-    with pytest.raises(DeadlineExceeded), Client(identity=IDENTITY) as client:
+    with (
+        pytest.raises(DeadlineExceeded),
+        Client(
+            identity=IDENTITY,
+            invocation_policy=FreshRoot(ResolvedTargetSubject()),
+        ) as client,
+    ):
         client.invoke(Client.target("fn", timeout=0.01), x=1)
     elapsed = time.perf_counter() - started
     assert elapsed < 0.1, "Client.__exit__ must not wait for retired C calls"
@@ -854,7 +860,10 @@ def test_timed_out_owned_transport_is_not_reused(monkeypatch):
         return transports.pop(0)
 
     monkeypatch.setattr("easyremote.client.Transport.connect", connect)
-    client = Client(identity=IDENTITY)
+    client = Client(
+        identity=IDENTITY,
+        invocation_policy=FreshRoot(ResolvedTargetSubject()),
+    )
 
     with pytest.raises(DeadlineExceeded):
         client.invoke(Client.target("fn", timeout=0.01), x=1)

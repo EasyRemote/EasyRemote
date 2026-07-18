@@ -12,11 +12,11 @@ import easynet_sdk
 from .errors import InvalidArgument
 
 __all__ = [
-    "DEFAULT_INVOCATION_POLICY",
     "ChildCausal",
     "CompleteExplicit",
     "ExplicitSubject",
     "FreshCausal",
+    "FreshContextChild",
     "FreshRoot",
     "InvocationDerivationPolicy",
     "InvocationSubjectPolicy",
@@ -43,6 +43,8 @@ class ExplicitSubject(InvocationSubjectPolicy):
 
 @dataclass(frozen=True)
 class ResolvedTargetSubject(InvocationSubjectPolicy):
+    """Explicitly select the subject candidate produced by target resolution."""
+
     def select(self, resolved_subject_ura: str) -> str:
         return _subject(resolved_subject_ura)
 
@@ -125,6 +127,8 @@ class CompleteExplicit(InvocationDerivationPolicy):
 
 @dataclass(frozen=True)
 class FreshRoot(InvocationDerivationPolicy):
+    """Issue a root invocation under an explicitly selected subject policy."""
+
     subject: InvocationSubjectPolicy
 
     def request(
@@ -207,10 +211,22 @@ class ChildCausal(InvocationDerivationPolicy):
         )
 
 
-DEFAULT_INVOCATION_POLICY: InvocationDerivationPolicy = FreshRoot(
-    ResolvedTargetSubject()
-)
-"""Default EasyRemote product policy for ordinary root invocations."""
+@dataclass(frozen=True)
+class FreshContextChild:
+    """Issue a fresh child bound to the current invocation's receipt."""
+
+    subject: InvocationSubjectPolicy
+
+    def __post_init__(self) -> None:
+        _require_subject_policy(self.subject)
+
+    def bind(self, parent: easynet_sdk.ReceiptReference) -> ChildCausal:
+        if not isinstance(parent, easynet_sdk.ReceiptReference):
+            raise InvalidArgument(
+                "context child invocation requires an SDK ReceiptReference",
+                reason="invalid_parent_receipt_reference",
+            )
+        return ChildCausal(subject=self.subject, parent=parent)
 
 
 def require_invocation_policy(
@@ -263,27 +279,3 @@ def _require_subject_policy(value: object) -> None:
             "an explicit InvocationSubjectPolicy is required",
             reason="invalid_invocation_subject_policy",
         )
-
-
-def legacy_target_policy(
-    *,
-    subject_ura: str | None,
-    causal: object,
-) -> InvocationDerivationPolicy:
-    """Lower released v2 target kwargs into one canonical product policy."""
-
-    subject: InvocationSubjectPolicy = (
-        ExplicitSubject(subject_ura)
-        if subject_ura is not None
-        else ResolvedTargetSubject()
-    )
-    if causal is None:
-        return FreshRoot(subject)
-    if isinstance(causal, easynet_sdk.ReceiptReference):
-        return ChildCausal(subject=subject, parent=causal)
-    if isinstance(causal, Mapping):
-        return FreshCausal(subject=subject, causal_context=dict(causal))
-    raise InvalidArgument(
-        "causal must be an SDK ReceiptReference or a canonical causal-context mapping",
-        reason="invalid_parent_receipt_reference",
-    )

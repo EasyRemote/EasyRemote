@@ -300,7 +300,11 @@ def test_stream_context_function_reads_caller_each_frame(host):
 
 
 def test_context_child_call_uses_parent_receipt_dispatcher(short_tmp, runtime_receipt):
-    from easyremote import Context
+    from easyremote import (
+        Context,
+        FreshContextChild,
+        ResolvedTargetSubject,
+    )
     from easyremote._host.server import HostServer
 
     seen = {}
@@ -310,12 +314,15 @@ def test_context_child_call_uses_parent_receipt_dispatcher(short_tmp, runtime_re
             self.receipt = receipt
             self.closed = False
 
-        def call(self, function, /, *args, **kwargs):
+        def call(self, target, /, *args, **kwargs):
             seen["receipt_ura"] = self.receipt.raw["receipt_ura"]
-            seen["function"] = function
+            seen["function"] = target.function
             seen["args"] = args
             seen["kwargs"] = kwargs
-            return {"child": function, "receipt": self.receipt.raw["receipt_ura"]}
+            return {
+                "child": target.function,
+                "receipt": self.receipt.raw["receipt_ura"],
+            }
 
         def invoke(self, function, /, *args, **kwargs):
             raise AssertionError("unexpected invoke")
@@ -332,7 +339,13 @@ def test_context_child_call_uses_parent_receipt_dispatcher(short_tmp, runtime_re
         return FakeDispatcher(receipt)
 
     def parent(ctx: Context, q: str):
-        return ctx.call("er.child", q=q)
+        return ctx.call(
+            Context.target(
+                "er.child",
+                invocation_policy=FreshContextChild(ResolvedTargetSubject()),
+            ),
+            q=q,
+        )
 
     parent_receipt = runtime_receipt(
         invocation_id="inv-parent-1",

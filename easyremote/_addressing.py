@@ -32,7 +32,7 @@ class ResolvedAbility:
     """Product selection facts consumed by the SDK Invocation provider."""
 
     ability_ura: str
-    default_subject_ura: str
+    resolved_subject_ura: str
     call_carrier: CallCarrier
     input_schema: dict[str, Any] | None = None
     argument_label: str | None = None
@@ -149,7 +149,7 @@ class AbilityAddressResolver:
         ability_ura = self._owner_ability_ura(owner_ura, function)
         return ResolvedAbility(
             ability_ura=ability_ura,
-            default_subject_ura=owner_ura,
+            resolved_subject_ura=owner_ura,
             call_carrier=_call_carrier_for_kind(self.owner_kind(owner_ura)),
             input_schema=self.cache.schema_for_verb(verb),
             argument_label=function,
@@ -189,7 +189,7 @@ class AbilityAddressResolver:
             ) from exc
         return ResolvedAbility(
             ability_ura=projection.ura,
-            default_subject_ura=projection.ura,
+            resolved_subject_ura=projection.ura,
             call_carrier=call_carrier
             or _call_carrier_for_kind(self.owner_kind(owner_ura)),
             input_schema=input_schema,

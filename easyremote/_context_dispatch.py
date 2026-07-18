@@ -8,10 +8,10 @@ from typing import Any
 
 import easynet_sdk
 
-from .client import Client, Stream
+from .client import CallTarget, Client, Stream
+from .context import ContextTarget
 from .errors import Unavailable
 from .invocation import Invocation
-from .invocation_policy import ChildCausal, ResolvedTargetSubject
 from .receipts import receipt_reference
 
 
@@ -45,23 +45,35 @@ class SDKContextChildDispatcher:
     client_factory: Callable[[], Client] = Client
     _client: Client | None = field(default=None, init=False, repr=False)
 
-    def call(self, function: str, /, *args: Any, **kwargs: Any) -> Any:
+    def call(self, target: ContextTarget, /, *args: Any, **kwargs: Any) -> Any:
         return self._client_or_create().call(
-            Client.target(function, invocation_policy=self._child_policy()),
+            self._client_target(target),
             *args,
             **kwargs,
         )
 
-    def invoke(self, function: str, /, *args: Any, **kwargs: Any) -> Invocation:
+    def invoke(
+        self,
+        target: ContextTarget,
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Invocation:
         return self._client_or_create().invoke(
-            Client.target(function, invocation_policy=self._child_policy()),
+            self._client_target(target),
             *args,
             **kwargs,
         )
 
-    def stream(self, function: str, /, *args: Any, **kwargs: Any) -> Stream:
+    def stream(
+        self,
+        target: ContextTarget,
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Stream:
         return self._client_or_create().stream(
-            Client.target(function, invocation_policy=self._child_policy()),
+            self._client_target(target),
             *args,
             **kwargs,
         )
@@ -76,10 +88,12 @@ class SDKContextChildDispatcher:
             self._client = self.client_factory()
         return self._client
 
-    def _child_policy(self) -> ChildCausal:
-        return ChildCausal(
-            subject=ResolvedTargetSubject(),
-            parent=self.parent_reference,
+    def _client_target(self, target: ContextTarget) -> CallTarget:
+        return Client.target(
+            target.function,
+            invocation_policy=target.invocation_policy.bind(
+                self.parent_reference,
+            ),
         )
 
 

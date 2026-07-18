@@ -19,7 +19,7 @@ from .client import (
     remote,
 )
 from .config import configure
-from .context import Context
+from .context import Context, ContextTarget
 from .control import (
     AbilityControl,
     AbilityInstallResult,
@@ -42,11 +42,11 @@ from .errors import (
 )
 from .invocation import Invocation, InvocationTuple, PreparedInvocation
 from .invocation_policy import (
-    DEFAULT_INVOCATION_POLICY,
     ChildCausal,
     CompleteExplicit,
     ExplicitSubject,
     FreshCausal,
+    FreshContextChild,
     FreshRoot,
     InvocationDerivationPolicy,
     InvocationSubjectPolicy,
@@ -58,7 +58,6 @@ from .pipeline import MissionRun, Pipeline
 from .receipts import InvocationState, Receipt, ReceiptChain
 
 __all__ = [
-    "DEFAULT_INVOCATION_POLICY",
     "AbilityControl",
     "AbilityInstallResult",
     "AbilityRecord",
@@ -74,9 +73,11 @@ __all__ = [
     "CompleteExplicit",
     "ComputeNode",
     "Context",
+    "ContextTarget",
     "DeadlineExceeded",
     "ExplicitSubject",
     "FreshCausal",
+    "FreshContextChild",
     "FreshRoot",
     "InternalError",
     "InvalidArgument",

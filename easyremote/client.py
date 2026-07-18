@@ -25,10 +25,9 @@ import functools
 import inspect
 import math
 import threading
-import warnings
 import weakref
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import easynet_sdk
@@ -53,9 +52,9 @@ from .invocation import (
     StreamSpec,
 )
 from .invocation_policy import (
-    DEFAULT_INVOCATION_POLICY,
+    FreshRoot,
     InvocationDerivationPolicy,
-    legacy_target_policy,
+    ResolvedTargetSubject,
     require_invocation_policy,
 )
 from .schema import PARAMETER_ORDER_KEY, VAR_POSITIONAL_KEY
@@ -117,17 +116,19 @@ class CallTarget:
 
     Ability arguments live only in ``Client.call/stream/invoke`` kwargs.
     Targeting, selection, timeout, metadata, and a per-target product policy live
-    here so user functions may legitimately expose parameters named
-    ``node``, ``pick``, ``timeout``, ``subject``, or ``metadata`` without
-    colliding with the client control plane.
+    here so user functions may legitimately expose parameters named ``node``,
+    ``pick``, ``timeout``, ``subject``, or ``metadata`` without colliding with
+    the client control plane.
+
+    The former target-field migration notice ended with
+    ``in EasyRemote 3.0.0; use invocation_policy``. No target-field adapter
+    remains: invocation derivation must now be selected explicitly.
     """
 
     function: str
     node: str | None = None
     pick: Literal["round_robin", "random"] | None = None
     timeout: float | None = None
-    subject: str | None = field(default=None, repr=False, compare=False)
-    causal: object = field(default=None, repr=False, compare=False)
     sign: bool | None = None
     metadata: Mapping[str, str] | None = None
     owner_ura: str | None = None
@@ -167,28 +168,6 @@ class CallTarget:
             )
         if self.metadata is not None:
             object.__setattr__(self, "metadata", dict(self.metadata))
-        if self.invocation_policy is not None and (
-            self.subject is not None or self.causal is not None
-        ):
-            raise InvalidArgument(
-                "target cannot combine invocation_policy with subject or causal",
-                reason="ambiguous_invocation_derivation_policy",
-            )
-        if self.subject is not None or self.causal is not None:
-            warnings.warn(
-                "CallTarget subject/causal are deprecated and will be removed"
-                " in EasyRemote 3.0.0; use invocation_policy",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            object.__setattr__(
-                self,
-                "invocation_policy",
-                legacy_target_policy(
-                    subject_ura=self.subject,
-                    causal=self.causal,
-                ),
-            )
         if self.invocation_policy is not None:
             require_invocation_policy(
                 self.invocation_policy,
@@ -289,7 +268,7 @@ class Client:
         transport: Transport | None = None,
         identity: LocalIdentity | None = None,
         signer: easynet_sdk.Signer | None = None,
-        invocation_policy: InvocationDerivationPolicy = DEFAULT_INVOCATION_POLICY,
+        invocation_policy: InvocationDerivationPolicy | None = None,
     ) -> None:
         self._gateway = gateway
         self._gateway_checked = False
@@ -298,9 +277,13 @@ class Client:
                 f"timeout must be a positive finite number of seconds, got {timeout!r}",
                 reason="invalid_timeout",
             )
-        self._invocation_policy = require_invocation_policy(
-            invocation_policy,
-            field="client invocation_policy",
+        self._invocation_policy = (
+            require_invocation_policy(
+                invocation_policy,
+                field="client invocation_policy",
+            )
+            if invocation_policy is not None
+            else None
         )
         self._timeout = timeout
         self._namespace = namespace
@@ -409,10 +392,16 @@ class Client:
             if target.invocation_policy is not None
             else self._invocation_policy
         )
+        if policy is None:
+            raise InvalidArgument(
+                "public invocation requires an explicit derivation policy on"
+                " Client or CallTarget",
+                reason="missing_invocation_derivation_policy",
+            )
         request = policy.derive(
             caller_ura=self._who().device_ura,
             ability_ura=resolved.ability_ura,
-            resolved_subject_ura=resolved.default_subject_ura,
+            resolved_subject_ura=resolved.resolved_subject_ura,
             args=payload,
             metadata=target.metadata or {},
         )
@@ -438,8 +427,6 @@ class Client:
         node: str | None = None,
         pick: Literal["round_robin", "random"] | None = None,
         timeout: float | None = None,
-        subject: str | None = None,
-        causal: object = None,
         sign: bool | None = None,
         metadata: Mapping[str, str] | None = None,
         owner_ura: str | None = None,
@@ -455,8 +442,6 @@ class Client:
             node=node,
             pick=pick,
             timeout=timeout,
-            subject=subject,
-            causal=causal,
             sign=sign,
             metadata=metadata,
             owner_ura=owner_ura,
@@ -503,7 +488,14 @@ class Client:
 
     def functions(self, query: str = "", scope: str = "device") -> list[FunctionInfo]:
         """Discoverable capabilities, via the daemon's `discover` ability."""
-        response = self.invoke("discover", scope=scope, query=query).result()
+        response = self.invoke(
+            self.target(
+                "discover",
+                invocation_policy=FreshRoot(ResolvedTargetSubject()),
+            ),
+            scope=scope,
+            query=query,
+        ).result()
         candidates = (response or {}).get("candidates", [])
         infos = [FunctionInfo.from_candidate(c) for c in candidates]
         self._addressing.cache.replace(infos)
@@ -516,8 +508,8 @@ class Client:
         return AsyncClient(self)
 
     @property
-    def invocation_policy(self) -> InvocationDerivationPolicy:
-        """The EasyRemote product policy used when a target has no override."""
+    def invocation_policy(self) -> InvocationDerivationPolicy | None:
+        """The explicitly configured client policy, if one was supplied."""
         return self._invocation_policy
 
     @property
@@ -782,6 +774,7 @@ class RemoteFunction:
         timeout: float | None = None,
         client: Client | None = None,
         owner_ura: str | None = None,
+        invocation_policy: InvocationDerivationPolicy | None = None,
     ) -> None:
         functools.update_wrapper(self, fn)
         self._signature = inspect.signature(fn)
@@ -790,7 +783,11 @@ class RemoteFunction:
         self._node = node
         self._timeout = timeout
         self._target = CallTarget(
-            self._name, node=node, timeout=timeout, owner_ura=owner_ura
+            self._name,
+            node=node,
+            timeout=timeout,
+            owner_ura=owner_ura,
+            invocation_policy=invocation_policy,
         )
         self._client = client
         self._bound: weakref.WeakKeyDictionary[Any, _BoundRemote] = (
@@ -956,6 +953,7 @@ def remote(
     timeout: float | None = None,
     client: Client | None = None,
     owner_ura: str | None = None,
+    invocation_policy: InvocationDerivationPolicy | None = None,
 ) -> Any:
     """Declare a typed stub for a remote capability (both decorator forms).
 
@@ -976,9 +974,16 @@ def remote(
             timeout=timeout,
             client=client,
             owner_ura=owner_ura,
+            invocation_policy=invocation_policy,
         )
     return RemoteFunction(
-        fn, name=name, node=node, timeout=timeout, client=client, owner_ura=owner_ura
+        fn,
+        name=name,
+        node=node,
+        timeout=timeout,
+        client=client,
+        owner_ura=owner_ura,
+        invocation_policy=invocation_policy,
     )
 
 
@@ -1006,6 +1011,7 @@ class RemoteOwner:
         *,
         name: str | None = None,
         timeout: float | None = None,
+        invocation_policy: InvocationDerivationPolicy | None = None,
     ) -> Any:
         """Declare a stub bound to this owner (bare or parameterised form)."""
         return remote(
@@ -1014,6 +1020,7 @@ class RemoteOwner:
             timeout=timeout,
             client=self._client,
             owner_ura=self._owner_ura,
+            invocation_policy=invocation_policy,
         )
 
     def call(self, function: str, /, *args: Any, **kwargs: Any) -> Any:

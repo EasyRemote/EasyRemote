@@ -4,9 +4,13 @@ import easynet_sdk
 import pytest
 
 from easyremote._context_dispatch import dispatcher_from_parent_receipt
-from easyremote.context import Context
-from easyremote.errors import Unavailable
-from easyremote.invocation_policy import ChildCausal
+from easyremote.context import Context, ContextTarget
+from easyremote.errors import InvalidArgument, Unavailable
+from easyremote.invocation_policy import (
+    ChildCausal,
+    FreshContextChild,
+    ResolvedTargetSubject,
+)
 from easyremote.receipts import InvocationState
 
 
@@ -31,11 +35,27 @@ class FakeChildDispatcher:
         self.closed = True
 
 
+def child_target() -> ContextTarget:
+    return Context.target(
+        "er.child",
+        invocation_policy=FreshContextChild(ResolvedTargetSubject()),
+    )
+
+
+def test_context_string_ingress_fails_closed_before_dispatcher_resolution():
+    ctx = Context(invocation_id="inv-1", caller="easynet:///r/acme/user/alice")
+
+    with pytest.raises(InvalidArgument) as exc_info:
+        ctx.call("er.child", q="hi")  # type: ignore[arg-type]
+
+    assert exc_info.value.reason == "missing_invocation_derivation_policy"
+
+
 def test_context_child_dispatch_requires_parent_receipt_anchor():
     ctx = Context(invocation_id="inv-1", caller="easynet:///r/acme/user/alice")
 
     with pytest.raises(Unavailable) as exc_info:
-        ctx.call("er.child", q="hi")
+        ctx.call(child_target(), q="hi")
 
     assert exc_info.value.reason == "context_dispatch_not_wired"
 
@@ -48,13 +68,14 @@ def test_context_delegates_child_calls_and_closes_dispatcher():
         _child_dispatcher=dispatcher,
     )
 
-    assert ctx.call("er.child", "x", q="hi") == {
-        "function": "er.child",
+    target = child_target()
+    assert ctx.call(target, "x", q="hi") == {
+        "function": target,
         "args": ("x",),
         "kwargs": {"q": "hi"},
     }
-    assert ctx.invoke("er.child") == "invocation"
-    assert list(ctx.stream("er.child")) == ["frame"]
+    assert ctx.invoke(target) == "invocation"
+    assert list(ctx.stream(target)) == ["frame"]
 
     ctx.close()
     assert dispatcher.closed
@@ -97,7 +118,7 @@ def test_sdk_dispatcher_projects_parent_receipt_into_child_causal_ref(
 
     dispatcher = dispatcher_from_parent_receipt(parent, client_factory=lambda: fake)
     assert dispatcher is not None
-    assert dispatcher.call("er.child", q="hi") == "child-result"
+    assert dispatcher.call(child_target(), q="hi") == "child-result"
 
     _, target, args, kwargs = fake.seen[0]
     assert target.function == "er.child"

@@ -30,6 +30,7 @@ from .identity import LocalIdentity
 from .invocation_policy import (
     ExplicitSubject,
     FreshRoot,
+    ResolvedTargetSubject,
 )
 
 if TYPE_CHECKING:
@@ -260,7 +261,11 @@ class AbilityControl:
             else self._client.device(node).owner_ura
         )
         result = self._invoke(
-            self._client.target("meta.list_abilities", owner_ura=owner),
+            self._client.target(
+                "meta.list_abilities",
+                owner_ura=owner,
+                invocation_policy=FreshRoot(ResolvedTargetSubject()),
+            ),
             **args,
         )
         rows = result.get("abilities") or []
@@ -434,7 +439,10 @@ class AgentControl:
     ) -> dict[str, Any]:
         try:
             result = self._client.invoke(
-                str(ability),
+                self._client.target(
+                    str(ability),
+                    invocation_policy=FreshRoot(ResolvedTargetSubject()),
+                ),
                 **kwargs,
             ).result()
         except easynet_sdk.SDKError as exc:

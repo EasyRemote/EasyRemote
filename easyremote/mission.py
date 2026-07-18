@@ -27,9 +27,10 @@ from .errors import (
     Unavailable,
     error_from_sdk,
 )
+from .invocation_policy import FreshRoot, ResolvedTargetSubject
 
 if TYPE_CHECKING:
-    from .client import Client
+    from .client import CallTarget, Client
 
 __all__ = [
     "MissionChildInvocation",
@@ -49,7 +50,7 @@ class _InvocationResult(Protocol):
 class _MissionClient(Protocol):
     def invoke(
         self,
-        function: str,
+        function: str | CallTarget,
         /,
         *args: object,
         **kwargs: object,
@@ -246,9 +247,14 @@ class MissionExecutionAdapter:
         ability: MissionAbility,
         args: Mapping[str, object],
     ) -> dict[str, object]:
+        from .client import Client
+
         try:
             result = self._client.invoke(
-                str(ability),
+                Client.target(
+                    str(ability),
+                    invocation_policy=FreshRoot(ResolvedTargetSubject()),
+                ),
                 **dict(args),
             ).result()
         except easynet_sdk.SDKError as exc:

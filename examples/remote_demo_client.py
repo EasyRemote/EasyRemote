@@ -7,9 +7,9 @@ are consumed live with `.stream(...)`; everything else returns its value
 directly. Run `remote_demo_node.py` first.
 """
 
-from easyremote import Client, remote
+from easyremote import Client, FreshRoot, ResolvedTargetSubject, remote
 
-client = Client()
+client = Client(invocation_policy=FreshRoot(ResolvedTargetSubject()))
 
 
 @remote(client=client)

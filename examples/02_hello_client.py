@@ -1,15 +1,16 @@
 """Call a capability through the result-first and typed-stub surfaces."""
 
-from easyremote import Client, remote
+from easyremote import Client, FreshRoot, ResolvedTargetSubject, remote
 
-client = Client()
+ROOT_POLICY = FreshRoot(ResolvedTargetSubject())
+client = Client(invocation_policy=ROOT_POLICY)
 
 # L0 — result-first, like calling a local function
 print(client.execute("ai_inference", prompt="hello easynet"))
 
 
 # L1 — a typed stub: positional args and defaults bound locally
-@remote
+@remote(client=client)
 def ai_inference(prompt: str, max_tokens: int = 64) -> dict: ...
 
 

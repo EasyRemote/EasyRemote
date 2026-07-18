@@ -12,9 +12,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from .errors import Unavailable
+from .errors import InvalidArgument, Unavailable
+from .invocation_policy import FreshContextChild
 
-__all__ = ["Context"]
+__all__ = ["Context", "ContextTarget"]
 
 _NOT_WIRED = (
     "Context child dispatch requires a daemon/Axon parent receipt anchor"
@@ -22,20 +23,36 @@ _NOT_WIRED = (
 )
 
 
+@dataclass(frozen=True)
+class ContextTarget:
+    """A child target with an explicit parent-bound derivation policy."""
+
+    function: str
+    invocation_policy: FreshContextChild
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.function, str) or not self.function.strip():
+            raise InvalidArgument(
+                "context target function must not be empty",
+                reason="empty_function",
+            )
+        if not isinstance(self.invocation_policy, FreshContextChild):
+            raise InvalidArgument(
+                "context target requires a FreshContextChild policy",
+                reason="invalid_invocation_derivation_policy",
+            )
+
+
 class ContextChildDispatcher(Protocol):
     """Child-call behavior supplied by the host integration layer."""
 
-    def call(self, function: str, /, *args: Any, **kwargs: Any) -> Any:
-        ...
+    def call(self, target: ContextTarget, /, *args: Any, **kwargs: Any) -> Any: ...
 
-    def invoke(self, function: str, /, *args: Any, **kwargs: Any) -> Any:
-        ...
+    def invoke(self, target: ContextTarget, /, *args: Any, **kwargs: Any) -> Any: ...
 
-    def stream(self, function: str, /, *args: Any, **kwargs: Any) -> Any:
-        ...
+    def stream(self, target: ContextTarget, /, *args: Any, **kwargs: Any) -> Any: ...
 
-    def close(self) -> None:
-        ...
+    def close(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -52,14 +69,42 @@ class Context:
     caller: str
     _child_dispatcher: ContextChildDispatcher | None = None
 
-    def call(self, function: str, /, *args: Any, **kwargs: Any) -> Any:
-        return self._dispatcher().call(function, *args, **kwargs)
+    @staticmethod
+    def target(
+        function: str,
+        /,
+        *,
+        invocation_policy: FreshContextChild,
+    ) -> ContextTarget:
+        """Declare child tuple derivation before entering a context dispatch."""
+        return ContextTarget(
+            function=function,
+            invocation_policy=invocation_policy,
+        )
 
-    def invoke(self, function: str, /, *args: Any, **kwargs: Any) -> Any:
-        return self._dispatcher().invoke(function, *args, **kwargs)
+    def call(self, target: ContextTarget, /, *args: Any, **kwargs: Any) -> Any:
+        explicit_target = self._explicit_target(target)
+        return self._dispatcher().call(
+            explicit_target,
+            *args,
+            **kwargs,
+        )
 
-    def stream(self, function: str, /, *args: Any, **kwargs: Any) -> Any:
-        return self._dispatcher().stream(function, *args, **kwargs)
+    def invoke(self, target: ContextTarget, /, *args: Any, **kwargs: Any) -> Any:
+        explicit_target = self._explicit_target(target)
+        return self._dispatcher().invoke(
+            explicit_target,
+            *args,
+            **kwargs,
+        )
+
+    def stream(self, target: ContextTarget, /, *args: Any, **kwargs: Any) -> Any:
+        explicit_target = self._explicit_target(target)
+        return self._dispatcher().stream(
+            explicit_target,
+            *args,
+            **kwargs,
+        )
 
     def progress(self, payload: dict[str, Any] | bytes) -> None:
         raise Unavailable(_NOT_WIRED, reason="context_dispatch_not_wired")
@@ -79,3 +124,13 @@ class Context:
         if self._child_dispatcher is None:
             raise Unavailable(_NOT_WIRED, reason="context_dispatch_not_wired")
         return self._child_dispatcher
+
+    @staticmethod
+    def _explicit_target(value: object) -> ContextTarget:
+        if not isinstance(value, ContextTarget):
+            raise InvalidArgument(
+                "Context child dispatch requires Context.target(...) with an"
+                " explicit FreshContextChild policy",
+                reason="missing_invocation_derivation_policy",
+            )
+        return value

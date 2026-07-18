@@ -82,8 +82,9 @@ canonical 文案全文见附录 A（README hero / landing page 母版）。
 1. facade 不私造协议语义——Invocation、URA、receipt、传输与 daemon
    生命周期一律来自 `easynet_sdk`；其内部协议实现不构成 EasyRemote 的
    第二个 SDK 依赖入口。
-2. 七元组字段在公开边界**永远可检视**；便捷默认值（`subject=callee`、
-   `causal=none`）必须暴露在对象属性上，不得埋进字符串。
+2. 七元组字段在公开边界**永远可检视**；公开调用必须显式选择
+   `InvocationDerivationPolicy` 或提供完整字段。不得静默以 callee、
+   descriptor 或空 causal context 补全 tuple。
 3. 产品调用只走 daemon.sock 的 `axon.v1.Invocation`；**不碰 JSON control
    帧**（已降级为 boot/status 专用）。
 4. URA 一律通过 `easynet_sdk.AddressingClient` 或 SDK 顶层 builder
@@ -288,8 +289,9 @@ def ai_inference(prompt: str) -> str:
 node.serve()
 
 # 调用方（任何地方）
-from easyremote import Client
-print(Client().execute("ai_inference", "Hello EasyNet"))
+from easyremote import Client, FreshRoot, ResolvedTargetSubject
+client = Client(invocation_policy=FreshRoot(ResolvedTargetSubject()))
+print(client.execute("ai_inference", "Hello EasyNet"))
 ```
 
 ### 5.3 Runtime ownership
@@ -379,21 +381,24 @@ def quarterly_report(ctx: Context, quarter: str) -> str:
     return f"{quarter} requested by {ctx.caller} in {ctx.invocation_id}"
 ```
 
-**未来组合面（保留 API，当前不可用）：**
+**显式组合面：**
 
 ```python
 class Context:
     invocation_id: str
     caller: str                        # 调用方 URA（问责语义：谁在叫我）
 
-    def call(self, function: str, /, *args,
-             node: str | None = None, timeout: float | None = None,
-             **kwargs) -> Any
-        # 子调用：causal_context 自动挂接当前 invocation 的回执，
-        # caller = 本节点 agent。回执链上呈现为 child invocation。
+    @staticmethod
+    def target(
+        function: str,
+        /,
+        *,
+        invocation_policy: FreshContextChild,
+    ) -> ContextTarget
 
-    def invoke(self, function: str, /, *args, **kw) -> Invocation
-    def stream(self, function: str, /, *args, **kw) -> Stream
+    def call(self, target: ContextTarget, /, *args, **kw) -> Any
+    def invoke(self, target: ContextTarget, /, *args, **kw) -> Invocation
+    def stream(self, target: ContextTarget, /, *args, **kw) -> Stream
 
     def progress(self, payload: dict | bytes) -> None
     def recv(self, timeout: float | None = None) -> InboundMessage | None
@@ -403,8 +408,10 @@ class Context:
 
 目标底层映射：Axon `AbilityContext`（invocation_id / emit_progress / inbox /
 supervisor）+ daemon `invoke` 系统 ability。`ctx.call` 是 composable 的
-服务端兑现目标：能力像库一样互相调用，每一跳都在回执链上；但这依赖
-parent receipt URA 作为 causal_context，因此本版本只声明 future surface。
+服务端兑现目标：能力像库一样互相调用，每一跳都在回执链上。调用方必须通过
+`Context.target(..., invocation_policy=FreshContextChild(...))` 显式选择
+subject policy；host 只把 daemon 提供的 parent receipt anchor 绑定进该 policy，
+不会替调用方默认 subject、nonce 或空 causal context。
 
 ### 5.6 `Client` 与 `@remote`
 
@@ -415,13 +422,13 @@ class Client:
         gateway: str | None = None,        # None → credentials.json
         *,
         timeout: float = 30.0,
-        invocation_policy: InvocationDerivationPolicy = DEFAULT_INVOCATION_POLICY,
+        invocation_policy: InvocationDerivationPolicy | None = None,
         retry: RetryPolicy | None = None,  # 默认仅对带 retry_after 的
                                            # UNAVAILABLE/RESOURCE_EXHAUSTED 退避重试
     ): ...
 
     @property
-    def invocation_policy(self) -> InvocationDerivationPolicy: ...
+    def invocation_policy(self) -> InvocationDerivationPolicy | None: ...
 
     # L0：v1 兼容
     def execute(self, target: str | CallTarget, /, *args, **kwargs) -> Any
@@ -452,15 +459,18 @@ class Client:
 ```
 
 ```python
-@remote                       # 或 @remote(node="gpu-1", timeout=60)
+policy = FreshRoot(ResolvedTargetSubject())
+
+@remote(invocation_policy=policy)
 def ai_inference(prompt: str) -> str: ...      # typed stub，函数体永不本地执行
 
 ai_inference("hi")                    # L0 透明调用
 ai_inference.stream("hi")             # L1 流
 await ai_inference.aio("hi")          # async 镜像
-Client().call(Client.target("ai_inference", node="gpu-1"), prompt="hi")
+client = Client(invocation_policy=policy)
+client.call(Client.target("ai_inference", node="gpu-1"), prompt="hi")
 
-prepared = Client().prepare("ai_inference", prompt="hi")  # L2：draft 检视
+prepared = client.prepare("ai_inference", prompt="hi")  # L2：draft 检视
 prepared.tuple.subject_ura
 # PreparedInvocation.send()/Client.invoke() 保留给 daemon unary/system ability；
 # EasyRemote-hosted ability 统一由 call()/stream() 消费 host_stream carrier。
@@ -574,8 +584,9 @@ easyremote.configure(
 # 等价环境变量：EASYNET_CREDENTIALS / EASYNET_CONTROL_JSON / EASYNET_CLI_LIB
 ```
 
-零配置链路：`Client()` → control.json → daemon.sock；身份 →
-credentials.json。缺失时报错给出 `easynet pair` / `easynet start` 命令。
+传输连接链路：`Client()` → control.json → daemon.sock；身份 →
+credentials.json。公开 dispatch 仍必须显式选择 invocation policy。缺失运行时
+配置时报错给出 `easynet pair` / `easynet start` 命令。
 CLI 入口：`easyremote doctor` / `easyremote ability ...` /
 `easyremote agent ...`（§4.2）。
 
@@ -751,7 +762,8 @@ coroutine；`Stream` 同时实现 `__iter__` 与 `__aiter__`；
 >
 > ```python
 > # 同事：像调本地函数
-> Client().execute("ai_inference", "hello")
+> policy = FreshRoot(ResolvedTargetSubject())
+> Client(invocation_policy=policy).execute("ai_inference", "hello")
 >
 > # Agent：自动投影为 MCP tool，Claude 直接发现、直接调用
 > #   claude mcp add easynet -- easynet mcp_server

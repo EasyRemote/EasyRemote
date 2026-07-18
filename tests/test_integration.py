@@ -68,8 +68,12 @@ def _agent_ability_ura(agent_ura: str, ability: str) -> str:
 @pytest.fixture(scope="module")
 def client():
     from easyremote.client import Client
+    from easyremote.invocation_policy import FreshRoot, ResolvedTargetSubject
 
-    with Client(timeout=20.0) as live:
+    with Client(
+        timeout=20.0,
+        invocation_policy=FreshRoot(ResolvedTargetSubject()),
+    ) as live:
         yield live
 
 
@@ -109,8 +113,13 @@ def test_functions_facade_parses_live_candidates():
     # daemon state to select a sample, but the SDK runtime must not guess
     # `caesura -> easynet:///.../agent/dev.caesura` itself.
     from easyremote.client import Client
+    from easyremote.invocation_policy import FreshRoot, ResolvedTargetSubject
 
-    with Client(timeout=20.0, namespace=_an_agent_ura()) as scoped:
+    with Client(
+        timeout=20.0,
+        namespace=_an_agent_ura(),
+        invocation_policy=FreshRoot(ResolvedTargetSubject()),
+    ) as scoped:
         infos = scoped.functions(scope="self")
     assert isinstance(infos, list)
     for info in infos:

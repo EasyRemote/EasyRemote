@@ -11,17 +11,6 @@
   ],
   "adapters": [
     {
-      "module": "easyremote/client.py",
-      "symbol": "CallTarget.subject/causal",
-      "capability": "seam",
-      "public_fields": [],
-      "canonical_delegates": [
-        "easyremote.invocation_policy.legacy_target_policy",
-        "easynet_sdk.AbilityTargetRequest"
-      ],
-      "internal_callers": []
-    },
-    {
       "module": "easyremote/invocation.py",
       "symbol": "Arguments",
       "capability": "seam",

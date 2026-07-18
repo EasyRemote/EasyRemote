@@ -9,9 +9,12 @@ and the rest would land together. Run ``04_streaming_node.py`` first.
 
 import time
 
-from easyremote import Client
+from easyremote import Client, FreshRoot, ResolvedTargetSubject
 
-client = Client(timeout=30)
+client = Client(
+    timeout=30,
+    invocation_policy=FreshRoot(ResolvedTargetSubject()),
+)
 GAP = 0.4
 N = 5
 

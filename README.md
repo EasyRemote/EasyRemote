@@ -40,11 +40,12 @@ After registration, that function is a **capability** — and capability is not 
 
 ```python
 # A teammate: call it like a local function
-from easyremote import Client
-Client().execute("ai_inference", prompt="hello")
+from easyremote import Client, FreshRoot, ResolvedTargetSubject
+client = Client(invocation_policy=FreshRoot(ResolvedTargetSubject()))
+client.execute("ai_inference", prompt="hello")
 
 # An agent runtime: call the same capability through the EasyRemote client
-#   Client().call("ai_inference", prompt="hello")
+#   client.call("ai_inference", prompt="hello")
 
 # A system: one step in a pipeline, composed with other people's functions
 from easyremote import Pipeline
@@ -105,9 +106,9 @@ starts the warm host and publishes every registered capability.
 ### Three call layers, progressively disclosed
 
 ```python
-from easyremote import Client
+from easyremote import Client, FreshRoot, ResolvedTargetSubject
 
-client = Client()
+client = Client(invocation_policy=FreshRoot(ResolvedTargetSubject()))
 
 # L0 — result-first
 client.execute("ai_inference", prompt="hi")
@@ -126,24 +127,24 @@ prepared.tuple.subject_ura
 # abilities are host_stream and should be consumed with call()/stream().
 ```
 
-`Client.invocation_policy` exposes the read-only EasyRemote product policy
-used to derive ordinary calls. Its documented default is
-`DEFAULT_INVOCATION_POLICY`, a `FreshRoot(ResolvedTargetSubject())`. Supply a
-different policy with `Client(invocation_policy=...)`, or attach a collision-free
-single-call override with `Client.target(..., invocation_policy=...)`. A normal
+`Client.invocation_policy` exposes only the read-only policy explicitly supplied
+by the caller. `Client()` has no invocation derivation default: dispatch fails
+before SDK request construction unless the client or `Client.target(...)`
+declares an `InvocationDerivationPolicy`. The example policy
+`FreshRoot(ResolvedTargetSubject())` explicitly requests an SDK nonce, root
+causal context, and the subject candidate produced by target resolution.
+Use `CompleteExplicit(...)` when all tuple facts are already available. A normal
 ability argument named `policy` remains an ability argument.
 
-The released `Client.target(..., subject=..., causal=...)` keywords remain as a
-versioned edge adapter until EasyRemote 1.0.0. They lower immediately to the
-same product policy object and are not a second invocation builder.
+The retired `Client.target(..., subject=..., causal=...)` adapter has been
+deleted. Tuple derivation has one authority: the explicitly selected policy.
 
 The released `InvocationTuple`, `Receipt`, `ReceiptChain`, and
 `PreparedInvocation.with_causal` shapes are also bounded product-edge adapters.
 They preserve their released constructors and fields while delegating
 Invocation projection, receipt parsing, and causal projection to `easynet_sdk`.
-`easyremote/edge-adapter-policy.v1.json` is the machine-readable allowlist; it
-records package version `2.0.0a0`, removal version `1.0.0`, and prohibits new
-internal callers.
+`easyremote/edge-adapter-policy.v1.json` is the machine-readable allowlist and
+prohibits new internal callers.
 
 ### `@remote` as a class attribute
 
@@ -160,7 +161,8 @@ class GPUCluster:
     @remote                            # ability name = "ai_inference"
     def ai_inference(self, prompt: str, max_tokens: int = 64) -> str: ...
 
-GPUCluster(Client()).ai_inference("hi")   # self stripped, host client reused
+policy = FreshRoot(ResolvedTargetSubject())
+GPUCluster(Client(invocation_policy=policy)).ai_inference("hi")
 ```
 
 Client precedence is `@remote(client=...)` > `self.client` > `self._client`.
@@ -200,9 +202,9 @@ configured. See [`examples/06_owner_handles.py`](examples/06_owner_handles.py).
 | Use case | Minimal facade |
 |---|---|
 | Publish local functions | `node = ComputeNode(); @node.register; node.serve()` |
-| Result-first call | `Client().execute("ai_inference", prompt="hi")` |
-| Target a device / agent / hub | `Client().device("gpu-2").call(...)`, `Client().agent("u.a").call(...)`, `Client().hub().call(...)` |
-| Inspect and send the invocation tuple | `prepared = Client().prepare(...); prepared.tuple; prepared.send()` |
+| Result-first call | `Client(invocation_policy=policy).execute("ai_inference", prompt="hi")` |
+| Target a device / agent / hub | `Client(invocation_policy=policy).device("gpu-2").call(...)` and the corresponding `agent(...)` / `hub()` handles |
+| Inspect and send the invocation tuple | `prepared = Client(invocation_policy=policy).prepare(...); prepared.tuple; prepared.send()` |
 | Compose a mission in Python | `Pipeline("nightly").step(...); pipe.run()` |
 | Run existing EAL source | `Client().missions.run_eal(source, label="nightly")` or `Client().missions.run_file("nightly.eal")` |
 | Control daemon catalogues | `Client().abilities.list(scope="realm")`, `Client().agents.add(...)` |

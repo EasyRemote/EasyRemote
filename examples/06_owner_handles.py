@@ -16,9 +16,9 @@ callees are first-class routes. A full cross-realm owner URA is accepted and
 encoded, but only routes where the daemon's federation peers are configured.
 """
 
-from easyremote import Client
+from easyremote import Client, FreshRoot, ResolvedTargetSubject
 
-client = Client()
+client = Client(invocation_policy=FreshRoot(ResolvedTargetSubject()))
 
 # A handle per owner. The id / token is all the call site needs.
 gpu = client.device("gpu-2")  # a device in this realm

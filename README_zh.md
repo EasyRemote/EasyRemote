@@ -40,11 +40,12 @@ node.serve()
 
 ```python
 # 同事：像调本地函数
-from easyremote import Client
-Client().execute("ai_inference", prompt="hello")
+from easyremote import Client, FreshRoot, ResolvedTargetSubject
+client = Client(invocation_policy=FreshRoot(ResolvedTargetSubject()))
+client.execute("ai_inference", prompt="hello")
 
 # Agent runtime：通过 EasyRemote client 调同一个能力
-#   Client().call("ai_inference", prompt="hello")
+#   client.call("ai_inference", prompt="hello")
 
 # 系统：作为 Pipeline 的一步，和别人的函数编排成任务链
 from easyremote import Pipeline
@@ -94,9 +95,9 @@ easyremote mission run ./nightly.eal --label nightly
 ### 三层调用面（渐进暴露）
 
 ```python
-from easyremote import Client
+from easyremote import Client, FreshRoot, ResolvedTargetSubject
 
-client = Client()
+client = Client(invocation_policy=FreshRoot(ResolvedTargetSubject()))
 
 # L0 —— 结果优先
 client.execute("ai_inference", prompt="hi")
@@ -115,21 +116,22 @@ prepared.tuple.subject_ura
 # EasyRemote-hosted ability 是 host_stream，消费面用 call()/stream()。
 ```
 
-`Client.invocation_policy` 公开只读的 EasyRemote 产品派生策略。文档化默认值
-`DEFAULT_INVOCATION_POLICY` 等于 `FreshRoot(ResolvedTargetSubject())`。可通过
-`Client(invocation_policy=...)` 配置 client，也可通过
-`Client.target(..., invocation_policy=...)` 对单个目标覆盖。ability 自身名为
+`Client.invocation_policy` 只公开调用方显式提供的只读产品派生策略。
+`Client()` 没有 invocation 派生默认值：client 或
+`Client.target(...)` 未声明 `InvocationDerivationPolicy` 时，会在 SDK request
+构造前 fail closed。示例中的 `FreshRoot(ResolvedTargetSubject())` 明确要求
+SDK nonce、root causal context，以及 target resolution 产生的 subject
+候选；已有完整 tuple facts 时使用 `CompleteExplicit(...)`。ability 自身名为
 `policy` 的普通参数仍原样传递。
 
-已发布的 `Client.target(..., subject=..., causal=...)` 关键字在 EasyRemote
-1.0.0 前作为版本化边缘适配保留；它们会立即降低为同一个产品策略对象，不构成
-第二套 Invocation builder。
+旧的 `Client.target(..., subject=..., causal=...)` 适配器已删除。tuple 派生
+只有一个 authority：调用方显式选择的 policy。
 
 已发布的 `InvocationTuple`、`Receipt`、`ReceiptChain` 和
 `PreparedInvocation.with_causal` 形状同样是有边界的产品边缘适配器。它们保留
 公开构造器和字段，但 Invocation 投影、receipt 解析与 causal 投影全部委托给
 `easynet_sdk`。`easyremote/edge-adapter-policy.v1.json` 是机器可读白名单，
-记录当前包版本 `2.0.0a0`、删除版本 `1.0.0`，并禁止新增内部调用者。
+并禁止新增内部调用者。
 
 ### `@remote` 作为类属性
 
@@ -145,7 +147,8 @@ class GPUCluster:
     @remote                            # ability 名 = "ai_inference"
     def ai_inference(self, prompt: str, max_tokens: int = 64) -> str: ...
 
-GPUCluster(Client()).ai_inference("hi")   # self 被剥离，复用宿主 client
+policy = FreshRoot(ResolvedTargetSubject())
+GPUCluster(Client(invocation_policy=policy)).ai_inference("hi")
 ```
 
 client 解析优先级：`@remote(client=...)` > `self.client` > `self._client`。
@@ -184,9 +187,9 @@ hub.call("route", target="gpu-2")           # 临时调用，无需 stub
 | Use case | 最小 facade |
 |---|---|
 | 发布本地函数 | `node = ComputeNode(); @node.register; node.serve()` |
-| 结果优先调用 | `Client().execute("ai_inference", prompt="hi")` |
-| 指定 device / agent / hub | `Client().device("gpu-2").call(...)`、`Client().agent("u.a").call(...)`、`Client().hub().call(...)` |
-| 发出前检视七元组 | `prepared = Client().prepare(...); prepared.tuple; prepared.send()` |
+| 结果优先调用 | `Client(invocation_policy=policy).execute("ai_inference", prompt="hi")` |
+| 指定 device / agent / hub | `Client(invocation_policy=policy).device("gpu-2").call(...)`，以及对应的 `agent(...)` / `hub()` 句柄 |
+| 发出前检视七元组 | `prepared = Client(invocation_policy=policy).prepare(...); prepared.tuple; prepared.send()` |
 | 在 Python 中编排 mission | `Pipeline("nightly").step(...); pipe.run()` |
 | 运行已有 EAL | `Client().missions.run_eal(source, label="nightly")` 或 `Client().missions.run_file("nightly.eal")` |
 | 管理 daemon 目录 | `Client().abilities.list(scope="realm")`、`Client().agents.add(...)` |
