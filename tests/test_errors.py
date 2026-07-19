@@ -50,6 +50,63 @@ SDK_CASES = [
     (easynet_sdk.ErrorCode.ABILITY_FAILED, InternalError, "ability_failed"),
     (easynet_sdk.ErrorCode.NOT_IMPLEMENTED, InternalError, "not_implemented"),
     (easynet_sdk.ErrorCode.GENERIC, InternalError, "generic"),
+    (
+        easynet_sdk.ErrorCode.CALLER_IDENTITY_UNAVAILABLE,
+        Unavailable,
+        "caller_identity_unavailable",
+    ),
+    (
+        easynet_sdk.ErrorCode.CALLER_SIGNER_UNAVAILABLE,
+        Unavailable,
+        "caller_signer_unavailable",
+    ),
+    (
+        easynet_sdk.ErrorCode.AUTHORITY_SUBJECT_MISMATCH,
+        PermissionDenied,
+        "authority_subject_mismatch",
+    ),
+    (
+        easynet_sdk.ErrorCode.DESCRIPTOR_NOT_FOUND,
+        InvalidArgument,
+        "descriptor_not_found",
+    ),
+    (
+        easynet_sdk.ErrorCode.DESCRIPTOR_OWNER_OFFLINE,
+        Unavailable,
+        "descriptor_owner_offline",
+    ),
+    (
+        easynet_sdk.ErrorCode.DESCRIPTOR_MODE_UNSUPPORTED,
+        InvalidArgument,
+        "descriptor_mode_unsupported",
+    ),
+    (easynet_sdk.ErrorCode.DESCRIPTOR_STALE, Unavailable, "descriptor_stale"),
+    (
+        easynet_sdk.ErrorCode.RUNTIME_ROUTE_UNAVAILABLE,
+        Unavailable,
+        "runtime_route_unavailable",
+    ),
+    (
+        easynet_sdk.ErrorCode.INVOCATION_CANCELLED,
+        Cancelled,
+        "invocation_cancelled",
+    ),
+    (
+        easynet_sdk.ErrorCode.INVOCATION_TIMEOUT,
+        DeadlineExceeded,
+        "invocation_timeout",
+    ),
+    (
+        easynet_sdk.ErrorCode.TERMINAL_RECEIPT_UNAVAILABLE,
+        Unavailable,
+        "terminal_receipt_unavailable",
+    ),
+    (
+        easynet_sdk.ErrorCode.RECEIPT_PROOF_FACTS_MISSING,
+        PermissionDenied,
+        "receipt_proof_facts_missing",
+    ),
+    (easynet_sdk.ErrorCode.PROVIDER_UNAVAILABLE, Unavailable, "provider_unavailable"),
 ]
 
 

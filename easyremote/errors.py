@@ -129,9 +129,16 @@ _SDK_ERROR_CLASS_MAP: dict[easynet_sdk.ErrorClass, type[RemoteError]] = {
 _SDK_ERROR_OVERRIDES: dict[easynet_sdk.ErrorCode, type[RemoteError]] = {
     easynet_sdk.ErrorCode.ALREADY_INIT: InternalError,
     easynet_sdk.ErrorCode.NULL_POINTER: InternalError,
+    easynet_sdk.ErrorCode.CALLER_IDENTITY_UNAVAILABLE: Unavailable,
+    easynet_sdk.ErrorCode.CALLER_SIGNER_UNAVAILABLE: Unavailable,
     easynet_sdk.ErrorCode.ROUTE_UNAVAILABLE: Unavailable,
+    easynet_sdk.ErrorCode.DESCRIPTOR_OWNER_OFFLINE: Unavailable,
+    easynet_sdk.ErrorCode.DESCRIPTOR_STALE: Unavailable,
+    easynet_sdk.ErrorCode.RUNTIME_ROUTE_UNAVAILABLE: Unavailable,
     easynet_sdk.ErrorCode.EXECUTION_FAILED: InternalError,
     easynet_sdk.ErrorCode.ABILITY_FAILED: InternalError,
+    easynet_sdk.ErrorCode.TERMINAL_RECEIPT_UNAVAILABLE: Unavailable,
+    easynet_sdk.ErrorCode.PROVIDER_UNAVAILABLE: Unavailable,
 }
 
 _SDK_REASON_OVERRIDES: dict[easynet_sdk.ErrorCode, str] = {
