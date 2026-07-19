@@ -26,6 +26,9 @@ class Candidate(Protocol):
     @property
     def input_schema(self) -> dict[str, Any] | None: ...
 
+    @property
+    def descriptor_ref(self) -> str: ...
+
 
 @dataclass(frozen=True)
 class ResolvedAbility:
@@ -36,6 +39,7 @@ class ResolvedAbility:
     call_carrier: CallCarrier
     input_schema: dict[str, Any] | None = None
     argument_label: str | None = None
+    descriptor_ref: str = ""
 
 
 class DiscoveryCache:
@@ -44,6 +48,7 @@ class DiscoveryCache:
     def __init__(self) -> None:
         self._schemas: dict[str, dict[str, Any]] = {}
         self._schemas_by_ura: dict[str, dict[str, Any]] = {}
+        self._descriptor_refs_by_ura: dict[str, str] = {}
         self._candidates: dict[str, list[Candidate]] = {}
         self._round_robin: dict[str, int] = {}
 
@@ -57,6 +62,8 @@ class DiscoveryCache:
                 self._candidates.setdefault(info.name, []).append(info)
             if info.ability_ura and info.input_schema:
                 self._schemas_by_ura[info.ability_ura] = info.input_schema
+            if info.ability_ura and info.descriptor_ref:
+                self._descriptor_refs_by_ura[info.ability_ura] = info.descriptor_ref
         for verb, group in self._candidates.items():
             schemas = [info.input_schema for info in group]
             if schemas and all(schema and schema == schemas[0] for schema in schemas):
@@ -68,6 +75,9 @@ class DiscoveryCache:
 
     def schema_for_ura(self, ability_ura: str) -> dict[str, Any] | None:
         return self._schemas_by_ura.get(ability_ura)
+
+    def descriptor_ref_for_ura(self, ability_ura: str) -> str:
+        return self._descriptor_refs_by_ura.get(ability_ura, "")
 
     def select(self, verb: str, policy: str) -> Candidate | None:
         group = self._candidates.get(verb, ())
@@ -124,6 +134,7 @@ class AbilityAddressResolver:
             return self.from_ability_ura(
                 function,
                 input_schema=self.cache.schema_for_ura(function),
+                descriptor_ref=self.cache.descriptor_ref_for_ura(function),
                 argument_label=function,
             )
 
@@ -160,6 +171,7 @@ class AbilityAddressResolver:
             return self.from_ability_ura(
                 function,
                 input_schema=self.cache.schema_for_ura(function),
+                descriptor_ref=self.cache.descriptor_ref_for_ura(function),
                 argument_label=function,
             )
         ability_name = function if "." in function else f"{self._namespace}.{function}"
@@ -167,6 +179,7 @@ class AbilityAddressResolver:
         return self.from_ability_ura(
             ability_ura,
             input_schema=self.cache.schema_for_ura(ability_ura),
+            descriptor_ref=self.cache.descriptor_ref_for_ura(ability_ura),
             argument_label=ability_ura,
             call_carrier=_call_carrier_for_kind(self.owner_kind(owner_ura)),
         )
@@ -178,6 +191,7 @@ class AbilityAddressResolver:
         input_schema: dict[str, Any] | None = None,
         argument_label: str | None = None,
         call_carrier: CallCarrier | None = None,
+        descriptor_ref: str = "",
     ) -> ResolvedAbility:
         try:
             projection = self._addressing.project_ability_ura(ability_ura)
@@ -194,6 +208,7 @@ class AbilityAddressResolver:
             or _call_carrier_for_kind(self.owner_kind(owner_ura)),
             input_schema=input_schema,
             argument_label=argument_label or projection.ura,
+            descriptor_ref=descriptor_ref,
         )
 
     def owner_kind(self, owner_ura: str) -> str:
@@ -246,6 +261,8 @@ class AbilityAddressResolver:
             input_schema=info.input_schema
             or self.cache.schema_for_ura(info.ability_ura),
             argument_label=info.ability_ura,
+            descriptor_ref=info.descriptor_ref
+            or self.cache.descriptor_ref_for_ura(info.ability_ura),
         )
 
     @staticmethod

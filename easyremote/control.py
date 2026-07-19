@@ -1,13 +1,13 @@
 """Daemon control-plane facades for abilities and agents.
 
 This module is the Python boundary for EasyNet daemon system abilities.
-It does not define new protocol semantics: every operation below builds
-ordinary EasyRemote invocations through :class:`easyremote.client.Client`.
+It does not define new protocol semantics: every operation below submits
+complete runtime ability calls through the canonical SDK runtime facade.
 
 The important separation is:
 
 - the EasyNet-Cli SDK owns runtime discovery and process lifecycle;
-- invocation (`Client`) sends complete Axon seven-tuples;
+- invocation sends complete Axon seven-tuples;
 - control (`AbilityControl` / `AgentControl`) maps product operations
   such as install/list/add into daemon-owned system abilities.
 """
@@ -27,14 +27,10 @@ import easynet_sdk
 from ._product_abilities import AgentAbility
 from .errors import InvalidArgument, RemoteError, Unavailable, error_from_sdk
 from .identity import LocalIdentity
-from .invocation_policy import (
-    ExplicitSubject,
-    FreshRoot,
-    ResolvedTargetSubject,
-)
+from .invocation_policy import runtime_root_context
 
 if TYPE_CHECKING:
-    from .client import CallTarget, Client
+    from .client import Client
 
 __all__ = [
     "AbilityControl",
@@ -213,12 +209,13 @@ class AbilityControl:
         ref = _local_resource_ref(package, self._client._who())
         resource_ura = str(ref["resource_ura"])
         result = self._invoke(
-            self._client.target(
-                "ability.deploy",
-                invocation_policy=FreshRoot(ExplicitSubject(resource_ura)),
-            ),
-            resource_ref=ref,
-            node_id=node_id,
+            "ability.deploy",
+            callee_ura=self._client._who().device_ura,
+            subject_ura=resource_ura,
+            args={
+                "resource_ref": ref,
+                "node_id": node_id,
+            },
         )
         return AbilityInstallResult.from_wire(result, node_id=node_id)
 
@@ -261,12 +258,10 @@ class AbilityControl:
             else self._client.device(node).owner_ura
         )
         result = self._invoke(
-            self._client.target(
-                "meta.list_abilities",
-                owner_ura=owner,
-                invocation_policy=FreshRoot(ResolvedTargetSubject()),
-            ),
-            **args,
+            "meta.list_abilities",
+            callee_ura=owner,
+            subject_ura=owner,
+            args=args,
         )
         rows = result.get("abilities") or []
         if not isinstance(rows, list) or not all(
@@ -333,18 +328,29 @@ class AbilityControl:
 
     def _invoke(
         self,
-        target: str | CallTarget,
-        **kwargs: object,
+        ability_name: str,
+        *,
+        callee_ura: str,
+        subject_ura: str,
+        args: Mapping[str, object],
     ) -> dict[str, Any]:
         try:
-            result = self._client.invoke(target, **kwargs).result()
+            result = self._client._connected().invoke_runtime_ability(
+                runtime_root_context(
+                    caller_ura=self._client._who().device_ura,
+                    callee_ura=callee_ura,
+                    subject_ura=subject_ura,
+                ),
+                ability_name,
+                dict(args),
+            )
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
         except RemoteError:
             raise
         except Exception as exc:
             raise Unavailable(
-                f"ability control invocation failed: {exc}",
+                f"{ability_name} invocation failed: {exc}",
                 reason="ability_invocation_failed",
             ) from exc
         return _dict(result)
@@ -379,16 +385,18 @@ class AgentControl:
 
         result = self._invoke(
             AgentAbility.START,
-            name=agent_name,
-            agent_type=runtime,
-            model=model,
-            model_present=True,
-            label=label,
-            command=command,
-            command_args=list(args),
-            materialize_directory=True,
-            update_existing_spec=False,
-            project_workspace=True,
+            {
+                "name": agent_name,
+                "agent_type": runtime,
+                "model": model,
+                "model_present": True,
+                "label": label,
+                "command": command,
+                "command_args": list(args),
+                "materialize_directory": True,
+                "update_existing_spec": False,
+                "project_workspace": True,
+            },
         )
         return AgentStartResult.from_wire(
             result,
@@ -397,7 +405,7 @@ class AgentControl:
         )
 
     def list(self) -> builtins.list[AgentRecord]:
-        result = self._invoke(AgentAbility.LIST)
+        result = self._invoke(AgentAbility.LIST, {})
         rows = result.get("agents")
         if not isinstance(rows, list) or not all(
             isinstance(row, Mapping) for row in rows
@@ -416,7 +424,7 @@ class AgentControl:
                 reason="empty_agent_name",
             )
         return AgentStopResult.from_wire(
-            self._invoke(AgentAbility.STOP, name=agent_name),
+            self._invoke(AgentAbility.STOP, {"name": agent_name}),
             name=agent_name,
         )
 
@@ -430,21 +438,24 @@ class AgentControl:
                     reason="empty_agent_name",
                 )
             args["name"] = agent_name
-        return self._invoke(AgentAbility.REFRESH, **args)
+        return self._invoke(AgentAbility.REFRESH, args)
 
     def _invoke(
         self,
         ability: AgentAbility,
-        **kwargs: object,
+        args: Mapping[str, object],
     ) -> dict[str, Any]:
         try:
-            result = self._client.invoke(
-                self._client.target(
-                    str(ability),
-                    invocation_policy=FreshRoot(ResolvedTargetSubject()),
+            local = self._client._who().device_ura
+            result = self._client._connected().invoke_runtime_ability(
+                runtime_root_context(
+                    caller_ura=local,
+                    callee_ura=local,
+                    subject_ura=local,
                 ),
-                **kwargs,
-            ).result()
+                str(ability),
+                dict(args),
+            )
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
         except RemoteError:
@@ -460,7 +471,6 @@ class AgentControl:
                 reason="invalid_daemon_response",
             )
         return dict(result)
-
 
 def _local_resource_ref(path: Path, identity: LocalIdentity) -> dict[str, object]:
     absolute = path if path.is_absolute() else Path.cwd() / path

@@ -2,8 +2,6 @@
 
 import base64
 import json
-from typing import cast
-
 import easynet_sdk
 import pytest
 from conftest import canonical_runtime_receipt_pair
@@ -42,8 +40,14 @@ class FakeTransport:
         self._addressing = easynet_sdk.AddressingClient(
             easynet_sdk.AxonAddressingTransport()
         )
+        self._runtime = _FakeRuntime(self)
+        self._runtime_client = easynet_sdk.RuntimeClient(self._runtime)
         self._invoker = easynet_sdk.AbilityInvocationClient(
-            cast(easynet_sdk.RuntimeClient, object()),
+            self._runtime_client,
+            self._addressing,
+        )
+        self._runtime_ability = easynet_sdk.RuntimeAbilityClient(
+            self._runtime_client,
             self._addressing,
         )
 
@@ -51,6 +55,12 @@ class FakeTransport:
         return self._invoker.build_target_invocation(request)
 
     def invoke(self, draft):
+        return self._record_invocation(draft)
+
+    def invoke_runtime_ability(self, call, ability_name, arguments):
+        return self._runtime_ability.invoke(call, ability_name, arguments)
+
+    def _record_invocation(self, draft):
         wire = draft.to_json_dict()
         self.invocations.append(wire)
         response = dict(self.responses.pop(0))
@@ -71,6 +81,30 @@ class FakeTransport:
 
     def close(self):
         self._addressing.close()
+
+
+class _FakeRuntime:
+    def __init__(self, transport: FakeTransport) -> None:
+        self._transport = transport
+
+    def resolve_descriptor_ref(self, request_json: bytes) -> bytes:
+        request = json.loads(request_json.decode("utf-8"))
+        callee = str(request["callee_ura"])
+        ability = str(request["ability"])
+        if ability.startswith("easynet:///"):
+            ability_ura = ability
+        else:
+            ability_ura = self._transport._addressing.owner_ability_ura(callee, ability)
+        descriptor_ref = self._transport._addressing.canonical_ability_descriptor_ref(
+            ability_ura,
+            "1.0.0",
+        )
+        return json.dumps({"descriptor_ref": descriptor_ref}).encode()
+
+    def invoke(self, draft_json: bytes) -> bytes:
+        draft = easynet_sdk.InvocationDraft.from_json(draft_json.decode("utf-8"))
+        response = self._transport._record_invocation(draft)
+        return json.dumps(response["sdk_runtime_result"]).encode()
 
 
 def client_with(*responses):

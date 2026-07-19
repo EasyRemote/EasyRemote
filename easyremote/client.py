@@ -56,6 +56,7 @@ from .invocation_policy import (
     InvocationDerivationPolicy,
     ResolvedTargetSubject,
     require_invocation_policy,
+    runtime_root_context,
 )
 from .schema import PARAMETER_ORDER_KEY, VAR_POSITIONAL_KEY
 
@@ -91,6 +92,7 @@ class FunctionInfo:
     input_schema: dict[str, Any]
     visibility: str
     score: float
+    descriptor_ref: str = ""
 
     @property
     def ability_ura(self) -> str:
@@ -108,6 +110,44 @@ class FunctionInfo:
             input_schema=dict(candidate.get("input_schema") or {}),
             visibility=str(candidate.get("visibility", "")),
             score=float(candidate.get("score", 0.0)),
+            descriptor_ref=str(candidate.get("descriptor_ref") or ""),
+        )
+
+    @classmethod
+    def from_catalog_row(
+        cls,
+        row: Mapping[str, Any],
+        *,
+        namespace: str,
+    ) -> FunctionInfo:
+        """Project one daemon catalogue row into EasyRemote's public shape.
+
+        The daemon catalogue is the canonical discovery source. EasyRemote only
+        adapts field names for its historical API; it does not own discovery,
+        descriptor binding, admission, or receipt interpretation.
+        """
+
+        raw_name = str(row.get("name") or row.get("ability") or "")
+        product_name = _product_function_name(raw_name, namespace)
+        schema = row.get("input_schema")
+        if not isinstance(schema, Mapping):
+            summary = row.get("schema_summary")
+            if isinstance(summary, Mapping):
+                schema = summary.get("input")
+        return cls(
+            name=product_name,
+            qualified_name=str(
+                row.get("ability_ura")
+                or row.get("qualified_name")
+                or row.get("descriptor_ref")
+                or ""
+            ),
+            owner=str(row.get("owner_ura") or row.get("owner") or ""),
+            description=str(row.get("description") or ""),
+            input_schema=dict(schema) if isinstance(schema, Mapping) else {},
+            visibility=str(row.get("visibility") or ""),
+            score=float(row.get("score", 1.0)),
+            descriptor_ref=str(row.get("descriptor_ref") or ""),
         )
 
 
@@ -317,7 +357,16 @@ class Client:
         **kwargs: Any,
     ) -> Any:
         target = self._target(function)
-        prepared = self.prepare(target, *args, **kwargs)
+        resolved = self._address(
+            target.function, target.node, target.pick, target.owner_ura
+        )
+        prepared = self._prepare_resolved(
+            target,
+            resolved,
+            args,
+            kwargs,
+            call_mode=_sdk_call_mode(resolved.call_carrier),
+        )
         if prepared.call_carrier == "unary":
             return prepared.send().result()
         # EasyRemote abilities register stream-mode (host_stream), so a
@@ -334,7 +383,7 @@ class Client:
         self, function: str | CallTarget, /, *args: Any, **kwargs: Any
     ) -> Stream:
         target = self._target(function)
-        prepared = self.prepare(target, *args, **kwargs)
+        prepared = self._prepare(target, args, kwargs, call_mode="stream")
         return self._open_stream(prepared, timeout=target.timeout)
 
     def _open_stream(
@@ -355,7 +404,7 @@ class Client:
         **kwargs: Any,
     ) -> BidiSession:
         target = self._target(function)
-        prepared = self.prepare(target, **kwargs)
+        prepared = self._prepare(target, (), kwargs, call_mode="bidi")
         descriptors = streams or [
             StreamSpec(stream_id=1, content_type="application/json")
         ]
@@ -383,10 +432,30 @@ class Client:
         *args: Any,
         **kwargs: Any,
     ) -> PreparedInvocation:
-        target = self._target(function)
+        return self._prepare(self._target(function), args, kwargs, call_mode="rpc")
+
+    def _prepare(
+        self,
+        target: CallTarget,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        *,
+        call_mode: str,
+    ) -> PreparedInvocation:
         resolved = self._address(
             target.function, target.node, target.pick, target.owner_ura
         )
+        return self._prepare_resolved(target, resolved, args, kwargs, call_mode=call_mode)
+
+    def _prepare_resolved(
+        self,
+        target: CallTarget,
+        resolved: ResolvedAbility,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        *,
+        call_mode: str,
+    ) -> PreparedInvocation:
         payload = self._named_arguments(resolved, args, kwargs)
         policy = (
             target.invocation_policy
@@ -406,6 +475,13 @@ class Client:
             args=payload,
             metadata=target.metadata or {},
         )
+        request = replace(request, call_mode=call_mode)
+        if resolved.descriptor_ref:
+            request = replace(
+                request,
+                descriptor_ref=resolved.descriptor_ref,
+                ability_ura="",
+            )
         draft = self._connected().build_target_invocation(request)
 
         def dispatch(prepared: PreparedInvocation) -> Invocation:
@@ -488,17 +564,32 @@ class Client:
     # -- discovery -------------------------------------------------------------
 
     def functions(self, query: str = "", scope: str = "device") -> list[FunctionInfo]:
-        """Discoverable capabilities, via the daemon's `discover` ability."""
-        response = self.invoke(
-            self.target(
-                "discover",
-                invocation_policy=FreshRoot(ResolvedTargetSubject()),
-            ),
-            scope=scope,
-            query=query,
-        ).result()
-        candidates = (response or {}).get("candidates", [])
-        infos = [FunctionInfo.from_candidate(c) for c in candidates]
+        """Discoverable capabilities from the canonical daemon catalogue."""
+        catalogue_scope = _catalogue_scope(scope)
+        local = self._who().device_ura
+        try:
+            response = self._connected().invoke_runtime_ability(
+                runtime_root_context(
+                    caller_ura=local,
+                    callee_ura=local,
+                    subject_ura=local,
+                ),
+                "meta.list_abilities",
+                {"scope": catalogue_scope} if catalogue_scope == "realm" else {},
+            )
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
+        rows = response.get("abilities") if isinstance(response, Mapping) else None
+        if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
+            raise InvalidArgument(
+                "meta.list_abilities response field 'abilities' is not an object array",
+                reason="invalid_daemon_response",
+            )
+        infos = [
+            FunctionInfo.from_catalog_row(row, namespace=self._namespace)
+            for row in rows
+            if _catalogue_row_matches(row, query)
+        ]
         self._addressing.cache.replace(infos)
         return infos
 
@@ -679,6 +770,47 @@ class Client:
     @property
     def _transport(self) -> Transport | None:
         return self._unary_pool.current_transport
+
+
+def _sdk_call_mode(carrier: str) -> str:
+    if carrier == "stream":
+        return "stream"
+    if carrier == "unary":
+        return "rpc"
+    raise InvalidArgument(
+        f"unsupported dispatch carrier {carrier!r}",
+        reason="invalid_dispatch_carrier",
+    )
+
+
+def _catalogue_scope(scope: str) -> str:
+    normalized = scope.strip().lower()
+    if normalized in {"device", "self", "local"}:
+        return "local"
+    if normalized in {"user", "realm"}:
+        return "realm"
+    raise InvalidArgument(
+        "functions scope must be one of 'device', 'self', 'local', 'user', or 'realm'",
+        reason="invalid_discovery_scope",
+    )
+
+
+def _catalogue_row_matches(row: Mapping[str, Any], query: str) -> bool:
+    needle = query.strip().lower()
+    if not needle:
+        return True
+    haystack = " ".join(
+        str(row.get(field) or "")
+        for field in ("name", "ability", "ability_ura", "description", "owner_ura")
+    ).lower()
+    return needle in haystack
+
+
+def _product_function_name(name: str, namespace: str) -> str:
+    prefix = f"{namespace}."
+    if namespace and name.startswith(prefix):
+        return name[len(prefix) :]
+    return name.rsplit(".", 1)[-1] if "." in name else name
 
 
 class AsyncClient:

@@ -127,19 +127,19 @@ class LocalIdentity:
     ) -> LocalIdentity:
         try:
             realm = str(projection.realm)
-            node_id = str(projection.device_id)
+            node_id = str(projection.runtime_instance_id)
         except AttributeError as exc:
             raise Unavailable(
                 "runtime identity projection is incomplete — re-pair with "
                 "`easynet pair`",
                 reason="credentials_incomplete",
             ) from exc
-        username = getattr(projection, "username", "")
+        username = getattr(projection, "principal", "")
         return cls(
             realm=realm,
             node_id=node_id,
             username=str(username) if username else None,
-            hub_endpoint=str(getattr(projection, "hub_endpoint", "")),
+            hub_endpoint=str(getattr(projection, "control_plane_endpoint", "")),
         )
 
     @classmethod

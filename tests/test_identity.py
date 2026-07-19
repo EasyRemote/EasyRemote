@@ -48,9 +48,9 @@ def test_local_identity_load_uses_sdk_runtime_projection(monkeypatch):
             assert str(credentials_path).endswith("credentials.json")
             return easynet_sdk.RuntimeIdentityProjection(
                 realm="acme",
-                device_id="dev-a",
-                username="alice",
-                hub_endpoint="hub:443",
+                runtime_instance_id="dev-a",
+                principal="alice",
+                control_plane_endpoint="hub:443",
             )
 
     monkeypatch.setattr(config, "sdk_environment", lambda: FakeEnvironment())

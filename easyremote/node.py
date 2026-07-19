@@ -298,6 +298,7 @@ class ComputeNode:
         # stdin contract has no missing-template failure mode, so
         # optionals stay optional.
         manifest: dict[str, Any] = {
+            "admission_action": "stream",
             "category": "easyremote",
             "description": description,
             "destructive_hint": False,

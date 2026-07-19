@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import easynet_sdk
+from easynet_sdk.providers.easynet import read_daemon_runtime_identity_projection
 
 from .errors import Unavailable
 
@@ -146,9 +147,9 @@ def read_credentials() -> dict[str, Any]:
     projection = runtime_identity_projection()
     return {
         "realm": projection.realm,
-        "node_id": projection.device_id,
-        "username": projection.username,
-        "hub_endpoint": projection.hub_endpoint,
+        "node_id": projection.runtime_instance_id,
+        "username": projection.principal,
+        "hub_endpoint": projection.control_plane_endpoint,
     }
 
 
@@ -159,6 +160,10 @@ def runtime_identity_projection() -> easynet_sdk.RuntimeIdentityProjection:
     try:
         return sdk_environment().runtime_identity_projection(path)
     except easynet_sdk.SDKError as exc:
+        try:
+            return read_daemon_runtime_identity_projection(path)
+        except Exception:
+            pass
         raise _runtime_identity_projection_error(path, exc) from exc
 
 

@@ -21,6 +21,7 @@ __all__ = [
     "InvocationDerivationPolicy",
     "InvocationSubjectPolicy",
     "ResolvedTargetSubject",
+    "runtime_root_context",
 ]
 
 
@@ -241,6 +242,21 @@ def require_invocation_policy(
             reason="invalid_invocation_derivation_policy",
         )
     return value
+
+
+def runtime_root_context(
+    *,
+    caller_ura: str,
+    callee_ura: str,
+    subject_ura: str,
+) -> easynet_sdk.RuntimeCallContext:
+    return easynet_sdk.RuntimeCallContext(
+        caller_ura=_subject(caller_ura),
+        callee_ura=_subject(callee_ura),
+        subject_ura=_subject(subject_ura),
+        nonce_base64=easynet_sdk.new_invocation_nonce_base64(),
+        causal_context={"form": "none"},
+    )
 
 
 def _request(

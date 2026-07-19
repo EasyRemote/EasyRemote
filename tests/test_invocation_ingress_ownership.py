@@ -181,7 +181,7 @@ def _client_surface_violations(tree: ast.Module) -> list[str]:
     client = _class_node(tree, "Client")
     target = _class_node(tree, "CallTarget")
     init = _method_node(client, "__init__")
-    prepare = _method_node(client, "prepare")
+    prepare = _method_node(client, "_prepare_resolved")
     target_builder = _method_node(client, "target")
 
     init_defaults = _argument_defaults(init.args)

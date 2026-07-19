@@ -38,6 +38,10 @@ class Transport:
             adapter.transport.runtime,
             addressing,
         )
+        self._runtime_ability = easynet_sdk.RuntimeAbilityClient(
+            adapter.transport.runtime,
+            addressing,
+        )
 
     @classmethod
     def connect(cls, control_path: str | None = None) -> Transport:
@@ -60,6 +64,17 @@ class Transport:
     ) -> easynet_sdk.InvocationDraft:
         try:
             return self._invoker.build_target_invocation(request)
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
+
+    def invoke_runtime_ability(
+        self,
+        call: easynet_sdk.RuntimeCallContext,
+        ability_name: str,
+        arguments: object,
+    ) -> dict[str, Any]:
+        try:
+            return self._runtime_ability.invoke(call, ability_name, arguments)
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
@@ -93,7 +108,7 @@ class Transport:
         self,
         invocation: easynet_sdk.InvocationDraft,
         streams: Iterable[easynet_sdk.BidiStreamDescriptor],
-    ) -> easynet_sdk.DaemonBidiChannel:
+    ) -> easynet_sdk.RuntimeBidiChannel:
         try:
             return self._adapter.bidi(invocation, streams)
         except easynet_sdk.SDKError as exc:
@@ -188,7 +203,7 @@ class UnaryDispatchPool:
 class FrameStream:
     """Server-stream wrapper that preserves EasyRemote's frame API."""
 
-    _stream: easynet_sdk.DaemonFrameStream
+    _stream: easynet_sdk.RuntimeFrameStream
 
     def recv(self, timeout: float | None = None) -> dict[str, Any] | None:
         try:

@@ -123,6 +123,30 @@ class _FakeBidi:
         self.cancel_reason = reason
 
 
+class _FakeDescriptorResolver:
+    def __init__(self, addressing: easynet_sdk.AddressingClient) -> None:
+        self._addressing = addressing
+        self.requests: list[dict[str, Any]] = []
+        self.close_calls = 0
+
+    def resolve_descriptor_ref(self, request_json: bytes) -> bytes:
+        request = json.loads(request_json.decode("utf-8"))
+        self.requests.append(request)
+        ability = str(request.get("ability") or "").strip()
+        descriptor_ref = self._addressing.canonical_ability_descriptor_ref(
+            ability,
+            "1.0.0",
+        )
+        return json.dumps(
+            {"descriptor_ref": descriptor_ref},
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
 class FakeTransport:
     def __init__(self, responses=None):
         self.invocations = []
@@ -135,13 +159,31 @@ class FakeTransport:
         self._addressing = easynet_sdk.AddressingClient(
             easynet_sdk.AxonAddressingTransport()
         )
+        self._descriptor_resolver = _FakeDescriptorResolver(self._addressing)
         self._invoker = easynet_sdk.AbilityInvocationClient(
-            cast(easynet_sdk.RuntimeClient, object()),
+            easynet_sdk.RuntimeClient(self._descriptor_resolver),
             self._addressing,
         )
 
     def build_target_invocation(self, request):
         return self._invoker.build_target_invocation(request)
+
+    def invoke_runtime_ability(self, call, ability_name, arguments):
+        _ = call
+        response = (
+            self.responses.pop(0) if self.responses else ok_response({"abilities": []})
+        )
+        result = response.get("result_json") if isinstance(response, dict) else response
+        if isinstance(result, dict) and "candidates" in result and "abilities" not in result:
+            result = {"abilities": result["candidates"]}
+        self.invocations.append(
+            {
+                "descriptor_ref": f"runtime://{ability_name}",
+                "args": arguments,
+            }
+        )
+        self.carriers.append("runtime")
+        return result
 
     def invoke(self, draft):
         if self.delay:
@@ -574,11 +616,8 @@ def test_discovery_enables_positionals_and_fills_defaults():
     infos = client.functions()
     assert infos[0].ability_ura == "easynet:///r/acme/ability/user.er.fn"
     assert infos[0].qualified_name == "easynet:///r/acme/ability/user.er.fn"
-    assert (
-        transport.invocations[0]["descriptor_ref"]
-        == "easynet:///r/acme/ability/device.dev-a.er.discover@1.0.0"
-    )
-    assert transport.invocations[0]["args"] == {"scope": "device", "query": ""}
+    assert transport.invocations[0]["descriptor_ref"] == "runtime://meta.list_abilities"
+    assert transport.invocations[0]["args"] == {}
 
     client.execute("fn", 41)  # positional now mappable; default filled
     assert transport.invocations[1]["args"] == {"a": 41, "b": 7}
@@ -611,12 +650,8 @@ def test_functions_with_owner_ura_namespace_discovers_canonical_owner():
 
     assert infos[0].qualified_name == "easynet:///r/acme/ability/dev.caesura.fn"
     wire = transport.invocations[0]
-    assert wire["callee_ura"] == owner_ura
-    assert wire["subject_ura"] == "easynet:///r/acme/ability/dev.caesura.discover"
-    assert (
-        wire["descriptor_ref"] == "easynet:///r/acme/ability/dev.caesura.discover@1.0.0"
-    )
-    assert wire["args"] == {"scope": "self", "query": ""}
+    assert wire["descriptor_ref"] == "runtime://meta.list_abilities"
+    assert wire["args"] == {}
 
 
 def test_duplicate_positional_and_keyword_rejected():
@@ -1202,6 +1237,38 @@ def test_owner_ability_handle_can_declare_typed_stub():
     assert wire["args"] == {"text": "hi", "times": 2}
 
 
+def test_owner_ability_handle_streams_fully_qualified_native_ability():
+    client, transport = make_client(responses=[{"tick": 1}])
+
+    frames = list(
+        client.device("gpu-2").ability("nativeer.native_stream").stream(count=1)
+    )
+
+    assert frames == [{"tick": 1}]
+    wire = transport.invocations[0]
+    assert (
+        wire["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.gpu-2.nativeer.native_stream@1.0.0"
+    )
+    assert wire["args"] == {"count": 1}
+    assert transport.carriers == ["stream"]
+
+
+def test_owner_ability_handle_rejects_empty_name():
+    client, _ = make_client()
+
+    with pytest.raises(InvalidArgument) as exc_info:
+        client.device("gpu-2").ability("  ")
+
+    assert exc_info.value.reason == "invalid_ability_name"
+
+
+def test_remote_ability_is_exported_from_top_level_package():
+    import easyremote
+
+    assert easyremote.RemoteAbility is RemoteAbility
+
+
 def test_hub_handle_projects_product_policy_onto_realm_authority():
     client, transport = make_client()
     client.hub().call("route", x=1)
@@ -1268,6 +1335,65 @@ def candidate(verb, device_id, schema=None):
         "visibility": "device",
         "score": 1.0,
     }
+
+
+def native_candidate(ability_ura, schema=None, descriptor_ref=""):
+    return {
+        "ability": "native_echo",
+        "ability_ura": ability_ura,
+        "qualified_name": ability_ura,
+        "descriptor_ref": descriptor_ref,
+        "owner": "easynet:///r/acme/device/gpu-2",
+        "description": "Native EasyNet ability.",
+        "input_schema": schema
+        or {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            PARAMETER_ORDER_KEY: ["text"],
+        },
+        "visibility": "user",
+        "score": 1.0,
+    }
+
+
+def test_functions_user_scope_discovers_native_easynet_ability_for_canonical_ura_call():
+    ability_ura = "easynet:///r/acme/ability/device.gpu-2.nativeer.native_echo"
+    discover = ok_response({"candidates": [native_candidate(ability_ura)]})
+    client, transport = make_client(responses=[discover, {"source": "native"}])
+
+    functions = client.functions(query="native_echo", scope="user")
+    result = client.call(ability_ura, "hi")
+
+    assert [info.ability_ura for info in functions] == [ability_ura]
+    assert result == {"source": "native"}
+    discover_wire, call_wire = transport.invocations
+    assert discover_wire["args"] == {"scope": "realm"}
+    assert call_wire["callee_ura"] == "easynet:///r/acme/device/gpu-2"
+    assert call_wire["subject_ura"] == ability_ura
+    assert (
+        call_wire["descriptor_ref"]
+        == "easynet:///r/acme/ability/device.gpu-2.nativeer.native_echo@1.0.0"
+    )
+    assert call_wire["args"] == {"text": "hi"}
+    assert transport.carriers == ["runtime", "stream"]
+
+
+def test_discovered_descriptor_ref_is_used_for_canonical_ura_call():
+    ability_ura = "easynet:///r/acme/ability/device.gpu-2.nativeer.native_echo"
+    descriptor_ref = f"{ability_ura}@1.0.0#{'a' * 64}!stream"
+    discover = ok_response(
+        {"candidates": [native_candidate(ability_ura, descriptor_ref=descriptor_ref)]}
+    )
+    client, transport = make_client(responses=[discover, {"source": "native"}])
+
+    client.functions(query="native_echo", scope="user")
+    result = client.call(ability_ura, "hi")
+
+    assert result == {"source": "native"}
+    assert transport.invocations[1]["descriptor_ref"] == descriptor_ref
+    assert (
+        transport._descriptor_resolver.requests == []
+    ), "discovered descriptor_ref must bypass local diagnostics resolution"
 
 
 def test_round_robin_alternates_device_candidates():

@@ -1,7 +1,7 @@
 """EasyRemote presentation over canonical SDK Invocation objects."""
 
 import base64
-from typing import cast
+import json
 
 import easynet_sdk
 import pytest
@@ -18,7 +18,7 @@ NONCE = "AQIDBAUGBwgJCgsMDQ4PEA=="
 def canonical_draft() -> easynet_sdk.InvocationDraft:
     addressing = easynet_sdk.AddressingClient(easynet_sdk.AxonAddressingTransport())
     invoker = easynet_sdk.AbilityInvocationClient(
-        cast(easynet_sdk.RuntimeClient, object()),
+        easynet_sdk.RuntimeClient(_DescriptorRuntime(addressing)),
         addressing,
     )
     try:
@@ -34,6 +34,19 @@ def canonical_draft() -> easynet_sdk.InvocationDraft:
         )
     finally:
         addressing.close()
+
+
+class _DescriptorRuntime:
+    def __init__(self, addressing: easynet_sdk.AddressingClient) -> None:
+        self._addressing = addressing
+
+    def resolve_descriptor_ref(self, request_json: bytes) -> bytes:
+        request = json.loads(request_json.decode("utf-8"))
+        descriptor_ref = self._addressing.canonical_ability_descriptor_ref(
+            str(request["ability"]),
+            "1.0.0",
+        )
+        return json.dumps({"descriptor_ref": descriptor_ref}).encode()
 
 
 def runtime_response(
