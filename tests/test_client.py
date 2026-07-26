@@ -185,6 +185,25 @@ class FakeTransport:
         self.carriers.append("runtime")
         return result
 
+    def list_ability_descriptors(
+        self,
+        call,
+        *,
+        scope="",
+        owner_ura="",
+        ability_ura="",
+    ):
+        args = {}
+        if scope:
+            args["scope"] = scope
+        if owner_ura:
+            args["owner_ura"] = owner_ura
+        if ability_ura:
+            args["ability_ura"] = ability_ura
+        result = self.invoke_runtime_ability(call, "meta.list_abilities", args)
+        rows = result.get("abilities") if isinstance(result, dict) else None
+        return rows if isinstance(rows, list) else []
+
     def invoke(self, draft):
         if self.delay:
             time.sleep(self.delay)
@@ -261,7 +280,7 @@ class FakeTransport:
             "ok": True,
             "tuple": draft.to_json_dict(),
             "invocation_id": "inv-1",
-            "terminal_state": "completed",
+            "terminal_state": "Completed",
             "output_content_type": value.get("result_content_type", ""),
             "output_base64": value.get("result_base64", ""),
             "output_json": value.get("result_json"),

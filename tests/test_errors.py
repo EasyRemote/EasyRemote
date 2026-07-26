@@ -23,7 +23,7 @@ SDK_CASES = [
     (easynet_sdk.ErrorCode.INVALID_UTF8, InvalidArgument, "invalid_utf8"),
     (easynet_sdk.ErrorCode.NOT_INITIALIZED, Unavailable, "not_initialized"),
     (easynet_sdk.ErrorCode.ALREADY_INIT, InternalError, "already_initialized"),
-    (easynet_sdk.ErrorCode.DAEMON_OFFLINE, Unavailable, "daemon_down"),
+    (easynet_sdk.ErrorCode.RUNTIME_OFFLINE, Unavailable, "daemon_down"),
     (easynet_sdk.ErrorCode.PERMISSION_DENIED, PermissionDenied, "permission_denied"),
     (easynet_sdk.ErrorCode.ADMISSION_DENIED, PermissionDenied, "admission_denied"),
     (easynet_sdk.ErrorCode.HTTP_AUTH_DENIED, PermissionDenied, "http_auth_denied"),
@@ -123,7 +123,7 @@ def test_sdk_mapping_covers_every_error_code():
 
 
 def test_daemon_down_without_message_is_actionable():
-    err = error_from_sdk(_sdk_error(easynet_sdk.ErrorCode.DAEMON_OFFLINE))
+    err = error_from_sdk(_sdk_error(easynet_sdk.ErrorCode.RUNTIME_OFFLINE))
     assert "easynet start" in str(err)
 
 

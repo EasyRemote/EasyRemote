@@ -16,16 +16,15 @@ from pathlib import Path
 from typing import Any
 
 import easynet_sdk
-from easynet_sdk.providers.easynet import read_daemon_runtime_identity_projection
 
-from .errors import Unavailable
+from .errors import Unavailable, is_runtime_offline_error
 
 __all__ = ["Settings", "agents_root", "configure", "sdk_environment", "settings"]
 
 # The SDK owns the process-level daemon discovery default. EasyRemote keeps
 # product credentials beside that discovery file, but must derive the root
 # from the SDK instead of maintaining a second home-directory convention.
-_EASYNET_DIR = easynet_sdk.default_control_path().parent
+_EASYNET_DIR = easynet_sdk.runtime_state_root()
 
 
 def agents_root() -> Path:
@@ -131,7 +130,7 @@ def read_control() -> dict[str, Any]:
     """
     path = settings().control_path
     try:
-        discovery = easynet_sdk.read_control_discovery(path)
+        discovery = easynet_sdk.read_runtime_control_discovery(path)
     except easynet_sdk.SDKError as exc:
         raise _control_discovery_error(path, exc) from exc
     return _control_discovery_dict(discovery)
@@ -160,20 +159,18 @@ def runtime_identity_projection() -> easynet_sdk.RuntimeIdentityProjection:
     try:
         return sdk_environment().runtime_identity_projection(path)
     except easynet_sdk.SDKError as exc:
-        try:
-            return read_daemon_runtime_identity_projection(path)
-        except Exception:
-            pass
         raise _runtime_identity_projection_error(path, exc) from exc
 
 
-def _control_discovery_dict(discovery: easynet_sdk.ControlDiscovery) -> dict[str, Any]:
+def _control_discovery_dict(
+    discovery: easynet_sdk.RuntimeControlDiscovery,
+) -> dict[str, Any]:
     return {
         "socket_path": discovery.socket_path,
         "pipe_name": discovery.pipe_name,
         "invocation_endpoint": discovery.invocation_endpoint,
         "pid": discovery.pid,
-        "daemon_version": discovery.daemon_version,
+        "daemon_version": discovery.runtime_host_version,
         "supported_ipc_versions": {
             "min": discovery.supported_ipc_versions.min,
             "max": discovery.supported_ipc_versions.max,
@@ -184,7 +181,7 @@ def _control_discovery_dict(discovery: easynet_sdk.ControlDiscovery) -> dict[str
 
 
 def _control_discovery_error(path: Path, error: easynet_sdk.SDKError) -> Unavailable:
-    if error.code == easynet_sdk.ErrorCode.DAEMON_OFFLINE:
+    if is_runtime_offline_error(error):
         return Unavailable(
             f"no easynet-daemon discovery file — start the daemon with `easynet start`"
             f" (looked at {path})",
@@ -201,7 +198,7 @@ def _runtime_identity_projection_error(
     path: Path,
     error: easynet_sdk.SDKError,
 ) -> Unavailable:
-    if error.code == easynet_sdk.ErrorCode.DAEMON_OFFLINE:
+    if is_runtime_offline_error(error):
         return Unavailable(
             "no EasyNet identity on this machine — pair it once with "
             f"`easynet pair` (looked at {path})",

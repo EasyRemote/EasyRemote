@@ -33,12 +33,14 @@ def canonical_runtime_receipt(
     authority_payload = b"easyremote-test-authority-proof"
     receipt: dict[str, object] = {
         "index": index,
+        "receipt_ura": f"easynet:///r/example/resource/test.subject/receipt/{index}",
         "invocation_id": "inv-1",
         "receipt_type": "admitted",
         "state": "admitted",
         "timestamp_unix_ms": 1_700_000_000_000,
         "prev_receipt_hash_hex": prev_hex,
         "self_hash_hex": self_hex,
+        "payload_base64": "",
         "payload_content_type": "application/json",
         "cleanup_complete": False,
         "reason": "",
@@ -69,6 +71,7 @@ def canonical_runtime_receipt(
             "ura": "easynet:///r/example/agent/test.callee",
             "profile": "axon-strict-v2",
         },
+        "host_attestation_base64": "",
         "authority_binding_kind": "self",
         "authority_binding": {
             "kind": "self",
@@ -103,6 +106,12 @@ def canonical_runtime_receipt(
                 "key_id_hint": "test-authority-key",
             },
             "admission_hook": "easyremote.test.admission",
+        },
+        "usage": {
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "duration_ms": 1,
+            "external_calls": 0,
         },
         "input_hash_hex": hashlib.sha256(b"easyremote-test-input").hexdigest(),
         "output_hash_hex": hashlib.sha256(b"easyremote-test-output").hexdigest(),

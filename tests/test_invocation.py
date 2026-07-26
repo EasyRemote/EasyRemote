@@ -80,7 +80,7 @@ def runtime_response(
         "ok": True,
         "tuple": draft.to_json_dict(),
         "invocation_id": "inv-1",
-        "terminal_state": "completed",
+        "terminal_state": "Completed",
         "output_content_type": output_content_type,
         "output_base64": output_base64,
         "output_json": output_json,

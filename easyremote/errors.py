@@ -24,6 +24,7 @@ __all__ = [
     "Unavailable",
     "error_from_sdk",
     "error_from_wire",
+    "is_runtime_offline_error",
 ]
 
 
@@ -129,6 +130,7 @@ _SDK_ERROR_CLASS_MAP: dict[easynet_sdk.ErrorClass, type[RemoteError]] = {
 _SDK_ERROR_OVERRIDES: dict[easynet_sdk.ErrorCode, type[RemoteError]] = {
     easynet_sdk.ErrorCode.ALREADY_INIT: InternalError,
     easynet_sdk.ErrorCode.NULL_POINTER: InternalError,
+    easynet_sdk.ErrorCode.RUNTIME_OFFLINE: Unavailable,
     easynet_sdk.ErrorCode.CALLER_IDENTITY_UNAVAILABLE: Unavailable,
     easynet_sdk.ErrorCode.CALLER_SIGNER_UNAVAILABLE: Unavailable,
     easynet_sdk.ErrorCode.ROUTE_UNAVAILABLE: Unavailable,
@@ -143,7 +145,7 @@ _SDK_ERROR_OVERRIDES: dict[easynet_sdk.ErrorCode, type[RemoteError]] = {
 
 _SDK_REASON_OVERRIDES: dict[easynet_sdk.ErrorCode, str] = {
     easynet_sdk.ErrorCode.ALREADY_INIT: "already_initialized",
-    easynet_sdk.ErrorCode.DAEMON_OFFLINE: "daemon_down",
+    easynet_sdk.ErrorCode.RUNTIME_OFFLINE: "daemon_down",
 }
 
 _SDK_HINTS: dict[str, str] = {
@@ -191,6 +193,12 @@ def error_from_sdk(error: easynet_sdk.SDKError) -> RemoteError:
         invocation_id=error.invocation_id,
         retry_after=_retry_after(error.details),
     )
+
+
+def is_runtime_offline_error(error: easynet_sdk.SDKError) -> bool:
+    """Whether a canonical SDK error means the local runtime is unreachable."""
+
+    return error.code == easynet_sdk.ErrorCode.RUNTIME_OFFLINE
 
 
 # Every concrete taxonomy class keyed by its wire `KIND` string, so a

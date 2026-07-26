@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+import easynet_sdk
 import easyremote.config as config
 from easyremote.errors import Unavailable
 
@@ -20,7 +21,7 @@ def test_defaults_point_into_easynet_home():
     s = config.settings()
     assert s.credentials_path.name == "credentials.json"
     assert s.control_path.name == "control.json"
-    assert s.credentials_path.parent.name == ".easynet"
+    assert s.credentials_path.parent == easynet_sdk.runtime_state_root()
     assert s.library_path is None
 
 

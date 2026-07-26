@@ -50,6 +50,9 @@ class FakeTransport:
             self._runtime_client,
             self._addressing,
         )
+        self._descriptor_provider = easynet_sdk.RuntimeAbilityDescriptorProvider(
+            self._runtime_ability,
+        )
 
     def build_target_invocation(self, request):
         return self._invoker.build_target_invocation(request)
@@ -60,6 +63,35 @@ class FakeTransport:
     def invoke_runtime_ability(self, call, ability_name, arguments):
         return self._runtime_ability.invoke(call, ability_name, arguments)
 
+    def list_ability_descriptors(
+        self,
+        call,
+        *,
+        scope="",
+        owner_ura="",
+        ability_ura="",
+    ):
+        page = self._descriptor_provider.list(
+            easynet_sdk.AbilityDescriptorListRequest(
+                call=call,
+                scope=scope,
+                owner_ura=owner_ura,
+                ability_ura=ability_ura,
+            )
+        )
+        return [
+            {
+                "name": descriptor.name,
+                "ability_ura": descriptor.ability_ura,
+                "descriptor_ref": descriptor.descriptor_ref,
+                "owner_ura": descriptor.owner_ura,
+                "description": descriptor.description,
+                "input_schema": dict(descriptor.input_schema),
+                "metadata": dict(descriptor.metadata),
+            }
+            for descriptor in page.descriptors
+        ]
+
     def _record_invocation(self, draft):
         wire = draft.to_json_dict()
         self.invocations.append(wire)
@@ -68,7 +100,7 @@ class FakeTransport:
             "ok": True,
             "tuple": wire,
             "invocation_id": "inv-1",
-            "terminal_state": "completed",
+            "terminal_state": "Completed",
             "output_content_type": response["result_content_type"],
             "output_base64": response["result_base64"],
             "output_json": response["result_json"],
@@ -156,6 +188,7 @@ def test_list_abilities_sends_owner_scope_once():
         "name": "er.fn",
         "ability_ura": "easynet:///r/acme/ability/device.dev-a.er.fn",
         "owner_ura": DEVICE_URA,
+        "descriptor_version": "1.0.0",
         "description": "demo",
         "state": "ACTIVE",
         "input_schema": {"type": "object"},
@@ -170,7 +203,7 @@ def test_list_abilities_sends_owner_scope_once():
         wire["descriptor_ref"]
         == "easynet:///r/acme/ability/device.dev-a.meta.list_abilities@1.0.0"
     )
-    assert wire["args"] == {"agent_ura": DEVICE_URA}
+    assert wire["args"] == {"owner_ura": DEVICE_URA}
 
 
 def test_list_abilities_exposes_realm_scope():
@@ -183,7 +216,20 @@ def test_list_abilities_exposes_realm_scope():
 
 def test_show_returns_matching_ability_or_not_found():
     ability_ura = "easynet:///r/acme/ability/device.dev-a.er.fn"
-    client, _ = client_with(ok_response({"abilities": [{"ability_ura": ability_ura}]}))
+    client, _ = client_with(
+        ok_response(
+            {
+                "abilities": [
+                    {
+                        "name": "er.fn",
+                        "ability_ura": ability_ura,
+                        "owner_ura": DEVICE_URA,
+                        "descriptor_version": "1.0.0",
+                    }
+                ]
+            }
+        )
+    )
     assert AbilityControl(client).show(ability_ura).ability_ura == ability_ura
 
     missing, _ = client_with(ok_response({"abilities": []}))
@@ -197,14 +243,20 @@ def test_list_user_filters_agent_and_user_owned_rows():
         {
             "ability_ura": "easynet:///r/acme/ability/u-alice.caesura.chat",
             "owner_ura": "easynet:///r/acme/agent/u-alice.caesura",
+            "descriptor_version": "1.0.0",
+            "name": "caesura.chat",
         },
         {
             "ability_ura": "easynet:///r/acme/ability/u-bob.caesura.chat",
             "owner_ura": "easynet:///r/acme/agent/u-bob.caesura",
+            "descriptor_version": "1.0.0",
+            "name": "caesura.chat",
         },
         {
             "ability_ura": "easynet:///r/acme/ability/device.dev-a.er.fn",
             "owner_ura": DEVICE_URA,
+            "descriptor_version": "1.0.0",
+            "name": "er.fn",
             "metadata": {"owner_user": "u-alice"},
         },
     ]

@@ -75,7 +75,7 @@ def test_provider_maps_sdk_connection_failure_without_starting_a_process() -> No
             easynet_sdk.SdkEnvironment,
             FakeEnvironment(
                 events,
-                connect_error=_sdk_error(easynet_sdk.ErrorCode.DAEMON_OFFLINE),
+                connect_error=_sdk_error(easynet_sdk.ErrorCode.RUNTIME_OFFLINE),
             ),
         ),
         identity_loader=lambda: _identity(events),

@@ -350,7 +350,7 @@ def test_context_child_call_uses_parent_receipt_dispatcher(short_tmp, runtime_re
     parent_receipt = runtime_receipt(
         invocation_id="inv-parent-1",
         receipt_type="completed",
-        state="completed",
+        state="Completed",
         receipt_ura="easynet:///r/example/resource/agent.easyremote.test/invocation/parent-1/receipt",
         cleanup_complete=True,
     )

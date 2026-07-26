@@ -110,7 +110,7 @@ def test_sdk_dispatcher_projects_parent_receipt_into_child_causal_ref(
         runtime_receipt(
             invocation_id="inv-parent-1",
             receipt_type="completed",
-            state=InvocationState.COMPLETED.name,
+            state="Completed",
             receipt_ura="easynet:///r/example/resource/agent.easyremote.test/invocation/parent-1/receipt",
             cleanup_complete=True,
         )
@@ -141,7 +141,8 @@ def test_sdk_dispatcher_rejects_parent_receipt_without_anchor(runtime_receipt):
         runtime_receipt(
             invocation_id="inv-parent-1",
             receipt_type="completed",
-            state=InvocationState.COMPLETED.name,
+            state="Completed",
+            receipt_ura="",
             cleanup_complete=True,
         )
     )

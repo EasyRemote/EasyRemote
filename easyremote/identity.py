@@ -45,8 +45,8 @@ def agent_ura(realm: str, owner_token: str) -> str:
 
 
 def hub_ura(realm: str) -> str:
-    """Build the realm hub URA through the canonical SDK provider."""
-    return _validated_build(lambda: easynet_sdk.hub_ura(realm))
+    """Build the realm authority URA through the canonical SDK provider."""
+    return _validated_build(lambda: easynet_sdk.authority_ura(realm))
 
 
 def resource_ura(realm: str, owner_id: str, path: str) -> str:

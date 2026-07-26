@@ -42,6 +42,9 @@ class Transport:
             adapter.transport.runtime,
             addressing,
         )
+        self._descriptor_provider = easynet_sdk.RuntimeAbilityDescriptorProvider(
+            self._runtime_ability,
+        )
 
     @classmethod
     def connect(cls, control_path: str | None = None) -> Transport:
@@ -77,6 +80,27 @@ class Transport:
             return self._runtime_ability.invoke(call, ability_name, arguments)
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
+
+    def list_ability_descriptors(
+        self,
+        call: easynet_sdk.RuntimeCallContext,
+        *,
+        scope: str = "",
+        owner_ura: str = "",
+        ability_ura: str = "",
+    ) -> list[dict[str, Any]]:
+        try:
+            page = self._descriptor_provider.list(
+                easynet_sdk.AbilityDescriptorListRequest(
+                    call=call,
+                    scope=scope,
+                    owner_ura=owner_ura,
+                    ability_ura=ability_ura,
+                )
+            )
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
+        return [_ability_descriptor_row(descriptor) for descriptor in page.descriptors]
 
     def invoke(
         self,
@@ -224,3 +248,17 @@ class FrameStream:
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
+
+
+def _ability_descriptor_row(
+    descriptor: easynet_sdk.AbilityDescriptorProjection,
+) -> dict[str, Any]:
+    return {
+        "name": descriptor.name,
+        "ability_ura": descriptor.ability_ura,
+        "descriptor_ref": descriptor.descriptor_ref,
+        "owner_ura": descriptor.owner_ura,
+        "description": descriptor.description,
+        "input_schema": dict(descriptor.input_schema),
+        "metadata": dict(descriptor.metadata),
+    }

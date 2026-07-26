@@ -246,24 +246,26 @@ class AbilityControl:
             args["scope"] = scope
         if owner_ura:
             _require_ura_kind(
-                owner_ura, {"device", "agent", "hub", "user"}, "owner_ura"
+                owner_ura, {"device", "agent", "authority", "user"}, "owner_ura"
             )
-            args["agent_ura"] = owner_ura
         if subject_ura:
             _require_ura_kind(subject_ura, {"ability"}, "subject_ura")
-            args["subject_ura"] = subject_ura
+            args["ability_ura"] = subject_ura
         owner = (
             self._client._who().device_ura
             if not node
             else self._client.device(node).owner_ura
         )
-        result = self._invoke(
-            "meta.list_abilities",
-            callee_ura=owner,
-            subject_ura=owner,
-            args=args,
+        rows = self._client._connected().list_ability_descriptors(
+            runtime_root_context(
+                caller_ura=self._client._who().device_ura,
+                callee_ura=owner,
+                subject_ura=owner,
+            ),
+            scope=str(args.get("scope") or ""),
+            owner_ura=owner_ura or "",
+            ability_ura=str(args.get("ability_ura") or ""),
         )
-        rows = result.get("abilities") or []
         if not isinstance(rows, list) or not all(
             isinstance(row, Mapping) for row in rows
         ):

@@ -219,7 +219,7 @@ class AbilityAddressResolver:
                 f"invalid owner URA {owner_ura!r}: {exc}",
                 reason="invalid_owner_ura",
             ) from exc
-        if kind not in {"device", "agent", "hub"}:
+        if kind not in {"device", "agent", "authority"}:
             raise InvalidArgument(
                 f"owner {owner_ura!r} cannot publish abilities",
                 reason="invalid_owner_for_ability",
@@ -238,7 +238,7 @@ class AbilityAddressResolver:
             kind = self._addressing.parse_ura(value.strip()).kind
         except easynet_sdk.SDKError:
             return False
-        return kind in {"agent", "device", "hub"}
+        return kind in {"agent", "device", "authority"}
 
     def _owner_ability_ura(self, owner_ura: str, ability_name: str) -> str:
         return self._sdk_call(

@@ -567,19 +567,14 @@ class Client:
         """Discoverable capabilities from the canonical daemon catalogue."""
         catalogue_scope = _catalogue_scope(scope)
         local = self._who().device_ura
-        try:
-            response = self._connected().invoke_runtime_ability(
-                runtime_root_context(
-                    caller_ura=local,
-                    callee_ura=local,
-                    subject_ura=local,
-                ),
-                "meta.list_abilities",
-                {"scope": catalogue_scope} if catalogue_scope == "realm" else {},
-            )
-        except easynet_sdk.SDKError as exc:
-            raise error_from_sdk(exc) from exc
-        rows = response.get("abilities") if isinstance(response, Mapping) else None
+        rows = self._connected().list_ability_descriptors(
+            runtime_root_context(
+                caller_ura=local,
+                callee_ura=local,
+                subject_ura=local,
+            ),
+            scope=catalogue_scope if catalogue_scope == "realm" else "",
+        )
         if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
             raise InvalidArgument(
                 "meta.list_abilities response field 'abilities' is not an object array",

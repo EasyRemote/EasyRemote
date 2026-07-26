@@ -138,7 +138,7 @@ def test_execution_adapter_preserves_generic_sdk_error_taxonomy():
     class OfflineClient:
         def invoke(self, *_args, **_kwargs):
             raise easynet_sdk.SDKError(
-                code=easynet_sdk.ErrorCode.DAEMON_OFFLINE,
+                code=easynet_sdk.ErrorCode.RUNTIME_OFFLINE,
                 stage="transport",
                 retry=easynet_sdk.RetryHint.SAFE,
                 retryable=True,

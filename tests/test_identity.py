@@ -17,7 +17,7 @@ from easyremote.identity import (
 
 def test_device_and_hub_shapes_round_trip():
     assert easynet_sdk.parse_ura(device_ura("acme", "dev-a")).kind == "device"
-    assert easynet_sdk.parse_ura(hub_ura("acme")).kind == "hub"
+    assert easynet_sdk.parse_ura(hub_ura("acme")).kind == "authority"
 
 
 def test_ability_ura_comes_from_the_sdk_builder():
