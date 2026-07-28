@@ -13,9 +13,11 @@ from typing import Any, cast
 
 import easynet_sdk
 import pytest
+from axon_sdk.invocation import parse_invocation_trace_graph
 from conftest import canonical_runtime_receipt_pair
 from easynet_sdk import InvocationLifecycleState as InvocationState
 
+from easyremote.agent import RemoteAgent
 from easyremote.client import (
     BidiSession,
     Client,
@@ -64,6 +66,54 @@ def ok_response(result=None, content_type="application/json"):
         "admission_receipt": admission,
         "terminal_receipt": terminal,
     }
+
+
+def native_agent_trace(request_id="inv-1", state="completed"):
+    return parse_invocation_trace_graph(
+        {
+            "trace_id": "trace-agent-1",
+            "records": [
+                {
+                    "invocation_ura": (
+                        "easynet:///r/acme/resource/device.dev-a/invocation/"
+                        f"{request_id}/history"
+                    ),
+                    "request_id": request_id,
+                    "trace_id": "trace-agent-1",
+                    "span_id": "span-agent-1",
+                    "caller_ura": DEVICE_URA,
+                    "callee_ura": "easynet:///r/acme/agent/silan.claude-code",
+                    "subject_ura": (
+                        "easynet:///r/acme/resource/device.dev-a/benchmark/"
+                        "invocation-subject/subject-hash"
+                    ),
+                    "ability_ura": (
+                        "easynet:///r/acme/ability/silan.claude-code.claude-code.chat"
+                    ),
+                    "ability_name": "claude-code.chat",
+                    "state": state,
+                    "started_unix_ms": 1,
+                    "completed_unix_ms": 2,
+                    "elapsed_ms": 1,
+                    "args": {},
+                    "result": None,
+                    "error": None,
+                    "diagnostics": [],
+                    "causal_links": [],
+                    "receipt_chain": {},
+                    "visibility": {},
+                    "authority_form": "self",
+                    "usage": {
+                        "tokens_in": 7,
+                        "tokens_out": 3,
+                        "duration_ms": 1,
+                        "external_calls": 0,
+                    },
+                }
+            ],
+            "edges": [],
+        }
+    )
 
 
 class _FakeFrames:
@@ -154,11 +204,13 @@ class _FakeDescriptorResolver:
 
 
 class FakeTransport:
-    def __init__(self, responses=None):
+    def __init__(self, responses=None, traces=None):
         self.invocations = []
         self.carriers = []
         self.signers = []
         self.responses = list(responses or [])
+        self.traces = list(traces or [])
+        self.trace_requests = []
         self.delay = 0.0
         self.closed = False
         self.bidi_channel = None
@@ -180,7 +232,11 @@ class FakeTransport:
             self.responses.pop(0) if self.responses else ok_response({"abilities": []})
         )
         result = response.get("result_json") if isinstance(response, dict) else response
-        if isinstance(result, dict) and "candidates" in result and "abilities" not in result:
+        if (
+            isinstance(result, dict)
+            and "candidates" in result
+            and "abilities" not in result
+        ):
             result = {"abilities": result["candidates"]}
         self.invocations.append(
             {
@@ -209,6 +265,12 @@ class FakeTransport:
         result = self.invoke_runtime_ability(call, "meta.list_abilities", args)
         rows = result.get("abilities") if isinstance(result, dict) else None
         return rows if isinstance(rows, list) else []
+
+    def invocation_trace(self, call, *, request_id):
+        self.trace_requests.append({"call": call, "request_id": request_id})
+        if not self.traces:
+            raise AssertionError("no fake invocation trace queued")
+        return self.traces.pop(0)
 
     def invoke(self, draft):
         if self.delay:
@@ -569,17 +631,13 @@ def test_bidi_cancel_waits_for_sdk_terminal_receipt_without_local_close():
 
 
 def test_bidi_timeout_and_disconnect_consume_sdk_terminal_semantics():
-    timed_out = BidiSession(
-        easynet_sdk.BidiSessionAdapter(_FakeBidi(timeout=True))
-    )
+    timed_out = BidiSession(easynet_sdk.BidiSessionAdapter(_FakeBidi(timeout=True)))
     with pytest.raises(DeadlineExceeded) as raised:
         timed_out.recv(timeout=0.01)
     assert raised.value.reason == "client_wait_timeout"
 
     disconnected_channel = _FakeBidi()
-    disconnected = BidiSession(
-        easynet_sdk.BidiSessionAdapter(disconnected_channel)
-    )
+    disconnected = BidiSession(easynet_sdk.BidiSessionAdapter(disconnected_channel))
     assert disconnected.recv(timeout=0.01) is None
     assert not disconnected_channel.cancelled
     assert not disconnected_channel.closed
@@ -1216,6 +1274,175 @@ def test_agent_handle_remote_addresses_agent_owner():
     assert wire["args"] == {"prompt": "hi"}
 
 
+def test_bare_agent_handle_binds_paired_user_and_returns_agent_profile():
+    client, _ = make_client()
+
+    handle = client.agent("claude-code")
+
+    assert isinstance(handle, RemoteAgent)
+    assert handle.name == "claude-code"
+    assert handle.owner_ura == "easynet:///r/acme/agent/silan.claude-code"
+
+
+def test_agent_chat_preserves_benchmark_messages_and_joins_native_trace():
+    response = ok_response(
+        {
+            "reply": "MATCH (c:Case) RETURN count(c)",
+            "tool_calls": [],
+            "usage": {"input_tokens": 7, "output_tokens": 3},
+            "elapsed_ms": 1,
+            "session_id": "unused-strict-session",
+        }
+    )
+    client, transport = make_client(
+        responses=[response],
+        traces=[native_agent_trace()],
+    )
+    messages = [
+        {"role": "system", "content": "Return only SIGNAL."},
+        {"role": "user", "content": "Count all cases."},
+    ]
+
+    result = client.agent("claude-code").chat(
+        messages=messages,
+        subject="benchmark://enterprise_knowledge_text2signal/case-1",
+        execution={"cwd": "benchmarks/run-1/case-1", "timeout_ms": 300_000},
+    )
+
+    wire = transport.invocations[0]
+    assert wire["callee_ura"] == "easynet:///r/acme/agent/silan.claude-code"
+    assert (
+        wire["descriptor_ref"] == "easynet:///r/acme/ability/"
+        "silan.claude-code.claude-code.chat@1.0.0"
+    )
+    assert wire["args"] == {
+        "messages": messages,
+        "execution": {
+            "cwd": "benchmarks/run-1/case-1",
+            "timeout_ms": 300_000,
+            "isolation": "strict",
+        },
+    }
+    assert wire["metadata"] == {
+        "easyremote.external_subject": (
+            "benchmark://enterprise_knowledge_text2signal/case-1"
+        ),
+        "easyremote.profile": "agent.chat.strict.v1",
+    }
+    assert "/benchmark/invocation-subject/" in wire["subject_ura"]
+    assert transport.trace_requests[0]["request_id"] == "inv-1"
+    assert result.prediction == "MATCH (c:Case) RETURN count(c)"
+    assert result.request_id == "inv-1"
+    assert result.invocation_ura.endswith("/invocation/inv-1/history")
+    assert result.trace_id == "trace-agent-1"
+    assert result.status == "completed"
+    assert result.usage == {"input_tokens": 7, "output_tokens": 3}
+    assert result.trace == native_agent_trace().to_dict()
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        [{"role": "assistant", "content": "prior"}],
+        [
+            {"role": "system", "content": "rules"},
+            {"role": "user", "content": "first"},
+            {"role": "user", "content": "second"},
+        ],
+    ],
+)
+def test_agent_chat_rejects_non_benchmark_conversation_shapes(messages):
+    client, transport = make_client()
+
+    with pytest.raises(InvalidArgument):
+        client.agent("claude-code").chat(
+            messages=messages,
+            subject="benchmark://suite/case",
+            execution={"cwd": "benchmarks/run/case", "timeout_ms": 1_000},
+        )
+
+    assert transport.invocations == []
+
+
+def test_agent_chat_preserves_runtime_failure_identity():
+    class FailingAgentTransport(FakeTransport):
+        def invoke(self, draft):
+            self.invocations.append(draft.to_json_dict())
+            raise InternalError(
+                "agent process failed",
+                reason="ability_failed",
+                invocation_id="inv-failed-1",
+            )
+
+    failure_trace = native_agent_trace("inv-failed-1", "failed")
+    transport = FailingAgentTransport(traces=[failure_trace])
+    client = Client(
+        transport=transport,
+        identity=IDENTITY,
+        invocation_policy=FreshRoot(ResolvedTargetSubject()),
+    )
+
+    with pytest.raises(InternalError) as exc_info:
+        client.agent("claude-code").chat(
+            messages=[{"role": "user", "content": "Count all cases."}],
+            subject="benchmark://suite/case",
+            execution={"cwd": "benchmarks/run/case", "timeout_ms": 1_000},
+        )
+
+    assert exc_info.value.invocation_id == "inv-failed-1"
+    assert exc_info.value.trace == failure_trace.to_dict()
+    assert exc_info.value.trace_lookup_error is None
+    assert transport.trace_requests[0]["request_id"] == "inv-failed-1"
+
+
+def test_agent_chat_trace_lookup_failure_does_not_mask_runtime_failure():
+    class FailingAgentTransport(FakeTransport):
+        def invoke(self, draft):
+            self.invocations.append(draft.to_json_dict())
+            raise InternalError(
+                "agent process failed",
+                reason="ability_failed",
+                invocation_id="inv-failed-2",
+            )
+
+    transport = FailingAgentTransport()
+    client = Client(
+        transport=transport,
+        identity=IDENTITY,
+        invocation_policy=FreshRoot(ResolvedTargetSubject()),
+    )
+
+    with pytest.raises(InternalError) as exc_info:
+        client.agent("claude-code").chat(
+            messages=[{"role": "user", "content": "Count all cases."}],
+            subject="benchmark://suite/case",
+            execution={"cwd": "benchmarks/run/case", "timeout_ms": 1_000},
+        )
+
+    assert str(exc_info.value) == "agent process failed"
+    assert exc_info.value.invocation_id == "inv-failed-2"
+    assert exc_info.value.trace is None
+    assert exc_info.value.trace_lookup_error == (
+        "AssertionError: no fake invocation trace queued"
+    )
+
+
+def test_agent_chat_rejects_native_trace_without_matching_record():
+    client, _ = make_client(
+        responses=[ok_response({"reply": "SELECT 1", "tool_calls": [], "usage": {}})],
+        traces=[native_agent_trace("different-request")],
+    )
+
+    with pytest.raises(InternalError) as exc_info:
+        client.agent("claude-code").chat(
+            messages=[{"role": "user", "content": "Count all cases."}],
+            subject="benchmark://suite/case",
+            execution={"cwd": "benchmarks/run/case", "timeout_ms": 1_000},
+        )
+
+    assert exc_info.value.reason == "trace_record_missing"
+
+
 def test_device_handle_call_matches_node_target():
     client, transport = make_client()
     client.device("gpu-2").call("chat", prompt="hi")
@@ -1304,8 +1531,7 @@ def test_hub_handle_projects_product_policy_onto_realm_authority():
     wire = transport.invocations[0]
     assert wire["callee_ura"] == "easynet:///r/acme/authority"
     assert (
-        wire["descriptor_ref"]
-        == "easynet:///r/acme/ability/authority.er.route@1.0.0"
+        wire["descriptor_ref"] == "easynet:///r/acme/ability/authority.er.route@1.0.0"
     )
 
 
@@ -1420,9 +1646,9 @@ def test_discovered_descriptor_ref_is_used_for_canonical_ura_call():
 
     assert result == {"source": "native"}
     assert transport.invocations[1]["descriptor_ref"] == descriptor_ref
-    assert (
-        transport._descriptor_resolver.requests == []
-    ), "discovered descriptor_ref must bypass local diagnostics resolution"
+    assert transport._descriptor_resolver.requests == [], (
+        "discovered descriptor_ref must bypass local diagnostics resolution"
+    )
 
 
 def test_round_robin_alternates_device_candidates():

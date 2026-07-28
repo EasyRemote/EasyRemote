@@ -168,12 +168,37 @@ def test_install_invokes_ability_deploy_with_resource_ref(tmp_path):
     )
     assert wire["subject_ura"].startswith("easynet:///r/acme/resource/device.dev-a/fs/")
     assert wire["args"]["node_id"] == "local"
+    assert wire["callee_ura"] == DEVICE_URA
+    assert wire["args"]["target_ura"] == DEVICE_URA
     ref = wire["args"]["resource_ref"]
     assert ref["resource_ura"] == wire["subject_ura"]
     assert ref["owner_ura"] == DEVICE_URA
     assert ref["namespace"] == "fs"
     assert ref["capability"] == "read"
     assert ref["revision"] == "fs-local-mapping-v1"
+
+
+def test_install_resolves_named_node_to_canonical_target_ura(tmp_path):
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "ability.json").write_text("{}")
+    client, transport = client_with(
+        ok_response(
+            {
+                "install_id": "inst-1",
+                "ability_ura": "easynet:///r/acme/ability/device.gpu-2.er.fn",
+                "state": "ACTIVE",
+            }
+        )
+    )
+
+    result = AbilityControl(client).install(package, node="gpu-2")
+
+    assert result.node_id == "gpu-2"
+    wire = transport.invocations[0]
+    assert wire["callee_ura"] == "easynet:///r/acme/device/gpu-2"
+    assert wire["args"]["node_id"] == "gpu-2"
+    assert wire["args"]["target_ura"] == "easynet:///r/acme/device/gpu-2"
 
 
 def test_install_rejects_missing_package(tmp_path):

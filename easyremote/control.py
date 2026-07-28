@@ -202,6 +202,7 @@ class AbilityControl:
         node_id = node.strip()
         if not node_id:
             raise InvalidArgument("node must not be empty", reason="empty_node")
+        target_ura = self._deploy_target_ura(node_id)
         package = Path(path)
         if not package.is_dir():
             raise InvalidArgument(
@@ -212,14 +213,20 @@ class AbilityControl:
         resource_ura = str(ref["resource_ura"])
         result = self._invoke(
             "ability.deploy",
-            callee_ura=self._client._who().device_ura,
+            callee_ura=target_ura,
             subject_ura=resource_ura,
             args={
                 "resource_ref": ref,
                 "node_id": node_id,
+                "target_ura": target_ura,
             },
         )
         return AbilityInstallResult.from_wire(result, node_id=node_id)
+
+    def _deploy_target_ura(self, node_id: str) -> str:
+        if node_id == "local":
+            return self._client._who().device_ura
+        return self._client.device(node_id).owner_ura
 
     def list(
         self,

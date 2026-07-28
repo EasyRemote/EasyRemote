@@ -197,6 +197,38 @@ hub.call("route", target="gpu-2")           # ad-hoc, no stub
 cross-realm owner URA is accepted but only routes where federation peers are
 configured. See [`examples/06_owner_handles.py`](examples/06_owner_handles.py).
 
+### Evaluate a CLI Agent as a function
+
+`agent.chat` invokes a registered local CLI Agent as the system under test. The
+structured profile accepts one user message with one optional preceding system
+message and requires an Agent-root-relative working directory. It does not
+accept prior assistant turns, ambient context, attachments, skills, or session
+resume state.
+
+```python
+result = Client().agent("claude-code").chat(
+    messages=[
+        {"role": "system", "content": "Return only the requested query."},
+        {"role": "user", "content": "<one public benchmark case>"},
+    ],
+    subject="benchmark://suite/case-001",
+    execution={"cwd": "benchmark-runs/run-001/case-001", "timeout_ms": 300_000},
+)
+
+print(result.prediction)
+print(result.request_id, result.invocation_ura, result.trace_id)
+print(result.trace)  # Axon InvocationTraceGraph.to_dict()
+```
+
+The external `subject` is retained as invocation metadata and projected to a
+device-owned canonical subject URA. Invocation identifiers, terminal state, and
+the trace graph are read back from the native Axon ledger record. Benchmark
+case selection, hidden answers, and scoring remain outside EasyRemote.
+When an invocation fails after receiving a runtime identity, the raised
+`RemoteError` retains that `invocation_id` and attempts to attach the matching
+native graph as `error.trace`; `error.trace_lookup_error` explains an unavailable
+post-failure lookup without masking the original failure.
+
 ### Use-case facade map
 
 | Use case | Minimal facade |
@@ -204,6 +236,7 @@ configured. See [`examples/06_owner_handles.py`](examples/06_owner_handles.py).
 | Publish local functions | `node = ComputeNode(); @node.register; node.serve()` |
 | Result-first call | `Client(invocation_policy=policy).execute("ai_inference", prompt="hi")` |
 | Target a device / agent / hub | `Client(invocation_policy=policy).device("gpu-2").call(...)` and the corresponding `agent(...)` / `hub()` handles |
+| Evaluate a registered CLI Agent | `Client().agent("claude-code").chat(messages=..., subject=..., execution=...)` |
 | Inspect and send the invocation tuple | `prepared = Client(invocation_policy=policy).prepare(...); prepared.tuple; prepared.send()` |
 | Compose a mission in Python | `Pipeline("nightly").step(...); pipe.run()` |
 | Run existing EAL source | `Client().missions.run_eal(source, label="nightly")` or `Client().missions.run_file("nightly.eal")` |

@@ -10,6 +10,8 @@ vocabulary.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import easynet_sdk
 
 __all__ = [
@@ -37,6 +39,10 @@ class RemoteError(Exception):
             failure (e.g. ``"daemon_down"``), suitable for branching.
         invocation_id: The invocation this error belongs to, when known.
         retry_after: Server-suggested backoff in seconds, when provided.
+        trace: Native Axon invocation graph, when a product facade could read
+            it after the failure.
+        trace_lookup_error: Why post-failure trace lookup was unavailable. This
+            never replaces the original invocation error.
     """
 
     KIND = "INTERNAL"
@@ -53,6 +59,8 @@ class RemoteError(Exception):
         self.reason = reason
         self.invocation_id = invocation_id
         self.retry_after = retry_after
+        self.trace: Mapping[str, object] | None = None
+        self.trace_lookup_error: str | None = None
 
     @property
     def kind(self) -> str:
@@ -198,7 +206,7 @@ def error_from_sdk(error: easynet_sdk.SDKError) -> RemoteError:
 def is_runtime_offline_error(error: easynet_sdk.SDKError) -> bool:
     """Whether a canonical SDK error means the local runtime is unreachable."""
 
-    return error.code == easynet_sdk.ErrorCode.RUNTIME_OFFLINE
+    return bool(error.code == easynet_sdk.ErrorCode.RUNTIME_OFFLINE)
 
 
 # Every concrete taxonomy class keyed by its wire `KIND` string, so a

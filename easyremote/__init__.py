@@ -9,6 +9,7 @@ implemented and tested.
 """
 
 from ._version import __version__
+from .agent import AgentChatResult, RemoteAgent, agent
 from .client import (
     BidiSession,
     CallTarget,
@@ -61,6 +62,7 @@ __all__ = [
     "AbilityControl",
     "AbilityInstallResult",
     "AbilityRecord",
+    "AgentChatResult",
     "AgentControl",
     "AgentRecord",
     "AgentStartResult",
@@ -90,6 +92,7 @@ __all__ = [
     "Pipeline",
     "PreparedInvocation",
     "RemoteAbility",
+    "RemoteAgent",
     "RemoteError",
     "RemoteFunction",
     "RemoteOwner",
@@ -99,6 +102,7 @@ __all__ = [
     "Stream",
     "Unavailable",
     "__version__",
+    "agent",
     "configure",
     "remote",
 ]

@@ -73,6 +73,7 @@ __all__ = [
 ]
 
 if TYPE_CHECKING:
+    from .agent import RemoteAgent
     from .control import AbilityControl, AgentControl
     from .mission import MissionControl
 
@@ -536,14 +537,38 @@ class Client:
         """
         return RemoteOwner(self, self._owner_ura(device_id, "device"))
 
-    def agent(self, spec: str) -> RemoteOwner:
+    def agent(self, spec: str) -> RemoteAgent:
         """A handle to an agent's abilities.
 
-        ``spec`` is the ``<user-id>.<agent-id>`` owner token in this
-        client's realm, or a full agent owner URA. Agent callees are a
-        first-class daemon route (hosted locally or on a same-realm device).
+        ``spec`` is an agent id local to the paired user, a
+        ``<user-id>.<agent-id>`` owner token, or a full agent owner URA.
         """
-        return RemoteOwner(self, self._owner_ura(spec, "agent"))
+        from .agent import RemoteAgent
+
+        normalized = str(spec).strip()
+        if not normalized:
+            raise InvalidArgument(
+                "agent spec must not be empty",
+                reason="invalid_agent_spec",
+            )
+        owner_spec = normalized
+        if not self._addressing.is_owner_ura(normalized) and "." not in normalized:
+            username = (self._who().username or "").strip()
+            if not username:
+                raise InvalidArgument(
+                    "a bare agent id requires a paired user identity",
+                    reason="missing_agent_owner",
+                )
+            owner_spec = f"{username}.{normalized}"
+        owner_ura = self._owner_ura(owner_spec, "agent")
+        projection = easynet_sdk.parse_ura(owner_ura)
+        agent_name = str(projection.components.get("agent_id") or "").strip()
+        if not agent_name:
+            raise InvalidArgument(
+                f"agent owner URA has no agent id: {owner_ura}",
+                reason="invalid_agent_spec",
+            )
+        return RemoteAgent(self, owner_ura, agent_name)
 
     def hub(self) -> RemoteOwner:
         """A handle to the realm hub's abilities."""
@@ -761,6 +786,17 @@ class Client:
 
     def _connected(self) -> Transport:
         return self._unary_pool.connected_transport()
+
+    def _invocation_trace(self, request_id: str) -> easynet_sdk.InvocationTraceGraph:
+        local = self._who().device_ura
+        return self._connected().invocation_trace(
+            runtime_root_context(
+                caller_ura=local,
+                callee_ura=local,
+                subject_ura=local,
+            ),
+            request_id=request_id,
+        )
 
     @property
     def _transport(self) -> Transport | None:

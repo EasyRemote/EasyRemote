@@ -45,6 +45,9 @@ class Transport:
         self._descriptor_provider = easynet_sdk.RuntimeAbilityDescriptorProvider(
             self._runtime_ability,
         )
+        self._receipt_provider = easynet_sdk.RuntimeReceiptProvider(
+            self._runtime_ability
+        )
 
     @classmethod
     def connect(cls, control_path: str | None = None) -> Transport:
@@ -77,7 +80,7 @@ class Transport:
         arguments: object,
     ) -> dict[str, Any]:
         try:
-            return self._runtime_ability.invoke(call, ability_name, arguments)
+            return dict(self._runtime_ability.invoke(call, ability_name, arguments))
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
@@ -101,6 +104,23 @@ class Transport:
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
         return [_ability_descriptor_row(descriptor) for descriptor in page.descriptors]
+
+    def invocation_trace(
+        self,
+        call: easynet_sdk.RuntimeCallContext,
+        *,
+        request_id: str,
+    ) -> easynet_sdk.InvocationTraceGraph:
+        try:
+            result = self._receipt_provider.trace(
+                easynet_sdk.ReceiptTraceRequest(
+                    call=call,
+                    lookup=easynet_sdk.ReceiptLookup(request_id=request_id),
+                )
+            )
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
+        return result.graph
 
     def invoke(
         self,
