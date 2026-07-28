@@ -42,8 +42,15 @@ class _DescriptorRuntime:
 
     def resolve_descriptor_ref(self, request_json: bytes) -> bytes:
         request = json.loads(request_json.decode("utf-8"))
+        callee_ura = str(request["callee_ura"])
+        ability = str(request["ability"])
+        ability_ura = (
+            ability
+            if ability.startswith("easynet:///")
+            else self._addressing.owner_ability_ura(callee_ura, ability)
+        )
         descriptor_ref = self._addressing.canonical_ability_descriptor_ref(
-            str(request["ability"]),
+            ability_ura,
             "1.0.0",
         )
         return json.dumps({"descriptor_ref": descriptor_ref}).encode()

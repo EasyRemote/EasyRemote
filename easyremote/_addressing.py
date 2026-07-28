@@ -55,13 +55,17 @@ class DiscoveryCache:
     def replace(self, candidates: Iterable[Candidate]) -> None:
         self._schemas.clear()
         self._schemas_by_ura.clear()
+        self._descriptor_refs_by_ura.clear()
         self._candidates.clear()
         self._round_robin.clear()
+        self.remember(candidates)
+
+    def remember(self, candidates: Iterable[Candidate]) -> None:
         for info in candidates:
             if info.name and info.ability_ura:
                 self._candidates.setdefault(info.name, []).append(info)
             if info.ability_ura and info.input_schema:
-                self._schemas_by_ura[info.ability_ura] = info.input_schema
+                self._schemas_by_ura[info.ability_ura] = dict(info.input_schema)
             if info.ability_ura and info.descriptor_ref:
                 self._descriptor_refs_by_ura[info.ability_ura] = info.descriptor_ref
         for verb, group in self._candidates.items():

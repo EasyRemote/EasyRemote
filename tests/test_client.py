@@ -132,9 +132,15 @@ class _FakeDescriptorResolver:
     def resolve_descriptor_ref(self, request_json: bytes) -> bytes:
         request = json.loads(request_json.decode("utf-8"))
         self.requests.append(request)
+        callee_ura = str(request.get("callee_ura") or "").strip()
         ability = str(request.get("ability") or "").strip()
+        ability_ura = (
+            ability
+            if ability.startswith("easynet:///")
+            else self._addressing.owner_ability_ura(callee_ura, ability)
+        )
         descriptor_ref = self._addressing.canonical_ability_descriptor_ref(
-            ability,
+            ability_ura,
             "1.0.0",
         )
         return json.dumps(
@@ -322,21 +328,25 @@ def make_client(**kwargs):
 
 
 def fake_signer():
-    return easynet_sdk.Signer.from_signature(
-        easynet_sdk.SignerHandle(
-            profile="identity",
-            signer_id="signer-dev-a",
-            owner_ura=DEVICE_URA,
-            key_id="dev-a-key",
-            algorithm="ed25519",
-            policy={},
-            metadata={},
-        ),
-        easynet_sdk.InvocationSignature(
-            algorithm="ed25519",
-            signature_base64="c2lnbmF0dXJl",
-        ),
+    class _StaticSignatureProvider:
+        def sign(self, material, handle):
+            _ = material
+            return easynet_sdk.InvocationSignature(
+                algorithm=handle.algorithm,
+                signature_base64="c2lnbmF0dXJl",
+                key_id_hint=handle.signer_id,
+            )
+
+    handle = easynet_sdk.SignerHandle(
+        profile="identity",
+        signer_id="signer-dev-a",
+        owner_ura=DEVICE_URA,
+        key_id="dev-a-key",
+        algorithm="ed25519",
+        policy={},
+        metadata={},
     )
+    return easynet_sdk.Signer(handle=handle, provider=_StaticSignatureProvider())
 
 
 # -- identity and addressing --------------------------------------------------

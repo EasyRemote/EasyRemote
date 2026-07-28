@@ -34,7 +34,6 @@ import easynet_sdk
 from ._host import HostServer
 from ._host.server import HostedFunction
 from ._json import dumps_wire
-from ._version import __version__
 from .config import settings
 from .context import Context
 from .control import AbilityControl
@@ -290,32 +289,14 @@ class ComputeNode:
         output_schema: dict[str, Any] | None,
     ) -> Path:
         # Canonical manifest for the daemon's `ability.deploy` install
-        # transaction. `name` is the verb only (the daemon's
-        # AbilityManifest.name forbids dots); `namespace` carries the
-        # `er` segment separately, and the daemon assembles the wire key
-        # `er.<verb>` from them. `tool_name` keeps the qualified form for
-        # human-facing surfaces. Schemas keep their true semantics: the
-        # stdin contract has no missing-template failure mode, so
-        # optionals stay optional.
-        manifest: dict[str, Any] = {
-            "admission_action": "stream",
-            "category": "easyremote",
-            "description": description,
-            "destructive_hint": False,
-            "idempotent_hint": False,
-            "input_schema": input_schema,
-            "instructions": description,
-            "name": local_name,
-            "namespace": self._namespace,
-            "open_world_hint": False,
-            "prerequisites": [],
-            "read_only_hint": False,
-            "tags": ["easyremote"],
-            "tool_name": qualified,
-            "version": __version__,
-        }
-        if output_schema is not None:
-            manifest["output_schema"] = output_schema
+        # transaction. The SDK builder owns the deploy-bundle DTO shape so this
+        # product package cannot drift into legacy manifest metadata
+        # (`category`, `tool_name`, `version`, hint fields). `name` is the verb
+        # only; `namespace` carries the public key segment, and the daemon
+        # assembles the wire key `er.<verb>` from them. Schemas keep their true
+        # semantics: the stdin contract has no missing-template failure mode,
+        # so optionals stay optional.
+        #
         # EVERY ability routes through the host_stream executor: it carries
         # full args + caller identity in the request frame (the shell
         # executor nulls stdin and only templates argv, so it cannot pass
@@ -323,11 +304,18 @@ class ComputeNode:
         # terminal frame; a generator emits many. One path, no exec
         # mismatch. Field names match the daemon's AbilityExec::HostStream
         # serde shape (internally tagged `kind`, snake_case) verbatim.
-        manifest["exec"] = {
-            "kind": "host_stream",
-            "host_socket": str(self._host.socket_path),
-            "function": qualified,
-        }
+        manifest = easynet_sdk.RuntimeAbilityPackageManifest(
+            name=local_name,
+            namespace=self._namespace,
+            description=description,
+            admission_action="stream",
+            input_schema=input_schema,
+            output_schema=output_schema,
+            exec=easynet_sdk.HostStreamExec(
+                host_socket=str(self._host.socket_path),
+                function=qualified,
+            ),
+        ).to_mapping()
 
         package_dir = self._abilities_dir / qualified
         package_dir.mkdir(parents=True, exist_ok=True)

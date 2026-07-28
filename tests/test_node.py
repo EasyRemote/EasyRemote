@@ -102,12 +102,15 @@ def test_register_writes_scaffold_shaped_ability_json(node):
     manifest = read_manifest(ai_inference.info)
     # Canonical shape for the daemon's install transaction: name is the
     # verb only (AbilityManifest.name forbids dots); namespace carries
-    # `er` separately; tool_name keeps the qualified human-facing form.
+    # `er` separately. Product-facing display names stay outside the
+    # runtime package manifest.
+    assert manifest["schema_version"] == "1"
     assert manifest["name"] == "ai_inference"
     assert manifest["namespace"] == "er"
-    assert manifest["tool_name"] == "er.ai_inference"
     assert manifest["description"] == "Generate a completion on this device."
-    assert manifest["category"] == "easyremote"
+    assert "category" not in manifest
+    assert "tool_name" not in manifest
+    assert "version" not in manifest
 
     # stdin contract: no argv templates, no required-all rewriting —
     # optionals keep their true schema semantics.
@@ -161,13 +164,14 @@ def test_device_ontology_naming_paired(tmp_path, monkeypatch):
     credentials = tmp_path / "credentials.json"
     credentials.write_text(
         json.dumps(
-            {
-                "realm": "acme",
-                "runtime_instance_id": "dev-a",
-                "hub_endpoint": "h:443",
-            }
+                {
+                    "realm": "acme",
+                    "runtime_instance_id": "dev-a",
+                    "principal": "silan",
+                    "control_plane_endpoint": "h:443",
+                }
+            )
         )
-    )
     monkeypatch.setenv("EASYNET_CREDENTIALS", str(credentials))
     node = ComputeNode(
         abilities_dir=tmp_path / "abilities", ability_control=FakeAbilityControl()

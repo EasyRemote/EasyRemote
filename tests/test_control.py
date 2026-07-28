@@ -187,6 +187,7 @@ def test_list_abilities_sends_owner_scope_once():
     ability = {
         "name": "er.fn",
         "ability_ura": "easynet:///r/acme/ability/device.dev-a.er.fn",
+        "descriptor_ref": "easynet:///r/acme/ability/device.dev-a.er.fn@1.0.0#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!stream",
         "owner_ura": DEVICE_URA,
         "descriptor_version": "1.0.0",
         "description": "demo",
@@ -198,6 +199,11 @@ def test_list_abilities_sends_owner_scope_once():
     records = AbilityControl(client).list(owner_ura=DEVICE_URA)
 
     assert records[0].ability_ura == ability["ability_ura"]
+    assert records[0].descriptor_ref == ability["descriptor_ref"]
+    assert (
+        client._addressing.cache.descriptor_ref_for_ura(ability["ability_ura"])
+        == ability["descriptor_ref"]
+    )
     wire = transport.invocations[0]
     assert (
         wire["descriptor_ref"]
@@ -279,6 +285,18 @@ def test_remote_node_catalogue_targets_that_device_owner():
         wire["descriptor_ref"]
         == "easynet:///r/acme/ability/device.gpu-2.meta.list_abilities@1.0.0"
     )
+
+
+def test_list_device_with_explicit_owner_targets_that_device_catalogue():
+    client, transport = client_with(ok_response({"abilities": []}))
+
+    AbilityControl(client).list_device("gpu-2")
+
+    wire = transport.invocations[0]
+    assert wire["callee_ura"] == "easynet:///r/acme/device/gpu-2"
+    assert wire["args"] == {
+        "owner_ura": "easynet:///r/acme/device/gpu-2",
+    }
 
 
 def test_agent_add_and_list_use_daemon_system_abilities():

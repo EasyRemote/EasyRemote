@@ -176,7 +176,6 @@ def _control_discovery_dict(
             "max": discovery.supported_ipc_versions.max,
         },
         "capability_flags": list(discovery.capability_flags),
-        "pages_port": discovery.pages_port,
     }
 
 

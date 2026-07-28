@@ -99,7 +99,6 @@ def test_valid_json_round_trips(tmp_path):
                 "daemon_version": "0.65.0",
                 "supported_ipc_versions": {"min": 1, "max": 1},
                 "capability_flags": ["runtime.invocation"],
-                "pages_port": 8080,
             }
         )
     )
@@ -112,7 +111,6 @@ def test_valid_json_round_trips(tmp_path):
         "daemon_version": "0.65.0",
         "supported_ipc_versions": {"min": 1, "max": 1},
         "capability_flags": ["runtime.invocation"],
-        "pages_port": 8080,
     }
 
 

@@ -56,6 +56,7 @@ class AbilityRecord:
     state: str = ""
     input_schema: Mapping[str, Any] = field(default_factory=dict)
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    descriptor_ref: str = ""
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -73,6 +74,7 @@ class AbilityRecord:
             state=str(value.get("state") or ""),
             input_schema=_optional_dict(value.get("input_schema")),
             metadata=_optional_dict(value.get("metadata")),
+            descriptor_ref=str(value.get("descriptor_ref") or ""),
             raw=dict(value),
         )
 
@@ -285,16 +287,15 @@ class AbilityControl:
             records = [
                 record for record in records if _record_belongs_to_user(record, user)
             ]
+        self._client._addressing.cache.remember(records)
         return records
 
     def list_device(self, device: str | None = None) -> builtins.list[AbilityRecord]:
         """List abilities owned by this device, or another device owner."""
-        owner = (
-            self._client._who().device_ura
-            if device is None
-            else self._client.device(device).owner_ura
-        )
-        return self.list(owner_ura=owner)
+        if device is None:
+            return self.list(owner_ura=self._client._who().device_ura)
+        owner = self._client.device(device).owner_ura
+        return self.list(node=device, owner_ura=owner)
 
     def list_user(
         self,
