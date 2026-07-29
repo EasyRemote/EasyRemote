@@ -2,6 +2,7 @@
 
 import easynet_sdk
 import pytest
+from conftest import expected_descriptor_ref
 from test_client import IDENTITY, FakeTransport, ok_response
 
 from easyremote.client import Client
@@ -24,9 +25,8 @@ def test_run_eal_uses_daemon_unary_system_ability():
     assert run.run_id == "run-1"
     assert transport.carriers == ["unary"]
     wire = transport.invocations[0]
-    assert (
-        wire["descriptor_ref"]
-        == "easynet:///r/acme/ability/device.dev-a.mission.run@1.0.0"
+    assert wire["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/device.dev-a.mission.run"
     )
     assert wire["args"] == {
         "source": 'mission "nightly" {}\n',
@@ -60,8 +60,8 @@ def test_track_and_cancel_validate_run_id_and_use_unary():
 
     assert transport.carriers == ["unary", "unary"]
     assert transport.invocations[0]["args"] == {"run_id": "run-9"}
-    assert transport.invocations[1]["descriptor_ref"].endswith(
-        "/ability/device.dev-a.mission.cancel@1.0.0"
+    assert transport.invocations[1]["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/device.dev-a.mission.cancel"
     )
     with pytest.raises(InvalidArgument) as exc_info:
         control.track(" ")
@@ -85,7 +85,9 @@ def test_events_fetches_mission_event_page():
                 "occurred_unix_ms": 1_700_000_000_000,
                 "terminal": True,
                 "payload": {"ok": True},
-                "receipt": {"receipt_ura": "easynet:///r/acme/resource/agent.easyremote.test/invocation/r-1/receipt"},
+                "receipt": {
+                    "receipt_ura": "easynet:///r/acme/resource/agent.easyremote.test/invocation/r-1/receipt"
+                },
             }
         ],
     }
@@ -104,8 +106,8 @@ def test_events_fetches_mission_event_page():
     assert page["next_cursor_sequence"] == 5
     assert page["events"][0]["event_type"] == "completed"
     assert handle_page["next_cursor_sequence"] == 6
-    assert transport.invocations[0]["descriptor_ref"].endswith(
-        "/ability/device.dev-a.mission.events@1.0.0"
+    assert transport.invocations[0]["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/device.dev-a.mission.events"
     )
     assert transport.invocations[0]["args"] == {
         "run_id": "run-9",

@@ -10,6 +10,19 @@ from pathlib import Path
 import pytest
 
 RuntimeReceiptFactory = Callable[..., dict[str, object]]
+TEST_DESCRIPTOR_HASH = "a" * 64
+TEST_DESCRIPTOR_ACTION = "invoke"
+
+
+def expected_descriptor_ref(
+    ability_ura: str,
+    *,
+    version: str = "1.0.0",
+    action: str = TEST_DESCRIPTOR_ACTION,
+) -> str:
+    """Return the descriptor-bound ref expected from an in-memory test Runtime."""
+
+    return f"{ability_ura}@{version}#{TEST_DESCRIPTOR_HASH}!{action}"
 
 
 @pytest.fixture()

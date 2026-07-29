@@ -2,6 +2,7 @@
 
 import easynet_sdk
 import pytest
+from conftest import expected_descriptor_ref
 from test_client import IDENTITY, FakeTransport, ok_response  # shared fakes
 
 from easyremote.client import Client
@@ -303,9 +304,8 @@ def test_run_submits_source_to_mission_run():
     run = pipe.run()
     wire = transport.invocations[0]
     assert transport.carriers == ["unary"]
-    assert (
-        wire["descriptor_ref"]
-        == "easynet:///r/acme/ability/device.dev-a.mission.run@1.0.0"
+    assert wire["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/device.dev-a.mission.run"
     )
     assert wire["args"]["label"] == "nightly"
     assert 'mission "nightly"' in wire["args"]["source"]
@@ -327,14 +327,12 @@ def test_track_and_cancel_use_run_id():
     assert run.track() == {"state": "running"}
     run.cancel()
     assert transport.carriers == ["unary", "unary", "unary"]
-    assert (
-        transport.invocations[1]["descriptor_ref"]
-        == "easynet:///r/acme/ability/device.dev-a.mission.track@1.0.0"
+    assert transport.invocations[1]["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/device.dev-a.mission.track"
     )
     assert transport.invocations[1]["args"] == {"run_id": "run-9"}
-    assert (
-        transport.invocations[2]["descriptor_ref"]
-        == "easynet:///r/acme/ability/device.dev-a.mission.cancel@1.0.0"
+    assert transport.invocations[2]["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/device.dev-a.mission.cancel"
     )
 
 
@@ -369,9 +367,8 @@ def test_pipeline_run_handle_fetches_events():
 
     assert page["events"][0]["payload"] == {"reply": "done"}
     assert transport.carriers == ["unary", "unary"]
-    assert (
-        transport.invocations[1]["descriptor_ref"]
-        == "easynet:///r/acme/ability/device.dev-a.mission.events@1.0.0"
+    assert transport.invocations[1]["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/device.dev-a.mission.events"
     )
 
 
@@ -411,7 +408,9 @@ def test_pipeline_run_handle_tails_events_until_terminal():
                             "occurred_unix_ms": 1_700_000_000_001,
                             "terminal": True,
                             "payload": {"reply": "done"},
-                            "receipt": {"receipt_ura": "easynet:///r/acme/resource/agent.easyremote.test/invocation/r-1/receipt"},
+                            "receipt": {
+                                "receipt_ura": "easynet:///r/acme/resource/agent.easyremote.test/invocation/r-1/receipt"
+                            },
                             "metadata": {},
                         }
                     ],

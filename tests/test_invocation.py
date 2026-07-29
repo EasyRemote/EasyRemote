@@ -5,6 +5,11 @@ import json
 
 import easynet_sdk
 import pytest
+from conftest import (
+    TEST_DESCRIPTOR_ACTION,
+    TEST_DESCRIPTOR_HASH,
+    expected_descriptor_ref,
+)
 
 from easyremote.errors import InternalError
 from easyremote.invocation import Invocation
@@ -52,6 +57,8 @@ class _DescriptorRuntime:
         descriptor_ref = self._addressing.canonical_ability_descriptor_ref(
             ability_ura,
             "1.0.0",
+            descriptor_hash=TEST_DESCRIPTOR_HASH,
+            action=TEST_DESCRIPTOR_ACTION,
         )
         return json.dumps({"descriptor_ref": descriptor_ref}).encode()
 
@@ -108,7 +115,7 @@ def test_sdk_provider_owns_complete_invocation_draft() -> None:
 
     assert draft.caller_ura == CALLER
     assert draft.callee_ura == "easynet:///r/test/device/callee"
-    assert draft.descriptor_ref == f"{ABILITY}@1.0.0"
+    assert draft.descriptor_ref == expected_descriptor_ref(ABILITY)
     assert draft.subject_ura == SUBJECT
     assert draft.nonce_base64 == NONCE
     assert draft.causal_context == {"form": "none"}

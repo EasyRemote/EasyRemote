@@ -2,9 +2,15 @@
 
 import base64
 import json
+
 import easynet_sdk
 import pytest
-from conftest import canonical_runtime_receipt_pair
+from conftest import (
+    TEST_DESCRIPTOR_ACTION,
+    TEST_DESCRIPTOR_HASH,
+    canonical_runtime_receipt_pair,
+    expected_descriptor_ref,
+)
 from easynet_sdk import InvocationLifecycleState as InvocationState
 
 from easyremote.client import Client
@@ -130,6 +136,8 @@ class _FakeRuntime:
         descriptor_ref = self._transport._addressing.canonical_ability_descriptor_ref(
             ability_ura,
             "1.0.0",
+            descriptor_hash=TEST_DESCRIPTOR_HASH,
+            action=TEST_DESCRIPTOR_ACTION,
         )
         return json.dumps({"descriptor_ref": descriptor_ref}).encode()
 
@@ -162,9 +170,8 @@ def test_install_invokes_ability_deploy_with_resource_ref(tmp_path):
 
     assert result.install_id == "inst-1"
     wire = transport.invocations[0]
-    assert (
-        wire["descriptor_ref"]
-        == "easynet:///r/acme/ability/device.dev-a.ability.deploy@1.0.0"
+    assert wire["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/device.dev-a.ability.deploy"
     )
     assert wire["subject_ura"].startswith("easynet:///r/acme/resource/device.dev-a/fs/")
     assert wire["args"]["node_id"] == "local"
@@ -212,7 +219,10 @@ def test_list_abilities_sends_owner_scope_once():
     ability = {
         "name": "er.fn",
         "ability_ura": "easynet:///r/acme/ability/device.dev-a.er.fn",
-        "descriptor_ref": "easynet:///r/acme/ability/device.dev-a.er.fn@1.0.0#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!stream",
+        "descriptor_ref": expected_descriptor_ref(
+            "easynet:///r/acme/ability/device.dev-a.er.fn",
+            action="stream",
+        ),
         "owner_ura": DEVICE_URA,
         "descriptor_version": "1.0.0",
         "description": "demo",
@@ -230,9 +240,8 @@ def test_list_abilities_sends_owner_scope_once():
         == ability["descriptor_ref"]
     )
     wire = transport.invocations[0]
-    assert (
-        wire["descriptor_ref"]
-        == "easynet:///r/acme/ability/device.dev-a.meta.list_abilities@1.0.0"
+    assert wire["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/device.dev-a.meta.list_abilities"
     )
     assert wire["args"] == {"owner_ura": DEVICE_URA}
 
@@ -306,9 +315,8 @@ def test_remote_node_catalogue_targets_that_device_owner():
     AbilityControl(client).list(node="gpu-2")
     wire = transport.invocations[0]
     assert wire["callee_ura"] == "easynet:///r/acme/device/gpu-2"
-    assert (
-        wire["descriptor_ref"]
-        == "easynet:///r/acme/ability/device.gpu-2.meta.list_abilities@1.0.0"
+    assert wire["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/device.gpu-2.meta.list_abilities"
     )
 
 
@@ -364,16 +372,16 @@ def test_agent_add_and_list_use_daemon_system_abilities():
     assert stopped.name == "caesura"
     assert stopped.stopped is True
     assert stopped.agent_ura == "easynet:///r/acme/agent/caesura"
-    assert transport.invocations[0]["descriptor_ref"].endswith(
-        "/ability/device.dev-a.agent.start@1.0.0"
+    assert transport.invocations[0]["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/device.dev-a.agent.start"
     )
     assert transport.invocations[0]["args"]["agent_type"] == "claude-code"
     assert transport.invocations[0]["args"]["materialize_directory"] is True
-    assert transport.invocations[1]["descriptor_ref"].endswith(
-        "/ability/device.dev-a.agent.list@1.0.0"
+    assert transport.invocations[1]["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/device.dev-a.agent.list"
     )
-    assert transport.invocations[2]["descriptor_ref"].endswith(
-        "/ability/device.dev-a.agent.stop@1.0.0"
+    assert transport.invocations[2]["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/device.dev-a.agent.stop"
     )
     assert transport.invocations[2]["args"] == {"name": "caesura"}
 
