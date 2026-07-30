@@ -24,10 +24,19 @@ PUBLIC_DISPATCH_METHODS = {
     "session",
     "stream",
 }
+RUNTIME_ROOT_CONTEXT_CONSUMERS = {
+    "invocation_trace",
+    "invoke_runtime_ability",
+    "list_ability_descriptors",
+}
 
 
 def test_public_invocation_ingress_requires_explicit_policy() -> None:
     assert _invocation_ingress_violations(_production_sources()) == []
+
+
+def test_runtime_root_context_is_confined_to_system_runtime_adapters() -> None:
+    assert _runtime_root_context_violations(_production_sources()) == []
 
 
 def test_invocation_ingress_gate_rejects_implicit_default_mutations() -> None:
@@ -94,6 +103,32 @@ def _child_policy(parent):
         parent=parent,
     )
 """
+    public_root_context = dict(sources)
+    public_root_context["easyremote/bad_public.py"] = """
+from .invocation_policy import runtime_root_context
+
+def derive_public_tuple(client):
+    local = client._who().device_ura
+    return runtime_root_context(
+        caller_ura=local,
+        callee_ura=local,
+        subject_ura=local,
+    )
+"""
+    wrapped_wrong_consumer = dict(sources)
+    wrapped_wrong_consumer["easyremote/bad_wrapper.py"] = """
+from .invocation_policy import runtime_root_context
+
+def dispatch(client):
+    local = client._who().device_ura
+    return client._connected().invoke(
+        runtime_root_context(
+            caller_ura=local,
+            callee_ura=local,
+            subject_ura=local,
+        )
+    )
+"""
 
     assert _invocation_ingress_violations(client_default)
     assert _invocation_ingress_violations(fail_open_prepare)
@@ -103,6 +138,8 @@ def _child_policy(parent):
     assert _invocation_ingress_violations(implicit_nonce_owner)
     assert _invocation_ingress_violations(retired_default_authority)
     assert _invocation_ingress_violations(hidden_context_default)
+    assert _runtime_root_context_violations(public_root_context)
+    assert _runtime_root_context_violations(wrapped_wrong_consumer)
 
 
 def _production_sources() -> dict[str, str]:
@@ -174,6 +211,49 @@ def _invocation_ingress_violations(sources: dict[str, str]) -> list[str]:
         if name == CLIENT_MODULE:
             violations.extend(_client_surface_violations(tree))
     return sorted(set(violations))
+
+
+def _runtime_root_context_violations(sources: dict[str, str]) -> list[str]:
+    violations: list[str] = []
+    for name, source in sources.items():
+        tree = ast.parse(source, filename=name)
+        parents = _parent_index(tree)
+        for node in ast.walk(tree):
+            if (
+                not isinstance(node, ast.Call)
+                or _call_name(node.func) != "runtime_root_context"
+            ):
+                continue
+            if not _is_runtime_root_context_adapter_argument(node, parents):
+                violations.append(
+                    f"{name}: runtime_root_context escapes system runtime "
+                    "adapter boundary"
+                )
+    return sorted(set(violations))
+
+
+def _is_runtime_root_context_adapter_argument(
+    node: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+) -> bool:
+    current = node
+    while parent := parents.get(current):
+        if isinstance(parent, ast.Call):
+            call_name = _call_name(parent.func)
+            if call_name in RUNTIME_ROOT_CONTEXT_CONSUMERS:
+                return True
+            if call_name != "runtime_root_context":
+                return False
+        current = parent
+    return False
+
+
+def _parent_index(tree: ast.AST) -> dict[ast.AST, ast.AST]:
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+    return parents
 
 
 def _client_surface_violations(tree: ast.Module) -> list[str]:
