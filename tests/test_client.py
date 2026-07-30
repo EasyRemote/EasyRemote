@@ -234,7 +234,6 @@ class FakeTransport:
         return self._invoker.build_target_invocation(request)
 
     def invoke_runtime_ability(self, call, ability_name, arguments):
-        _ = call
         response = (
             self.responses.pop(0) if self.responses else ok_response({"abilities": []})
         )
@@ -245,9 +244,17 @@ class FakeTransport:
             and "abilities" not in result
         ):
             result = {"abilities": result["candidates"]}
+        descriptor_action = "read" if ability_name == "meta.list_abilities" else "invoke"
+        ability_ura = self._addressing.owner_ability_ura(call.callee_ura, ability_name)
+        descriptor_ref = self._addressing.canonical_ability_descriptor_ref(
+            ability_ura,
+            call.descriptor_version or "1.0.0",
+            descriptor_hash=TEST_DESCRIPTOR_HASH,
+            action=descriptor_action,
+        )
         self.invocations.append(
             {
-                "descriptor_ref": f"runtime://{ability_name}",
+                "descriptor_ref": descriptor_ref,
                 "args": arguments,
             }
         )
@@ -703,7 +710,10 @@ def test_discovery_enables_positionals_and_fills_defaults():
     infos = client.functions()
     assert infos[0].ability_ura == "easynet:///r/acme/ability/user.er.fn"
     assert infos[0].qualified_name == "easynet:///r/acme/ability/user.er.fn"
-    assert transport.invocations[0]["descriptor_ref"] == "runtime://meta.list_abilities"
+    assert transport.invocations[0]["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/device.dev-a.meta.list_abilities",
+        action="read",
+    )
     assert transport.invocations[0]["args"] == {}
 
     client.execute("fn", 41)  # positional now mappable; default filled
@@ -737,7 +747,10 @@ def test_functions_with_owner_ura_namespace_discovers_canonical_owner():
 
     assert infos[0].qualified_name == "easynet:///r/acme/ability/dev.caesura.fn"
     wire = transport.invocations[0]
-    assert wire["descriptor_ref"] == "runtime://meta.list_abilities"
+    assert wire["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/device.dev-a.meta.list_abilities",
+        action="read",
+    )
     assert wire["args"] == {}
 
 
