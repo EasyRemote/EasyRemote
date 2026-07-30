@@ -38,6 +38,18 @@ FORBIDDEN_LIFECYCLE_CALLS = {
     "start_runtime_host",
 }
 FORBIDDEN_AUTHORITY_MODULES = {"cryptography", "multiprocessing", "subprocess"}
+FORBIDDEN_OS_LIFECYCLE_CALLS = {
+    "popen",
+    "spawnl",
+    "spawnle",
+    "spawnlp",
+    "spawnlpe",
+    "spawnv",
+    "spawnve",
+    "spawnvp",
+    "spawnvpe",
+    "system",
+}
 FORBIDDEN_CONFIGURATION_MARKERS = {
     "daemon-config.toml",
     "listen_tcp",
@@ -85,6 +97,13 @@ import subprocess
 subprocess.Popen(["easynet", "start"])
 """,
     }
+    shell_owner = {
+        "bad_shell.py": """
+import os
+
+os.system("easynet start")
+""",
+    }
     tls_owner = {
         "bad_tls.py": """
 from cryptography import x509
@@ -114,6 +133,7 @@ class RuntimeBootstrapState(StrEnum):
 
     assert _lifecycle_authority_violations(config_writer)
     assert _lifecycle_authority_violations(process_owner)
+    assert _lifecycle_authority_violations(shell_owner)
     assert _lifecycle_authority_violations(tls_owner)
     assert _lifecycle_authority_violations(sdk_lifecycle_owner)
     assert _lifecycle_authority_violations(duplicate_state_machine)
@@ -163,6 +183,10 @@ def _lifecycle_authority_violations(sources: dict[str, str]) -> list[str]:
                     FORBIDDEN_LIFECYCLE_CALLS | FORBIDDEN_LIFECYCLE_SYMBOLS
                 ):
                     violations.append(f"{name}: calls lifecycle authority {call_name}")
+                if _is_forbidden_os_lifecycle_call(node.func):
+                    violations.append(
+                        f"{name}: calls lifecycle shell authority {call_name}"
+                    )
     return sorted(set(violations))
 
 
@@ -172,6 +196,15 @@ def _call_name(node: ast.expr) -> str:
     if isinstance(node, ast.Attribute):
         return node.attr
     return ""
+
+
+def _is_forbidden_os_lifecycle_call(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "os"
+        and node.attr in FORBIDDEN_OS_LIFECYCLE_CALLS
+    )
 
 
 def _top_level_exports(source: str) -> set[str]:
