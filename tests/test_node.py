@@ -159,11 +159,11 @@ def test_non_finite_defaults_are_not_written_to_ability_json(node):
     assert "default" not in manifest["input_schema"]["properties"]["value"]
 
 
-def test_device_ontology_naming_unpaired(node, monkeypatch):
+def test_device_ontology_naming_unpaired(node, monkeypatch, tmp_path):
     import easyremote.config as config
 
     monkeypatch.setattr(config, "_settings", None)
-    monkeypatch.setenv("EASYNET_CREDENTIALS", "/nonexistent/credentials.json")
+    config.configure(control=tmp_path / "control.json")
 
     @node.register
     def fn(a: int) -> int:
