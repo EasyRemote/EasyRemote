@@ -207,7 +207,9 @@ def _runtime_identity_projection_error(
     path: Path,
     error: easynet_sdk.SDKError,
 ) -> Unavailable:
-    if is_runtime_offline_error(error):
+    if is_runtime_offline_error(error) or (
+        error.code == easynet_sdk.ErrorCode.CALLER_IDENTITY_UNAVAILABLE
+    ):
         return Unavailable(
             "no EasyNet identity on this machine — pair it once with "
             f"`easynet pair` (looked at {path})",
