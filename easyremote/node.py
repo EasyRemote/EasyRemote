@@ -210,6 +210,7 @@ class ComputeNode:
             description or _first_doc_line(fn) or f"{ability_name} (easyremote)",
             signature.input_schema,
             signature.output_schema,
+            signature.is_stream,
         )
         hosted = HostedFunction(name=qualified, fn=fn, signature=signature)
         self._host.add(hosted)
@@ -394,6 +395,7 @@ class ComputeNode:
         description: str,
         input_schema: dict[str, Any],
         output_schema: dict[str, Any] | None,
+        is_stream: bool,
     ) -> Path:
         # Canonical manifest for the daemon's `ability.deploy` install
         # transaction. The SDK builder owns the deploy-bundle DTO shape so this
@@ -404,18 +406,18 @@ class ComputeNode:
         # semantics: the stdin contract has no missing-template failure mode,
         # so optionals stay optional.
         #
-        # EVERY ability routes through the host_stream executor: it carries
+        # EVERY ability routes through the host_stream transport: it carries
         # full args + caller identity in the request frame (the shell
         # executor nulls stdin and only templates argv, so it cannot pass
-        # arbitrary JSON args or the caller). A unary function emits one
-        # terminal frame; a generator emits many. One path, no exec
-        # mismatch. Field names match the daemon's AbilityExec::HostStream
+        # arbitrary JSON args or the caller). Descriptor geometry follows
+        # the function signature: unary functions are RPC and generators are
+        # server-stream. Field names match the daemon's AbilityExec::HostStream
         # serde shape (internally tagged `kind`, snake_case) verbatim.
         manifest = easynet_sdk.RuntimeAbilityPackageManifest(
             name=local_name,
             namespace=self._namespace,
             description=description,
-            admission_action="stream",
+            admission_action="stream" if is_stream else "invoke",
             exposure="task",
             input_schema=input_schema,
             output_schema=output_schema,

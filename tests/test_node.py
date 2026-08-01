@@ -125,6 +125,7 @@ def test_register_writes_scaffold_shaped_ability_json(node):
     assert manifest["namespace"] == "er"
     assert manifest["description"] == "Generate a completion on this device."
     assert manifest["exposure"] == "task"
+    assert manifest["admission_action"] == "invoke"
     assert "category" not in manifest
     assert "tool_name" not in manifest
     assert "version" not in manifest
@@ -137,10 +138,9 @@ def test_register_writes_scaffold_shaped_ability_json(node):
     assert manifest["output_schema"] == {"type": "string"}
 
     # EVERY ability — unary or generator — routes through the host_stream
-    # executor: it carries full JSON args + caller identity in the request
-    # frame (the shell executor nulls stdin and only templates argv, so it
-    # cannot pass arbitrary args). A unary function's single return value
-    # rides back as one terminal frame.
+    # transport, while descriptor geometry follows the function signature.
+    # A unary function is RPC and its single return value rides back as one
+    # terminal frame.
     exec_ = manifest["exec"]
     assert exec_["kind"] == "host_stream"
     assert exec_["function"] == "er.ai_inference"
@@ -397,6 +397,7 @@ def test_stream_function_writes_host_stream_exec(node):
     manifest = read_manifest(fn.info)
     assert manifest["name"] == "chunks"
     assert manifest["namespace"] == "er"
+    assert manifest["admission_action"] == "stream"
     exec_ = manifest["exec"]
     assert exec_["kind"] == "host_stream"
     assert exec_["function"] == "er.chunks"
