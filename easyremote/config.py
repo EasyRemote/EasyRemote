@@ -21,10 +21,7 @@ from .errors import Unavailable, is_runtime_offline_error
 
 __all__ = ["Settings", "agents_root", "configure", "sdk_environment", "settings"]
 
-# The SDK owns the process-level daemon discovery default. EasyRemote keeps
-# product credentials beside that discovery file, but must derive the root
-# from the SDK instead of maintaining a second home-directory convention.
-_EASYNET_DIR = easynet_sdk.runtime_state_root()
+_DESKTOP_EASYNET_DIR = Path.home() / ".easynet"
 
 
 def agents_root() -> Path:
@@ -52,11 +49,15 @@ class Settings:
 
 def _from_environment() -> Settings:
     library = os.environ.get(_ENV_LIBRARY)
+    control = os.environ.get(_ENV_CONTROL)
+    credentials = os.environ.get(_ENV_CREDENTIALS)
+    root = _default_runtime_state_root()
+    control_path = Path(control) if control else root / "control.json"
     return Settings(
-        credentials_path=Path(
-            os.environ.get(_ENV_CREDENTIALS, _EASYNET_DIR / "credentials.json")
-        ),
-        control_path=Path(os.environ.get(_ENV_CONTROL, _EASYNET_DIR / "control.json")),
+        credentials_path=Path(credentials)
+        if credentials
+        else control_path.parent / "credentials.json",
+        control_path=control_path,
         library_path=Path(library) if library else None,
     )
 
@@ -153,13 +154,22 @@ def read_credentials() -> dict[str, Any]:
 
 
 def runtime_identity_projection() -> easynet_sdk.RuntimeIdentityProjection:
-    """Load paired runtime identity through the EasyNet-Cli SDK projection."""
-
-    path = settings().credentials_path
+    path = settings().control_path
     try:
-        return sdk_environment().runtime_identity_projection(path)
+        return sdk_environment().runtime_identity_projection()
     except easynet_sdk.SDKError as exc:
         raise _runtime_identity_projection_error(path, exc) from exc
+
+
+def _default_runtime_state_root() -> Path:
+    sdk_root = Path(easynet_sdk.runtime_state_root())
+    if _runtime_state_root_is_populated(_DESKTOP_EASYNET_DIR):
+        return _DESKTOP_EASYNET_DIR
+    return sdk_root
+
+
+def _runtime_state_root_is_populated(path: Path) -> bool:
+    return (path / "control.json").exists() or (path / "credentials.json").exists()
 
 
 def _control_discovery_dict(

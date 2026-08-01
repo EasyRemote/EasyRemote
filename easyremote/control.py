@@ -197,7 +197,13 @@ class AbilityControl:
     def __init__(self, client: Client | None = None) -> None:
         self._client = client or _new_client()
 
-    def install(self, path: str | Path, *, node: str = "local") -> AbilityInstallResult:
+    def install(
+        self,
+        path: str | Path,
+        *,
+        node: str = "local",
+        binding_lease_ms: int | None = None,
+    ) -> AbilityInstallResult:
         """Install an ability package by invoking daemon `ability.deploy`."""
         node_id = node.strip()
         if not node_id:
@@ -211,17 +217,63 @@ class AbilityControl:
             )
         ref = _local_resource_ref(package, self._client._who())
         resource_ura = str(ref["resource_ura"])
+        args: dict[str, object] = {
+            "resource_ref": ref,
+            "node_id": node_id,
+            "target_ura": target_ura,
+        }
+        if binding_lease_ms is not None:
+            if not isinstance(binding_lease_ms, int) or isinstance(
+                binding_lease_ms, bool
+            ):
+                raise InvalidArgument(
+                    "binding_lease_ms must be an integer",
+                    reason="invalid_binding_lease",
+                )
+            if not 1_000 <= binding_lease_ms <= 300_000:
+                raise InvalidArgument(
+                    "binding_lease_ms must be between 1000 and 300000",
+                    reason="invalid_binding_lease",
+                )
+            args["binding_lease_ms"] = binding_lease_ms
         result = self._invoke(
             "ability.deploy",
             callee_ura=target_ura,
             subject_ura=resource_ura,
-            args={
-                "resource_ref": ref,
-                "node_id": node_id,
-                "target_ura": target_ura,
-            },
+            args=args,
         )
         return AbilityInstallResult.from_wire(result, node_id=node_id)
+
+    def uninstall(
+        self,
+        ability_ura: str,
+        *,
+        install_id: str | None = None,
+        node: str = "local",
+    ) -> Mapping[str, Any]:
+        """Remove one daemon-owned implementation binding before its host exits."""
+        _require_ura_kind(ability_ura, {"ability"}, "ability_ura")
+        node_id = node.strip()
+        if not node_id:
+            raise InvalidArgument("node must not be empty", reason="empty_node")
+        target_ura = self._deploy_target_ura(node_id)
+        args: dict[str, object] = {
+            "ability_ura": ability_ura,
+            "target_ura": target_ura,
+        }
+        if install_id is not None:
+            normalized_install_id = install_id.strip()
+            if not normalized_install_id:
+                raise InvalidArgument(
+                    "install_id must not be blank", reason="empty_install_id"
+                )
+            args["install_id"] = normalized_install_id
+        return self._invoke(
+            "ability.uninstall",
+            callee_ura=target_ura,
+            subject_ura=ability_ura,
+            args=args,
+        )
 
     def _deploy_target_ura(self, node_id: str) -> str:
         if node_id == "local":
@@ -381,6 +433,7 @@ class AgentControl:
         label: str | None = None,
         command: str | None = None,
         args: Sequence[str] = (),
+        root_path: str | Path | None = None,
     ) -> AgentStartResult:
         agent_name = name.strip()
         runtime = kind.strip()
@@ -403,6 +456,7 @@ class AgentControl:
                 "label": label,
                 "command": command,
                 "command_args": list(args),
+                "root_path": str(root_path) if root_path is not None else None,
                 "materialize_directory": True,
                 "update_existing_spec": False,
                 "project_workspace": True,
@@ -481,6 +535,7 @@ class AgentControl:
                 reason="invalid_daemon_response",
             )
         return dict(result)
+
 
 def _local_resource_ref(path: Path, identity: LocalIdentity) -> dict[str, object]:
     absolute = path if path.is_absolute() else Path.cwd() / path

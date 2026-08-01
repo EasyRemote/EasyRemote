@@ -62,7 +62,7 @@ def test_ability_install_command_uses_control(monkeypatch, tmp_path, capsys):
             }
 
     class FakeAbilityControl:
-        def install(self, path, *, node):
+        def install(self, path, *, node, binding_lease_ms=None):
             calls.append((path, node))
             return FakeResult()
 

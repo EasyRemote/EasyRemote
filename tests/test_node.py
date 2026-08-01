@@ -2,10 +2,12 @@
 
 import json
 import socket
+import threading
 from collections.abc import Iterator
 from functools import partial
 
 import pytest
+import easynet_sdk
 
 from easyremote.context import Context
 from easyremote.errors import InvalidArgument, Unavailable
@@ -28,12 +30,26 @@ def node(tmp_path):
 class FakeAbilityControl:
     def __init__(self):
         self.installs = []
+        self.install_leases = []
+        self.renewed = threading.Event()
+        self.uninstalls = []
         self.fail = None
+        self.uninstall_fail = None
+        self.next_result = None
 
-    def install(self, path, *, node):
+    def install(self, path, *, node, binding_lease_ms=None):
         self.installs.append((path, node))
+        self.install_leases.append(binding_lease_ms)
+        if len(self.installs) >= 2:
+            self.renewed.set()
         if self.fail is not None:
             raise self.fail
+        return self.next_result
+
+    def uninstall(self, ability_ura, *, install_id=None, node):
+        self.uninstalls.append((ability_ura, install_id, node))
+        if self.uninstall_fail is not None:
+            raise self.uninstall_fail
 
 
 class ReadyRuntime:
@@ -108,6 +124,7 @@ def test_register_writes_scaffold_shaped_ability_json(node):
     assert manifest["name"] == "ai_inference"
     assert manifest["namespace"] == "er"
     assert manifest["description"] == "Generate a completion on this device."
+    assert manifest["exposure"] == "task"
     assert "category" not in manifest
     assert "tool_name" not in manifest
     assert "version" not in manifest
@@ -161,18 +178,16 @@ def test_device_ontology_naming_paired(tmp_path, monkeypatch):
     import easyremote.config as config
 
     monkeypatch.setattr(config, "_settings", None)
-    credentials = tmp_path / "credentials.json"
-    credentials.write_text(
-        json.dumps(
-                {
-                    "realm": "acme",
-                    "runtime_instance_id": "dev-a",
-                    "principal": "silan",
-                    "control_plane_endpoint": "h:443",
-                }
-            )
-        )
-    monkeypatch.setenv("EASYNET_CREDENTIALS", str(credentials))
+    environment = easynet_sdk.SdkEnvironment(control_path=str(tmp_path / "control.json"))
+    monkeypatch.setattr(config, "sdk_environment", lambda: environment)
+    monkeypatch.setattr(
+        environment,
+        "runtime_identity_projection",
+        lambda: easynet_sdk.RuntimeIdentityProjection(
+            realm="acme",
+            runtime_instance_id="dev-a",
+        ),
+    )
     node = ComputeNode(
         abilities_dir=tmp_path / "abilities", ability_control=FakeAbilityControl()
     )
@@ -209,6 +224,7 @@ def test_start_deploys_each_package_to_local_node(short_tmp):
 
     with node:
         assert installer.installs == [(fn.info.package_dir, "local")]
+        assert installer.install_leases == [9_000]
 
         @node.register
         def late(b: int) -> int:
@@ -251,6 +267,98 @@ def test_start_rolls_back_host_when_deploy_fails(short_tmp):
     assert not node.host_socket.exists()
     assert not node._started
     assert provider.connections[0].closed
+
+
+def test_stop_revokes_live_binding_before_host_shutdown(short_tmp):
+    installer = FakeAbilityControl()
+    installer.next_result = type(
+        "InstallResult",
+        (),
+        {
+            "ability_ura": "easynet:///r/acme/ability/device.dev-a.er.fn",
+            "install_id": "inst-1",
+        },
+    )()
+    node = ComputeNode(
+        abilities_dir=short_tmp / "abilities",
+        ability_control=installer,
+        runtime_provider=ReadyRuntimeProvider(),
+    )
+
+    @node.register
+    def fn(a: int) -> int:
+        return a
+
+    node.start()
+    assert node.publication_state.value == "ADVERTISE_PENDING"
+    node.stop()
+
+    assert installer.uninstalls == [
+        ("easynet:///r/acme/ability/device.dev-a.er.fn", "inst-1", "local")
+    ]
+    assert node.publication_state.value == "STOPPED"
+    assert not node.host_socket.exists()
+
+
+def test_live_host_renews_process_binding_lease(short_tmp, monkeypatch):
+    import easyremote.node as node_module
+
+    monkeypatch.setattr(node_module, "_BINDING_RENEW_INTERVAL_SECONDS", 0.01)
+    installer = FakeAbilityControl()
+    installer.next_result = type(
+        "InstallResult",
+        (),
+        {
+            "ability_ura": "easynet:///r/acme/ability/device.dev-a.er.fn",
+            "install_id": "inst-1",
+        },
+    )()
+    node = ComputeNode(
+        abilities_dir=short_tmp / "abilities",
+        ability_control=installer,
+        runtime_provider=ReadyRuntimeProvider(),
+    )
+
+    @node.register
+    def fn(a: int) -> int:
+        return a
+
+    node.start()
+    assert installer.renewed.wait(timeout=1)
+    node.stop()
+
+    assert len(installer.installs) >= 2
+    assert set(installer.install_leases) == {9_000}
+
+
+def test_stop_keeps_host_alive_when_binding_revocation_fails(short_tmp):
+    installer = FakeAbilityControl()
+    installer.next_result = type(
+        "InstallResult",
+        (),
+        {
+            "ability_ura": "easynet:///r/acme/ability/device.dev-a.er.fn",
+            "install_id": "inst-1",
+        },
+    )()
+    node = ComputeNode(
+        abilities_dir=short_tmp / "abilities",
+        ability_control=installer,
+        runtime_provider=ReadyRuntimeProvider(),
+    )
+
+    @node.register
+    def fn(a: int) -> int:
+        return a
+
+    node.start()
+    installer.uninstall_fail = RuntimeError("daemon unavailable")
+
+    with pytest.raises(RuntimeError, match="daemon unavailable"):
+        node.stop()
+
+    assert node.publication_state.value == "ADVERTISE_PENDING"
+    assert node.host_socket.exists()
 
 
 def test_post_start_registration_rolls_back_when_deploy_fails(short_tmp):

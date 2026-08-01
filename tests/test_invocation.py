@@ -156,8 +156,24 @@ def test_product_result_decodes_binary_output(runtime_receipt) -> None:
     assert invocation.result() == b"\x01\x02"
 
 
-def test_transport_response_requires_sdk_runtime_result() -> None:
-    with pytest.raises(InternalError, match="sdk_runtime_result"):
+def test_accepts_top_level_sdk_runtime_result(runtime_receipt) -> None:
+    draft = canonical_draft()
+    response = runtime_response(
+        draft,
+        runtime_receipt,
+        output_json={"answer": 42},
+    )
+    runtime_result = response["sdk_runtime_result"]
+    assert isinstance(runtime_result, dict)
+
+    invocation = Invocation.from_transport_response(runtime_result)
+
+    assert invocation.result() == {"answer": 42}
+    assert invocation.id == "inv-1"
+
+
+def test_transport_response_rejects_malformed_sdk_runtime_result() -> None:
+    with pytest.raises(InternalError, match="malformed"):
         Invocation.from_transport_response({"ok": True})
 
 

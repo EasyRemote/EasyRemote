@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
@@ -24,7 +24,7 @@ class Candidate(Protocol):
     def ability_ura(self) -> str: ...
 
     @property
-    def input_schema(self) -> dict[str, Any] | None: ...
+    def input_schema(self) -> Mapping[str, Any] | None: ...
 
     @property
     def descriptor_ref(self) -> str: ...
@@ -50,6 +50,7 @@ class DiscoveryCache:
         self._schemas_by_ura: dict[str, dict[str, Any]] = {}
         self._descriptor_refs_by_ura: dict[str, str] = {}
         self._candidates: dict[str, list[Candidate]] = {}
+        self._agent_owners_by_id: dict[str, set[str]] = {}
         self._round_robin: dict[str, int] = {}
 
     def replace(self, candidates: Iterable[Candidate]) -> None:
@@ -57,6 +58,7 @@ class DiscoveryCache:
         self._schemas_by_ura.clear()
         self._descriptor_refs_by_ura.clear()
         self._candidates.clear()
+        self._agent_owners_by_id.clear()
         self._round_robin.clear()
         self.remember(candidates)
 
@@ -68,11 +70,31 @@ class DiscoveryCache:
                 self._schemas_by_ura[info.ability_ura] = dict(info.input_schema)
             if info.ability_ura and info.descriptor_ref:
                 self._descriptor_refs_by_ura[info.ability_ura] = info.descriptor_ref
+            self._remember_agent_owner(
+                _candidate_owner_ura(info) or _ability_owner_ura(info.ability_ura)
+            )
         for verb, group in self._candidates.items():
             schemas = [info.input_schema for info in group]
             if schemas and all(schema and schema == schemas[0] for schema in schemas):
                 assert schemas[0] is not None
-                self._schemas[verb] = schemas[0]
+                self._schemas[verb] = dict(schemas[0])
+
+    def remember_catalog_rows(self, rows: Iterable[Mapping[str, Any]]) -> None:
+        for row in rows:
+            self._remember_agent_owner(
+                str(row.get("owner_ura") or "")
+                or _ability_owner_ura(
+                    str(
+                        row.get("ability_ura")
+                        or row.get("qualified_name")
+                        or row.get("descriptor_ref")
+                        or ""
+                    )
+                )
+            )
+
+    def agent_owner_uras(self, agent_id: str) -> tuple[str, ...]:
+        return tuple(sorted(self._agent_owners_by_id.get(agent_id, ())))
 
     def schema_for_verb(self, verb: str) -> dict[str, Any] | None:
         return self._schemas.get(verb)
@@ -83,6 +105,19 @@ class DiscoveryCache:
     def descriptor_ref_for_ura(self, ability_ura: str) -> str:
         return self._descriptor_refs_by_ura.get(ability_ura, "")
 
+    def remember_descriptor(
+        self,
+        ability_ura: str,
+        descriptor_ref: str,
+        input_schema: dict[str, Any] | None = None,
+    ) -> None:
+        if not ability_ura or not descriptor_ref:
+            return
+        self._descriptor_refs_by_ura[ability_ura] = descriptor_ref
+        if input_schema:
+            self._schemas_by_ura[ability_ura] = dict(input_schema)
+        self._remember_agent_owner(_ability_owner_ura(ability_ura))
+
     def select(self, verb: str, policy: str) -> Candidate | None:
         group = self._candidates.get(verb, ())
         if not group:
@@ -92,6 +127,11 @@ class DiscoveryCache:
         index = self._round_robin.get(verb, 0)
         self._round_robin[verb] = index + 1
         return group[index % len(group)]
+
+    def _remember_agent_owner(self, owner_ura: str) -> None:
+        agent_id = _agent_id(owner_ura)
+        if agent_id:
+            self._agent_owners_by_id.setdefault(agent_id, set()).add(owner_ura)
 
 
 class AbilityAddressResolver:
@@ -217,7 +257,7 @@ class AbilityAddressResolver:
 
     def owner_kind(self, owner_ura: str) -> str:
         try:
-            kind = self._addressing.parse_ura(owner_ura.strip()).kind
+            kind = str(self._addressing.parse_ura(owner_ura.strip()).kind)
         except easynet_sdk.SDKError as exc:
             raise InvalidArgument(
                 f"invalid owner URA {owner_ura!r}: {exc}",
@@ -250,6 +290,9 @@ class AbilityAddressResolver:
             reason="invalid_owner_for_ability",
         )
 
+    def owner_ability_ura(self, owner_ura: str, ability_name: str) -> str:
+        return self._owner_ability_ura(owner_ura, ability_name)
+
     def _pick(self, verb: str, policy: str) -> ResolvedAbility | None:
         if policy not in PICK_POLICIES:
             raise InvalidArgument(
@@ -262,8 +305,9 @@ class AbilityAddressResolver:
             return None
         return self.from_ability_ura(
             info.ability_ura,
-            input_schema=info.input_schema
-            or self.cache.schema_for_ura(info.ability_ura),
+            input_schema=dict(info.input_schema)
+            if info.input_schema
+            else self.cache.schema_for_ura(info.ability_ura),
             argument_label=info.ability_ura,
             descriptor_ref=info.descriptor_ref
             or self.cache.descriptor_ref_for_ura(info.ability_ura),
@@ -283,3 +327,31 @@ def canonical_addressing_client() -> easynet_sdk.AddressingClient:
 
 def _call_carrier_for_kind(kind: str) -> CallCarrier:
     return "stream" if kind == "device" else "unary"
+
+
+def _candidate_owner_ura(candidate: Candidate) -> str:
+    return str(getattr(candidate, "owner_ura", "") or "")
+
+
+def _ability_owner_ura(ability_ura: str) -> str:
+    if not ability_ura:
+        return ""
+    try:
+        projection = easynet_sdk.parse_ura(ability_ura)
+    except easynet_sdk.SDKError:
+        return ""
+    if projection.kind != "ability":
+        return ""
+    return str((projection.components or {}).get("owner_ura") or "")
+
+
+def _agent_id(owner_ura: str) -> str:
+    if not owner_ura:
+        return ""
+    try:
+        projection = easynet_sdk.parse_ura(owner_ura)
+    except easynet_sdk.SDKError:
+        return ""
+    if projection.kind != "agent":
+        return ""
+    return str((projection.components or {}).get("agent_id") or "")

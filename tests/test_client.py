@@ -53,6 +53,14 @@ IDENTITY = LocalIdentity(
     realm="acme", node_id="dev-a", username="silan", hub_endpoint="hub.example:443"
 )
 DEVICE_URA = "easynet:///r/acme/device/dev-a"
+UUID_AGENT_OWNER_URA = (
+    "easynet:///r/acme/agent/"
+    "019fb758-94a8-7441-acd1-55280797b9a90.claude-code"
+)
+UUID_AGENT_CHAT_URA = (
+    "easynet:///r/acme/ability/"
+    "019fb758-94a8-7441-acd1-55280797b9a90.claude-code.chat"
+)
 NONCE = bytes(range(1, 17))
 
 
@@ -71,6 +79,26 @@ def ok_response(result=None, content_type="application/json"):
         "admission_receipt": admission,
         "terminal_receipt": terminal,
     }
+
+
+def agent_catalogue_response(owner_ura: str = UUID_AGENT_OWNER_URA):
+    return ok_response(
+        {
+            "abilities": [
+                {
+                    "name": "chat",
+                    "ability_ura": UUID_AGENT_CHAT_URA,
+                    "owner_ura": owner_ura,
+                    "description": "Agent chat",
+                    "input_schema": {},
+                }
+            ]
+        }
+    )
+
+
+def empty_catalogue_response():
+    return ok_response({"abilities": []})
 
 
 def native_agent_trace(request_id="inv-1", state="completed"):
@@ -92,10 +120,8 @@ def native_agent_trace(request_id="inv-1", state="completed"):
                         "easynet:///r/acme/resource/device.dev-a/benchmark/"
                         "invocation-subject/subject-hash"
                     ),
-                    "ability_ura": (
-                        "easynet:///r/acme/ability/silan.claude-code.claude-code.chat"
-                    ),
-                    "ability_name": "claude-code.chat",
+                    "ability_ura": "easynet:///r/acme/ability/silan.claude-code.chat",
+                    "ability_name": "chat",
                     "state": state,
                     "started_unix_ms": 1,
                     "completed_unix_ms": 2,
@@ -218,6 +244,7 @@ class FakeTransport:
         self.responses = list(responses or [])
         self.traces = list(traces or [])
         self.trace_requests = []
+        self.descriptor_requests = []
         self.delay = 0.0
         self.closed = False
         self.bidi_channel = None
@@ -233,6 +260,36 @@ class FakeTransport:
     def build_target_invocation(self, request):
         return self._invoker.build_target_invocation(request)
 
+    def get_ability_descriptor(
+        self,
+        call,
+        *,
+        ability_ura,
+        call_mode="",
+        descriptor_version="",
+        scope="",
+    ):
+        self.descriptor_requests.append(
+            {
+                "call": call,
+                "ability_ura": ability_ura,
+                "call_mode": call_mode,
+                "descriptor_version": descriptor_version,
+                "scope": scope,
+            }
+        )
+        projection = self._addressing.project_ability_ura(ability_ura)
+        return {
+            "name": str(projection.public_name),
+            "ability_ura": ability_ura,
+            "descriptor_ref": expected_descriptor_ref(ability_ura),
+            "owner_ura": str(projection.owner_ura),
+            "descriptor_version": descriptor_version or "1.0.0",
+            "call_mode": call_mode,
+            "input_schema": {},
+            "metadata": {},
+        }
+
     def invoke_runtime_ability(self, call, ability_name, arguments):
         response = (
             self.responses.pop(0) if self.responses else ok_response({"abilities": []})
@@ -244,7 +301,9 @@ class FakeTransport:
             and "abilities" not in result
         ):
             result = {"abilities": result["candidates"]}
-        descriptor_action = "read" if ability_name == "meta.list_abilities" else "invoke"
+        descriptor_action = (
+            "read" if ability_name == "meta.list_abilities" else "invoke"
+        )
         ability_ura = self._addressing.owner_ability_ura(call.callee_ura, ability_name)
         descriptor_ref = self._addressing.canonical_ability_descriptor_ref(
             ability_ura,
@@ -1303,7 +1362,7 @@ def test_agent_chat_preserves_benchmark_messages_and_joins_native_trace():
         }
     )
     client, transport = make_client(
-        responses=[response],
+        responses=[agent_catalogue_response(), response],
         traces=[native_agent_trace()],
     )
     messages = [
@@ -1317,11 +1376,23 @@ def test_agent_chat_preserves_benchmark_messages_and_joins_native_trace():
         execution={"cwd": "benchmarks/run-1/case-1", "timeout_ms": 300_000},
     )
 
-    wire = transport.invocations[0]
-    assert wire["callee_ura"] == "easynet:///r/acme/agent/silan.claude-code"
-    assert wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/silan.claude-code.claude-code.chat"
+    assert transport.invocations[0]["args"] == {"scope": "realm"}
+    wire = transport.invocations[1]
+    assert wire["callee_ura"] == UUID_AGENT_OWNER_URA
+    assert wire["descriptor_ref"] == expected_descriptor_ref(UUID_AGENT_CHAT_URA)
+    assert len(transport.descriptor_requests) == 1
+    descriptor_request = transport.descriptor_requests[0]
+    assert descriptor_request["call"].caller_ura == DEVICE_URA
+    assert descriptor_request["call"].callee_ura == DEVICE_URA
+    assert descriptor_request["call"].subject_ura == DEVICE_URA
+    assert (
+        descriptor_request["ability_ura"]
+        == UUID_AGENT_CHAT_URA
     )
+    assert descriptor_request["call_mode"] == "rpc"
+    assert descriptor_request["descriptor_version"] == ""
+    assert descriptor_request["scope"] == ""
+    assert transport._descriptor_resolver.requests == []
     assert wire["args"] == {
         "messages": messages,
         "execution": {
@@ -1343,8 +1414,135 @@ def test_agent_chat_preserves_benchmark_messages_and_joins_native_trace():
     assert result.invocation_ura.endswith("/invocation/inv-1/history")
     assert result.trace_id == "trace-agent-1"
     assert result.status == "completed"
+    assert result.elapsed_ms == 1
     assert result.usage == {"input_tokens": 7, "output_tokens": 3}
+    assert result.session_id == "unused-strict-session"
+    assert result.skills_loaded == ()
+    assert result.context_used == ()
+    assert result.tool_calls == ()
+    assert result.timeline == ()
     assert result.trace == native_agent_trace().to_dict()
+
+
+def test_agent_chat_preserves_observability_records():
+    response = ok_response(
+        {
+            "session_id": "session-1",
+            "reply": "SELECT 1",
+            "skills_loaded": ["lotus.sem_filter"],
+            "context_used": [{"loader": "benchmark_case", "bytes": 128}],
+            "tool_calls": [
+                {
+                    "ability": "lotus.sem_filter",
+                    "args": {"question": "Count all cases."},
+                    "result": {"decision": "accept"},
+                    "elapsed_ms": 1731,
+                    "request_id": "operator-inv-1",
+                }
+            ],
+            "timeline": [
+                {
+                    "elapsed_ms": 0,
+                    "kind": "reasoning",
+                    "text": "I need to compare the candidate query.",
+                },
+                {
+                    "elapsed_ms": 1731,
+                    "kind": "tool_result",
+                    "tool": "lotus.sem_filter",
+                    "status": "ok",
+                },
+            ],
+            "usage": {
+                "input_tokens": 7,
+                "output_tokens": 3,
+                "total_cost_usd": 0.01,
+            },
+            "elapsed_ms": 2000,
+        }
+    )
+    client, _ = make_client(
+        responses=[agent_catalogue_response(), response],
+        traces=[native_agent_trace()],
+    )
+
+    result = client.agent("claude-code").chat(
+        messages=[{"role": "user", "content": "Count all cases."}],
+        subject="benchmark://suite/case",
+        execution={"cwd": "benchmarks/run/case", "timeout_ms": 1_000},
+    )
+
+    assert result.session_id == "session-1"
+    assert result.skills_loaded == ("lotus.sem_filter",)
+    assert result.context_used == ({"loader": "benchmark_case", "bytes": 128},)
+    assert result.tool_calls[0]["ability"] == "lotus.sem_filter"
+    assert result.tool_calls[0]["elapsed_ms"] == 1731
+    assert result.timeline[0]["kind"] == "reasoning"
+    assert result.to_dict()["timeline"][1]["tool"] == "lotus.sem_filter"
+
+
+def test_agent_chat_forwards_driver_model_override():
+    response = ok_response(
+        {
+            "reply": "accept",
+            "tool_calls": [],
+            "usage": {"input_tokens": 7, "output_tokens": 3},
+            "elapsed_ms": 1,
+            "session_id": "unused-strict-session",
+        }
+    )
+    client, transport = make_client(
+        responses=[agent_catalogue_response(), response],
+        traces=[native_agent_trace()],
+    )
+
+    client.agent("claude-code").chat(
+        messages=[{"role": "user", "content": "Judge this query."}],
+        subject="benchmark://enterprise_knowledge_text2signal/case-1",
+        execution={"cwd": "benchmarks/run-1/case-1", "timeout_ms": 300_000},
+        driver={"model": "gpt-5.5"},
+    )
+
+    assert transport.invocations[1]["args"]["driver"] == {"model": "gpt-5.5"}
+
+
+def test_agent_chat_does_not_mask_success_when_trace_lookup_is_unavailable():
+    class TraceUnavailableTransport(FakeTransport):
+        def invocation_trace(self, call, *, request_id):
+            self.trace_requests.append({"call": call, "request_id": request_id})
+            raise InvalidArgument(
+                "canonical invocation history read path is unavailable",
+                reason="history_read_unavailable",
+            )
+
+    transport = TraceUnavailableTransport(
+        responses=[
+            empty_catalogue_response(),
+            ok_response(
+                {
+                    "reply": "intentdb-easyremote-sdk-ok",
+                    "tool_calls": [],
+                    "usage": {"output_tokens": 16},
+                }
+            )
+        ]
+    )
+    client = Client(
+        transport=transport,
+        identity=IDENTITY,
+        invocation_policy=FreshRoot(ResolvedTargetSubject()),
+    )
+
+    result = client.agent("claude-code").chat(
+        messages=[{"role": "user", "content": "Return exact token."}],
+        subject="benchmark://suite/case",
+        execution={"cwd": "benchmarks/run/case", "timeout_ms": 1_000},
+    )
+
+    assert result.prediction == "intentdb-easyremote-sdk-ok"
+    assert result.status == "completed"
+    assert result.trace["records"] == []
+    assert "trace_lookup_error" in result.trace
 
 
 @pytest.mark.parametrize(
@@ -1436,7 +1634,10 @@ def test_agent_chat_trace_lookup_failure_does_not_mask_runtime_failure():
 
 def test_agent_chat_rejects_native_trace_without_matching_record():
     client, _ = make_client(
-        responses=[ok_response({"reply": "SELECT 1", "tool_calls": [], "usage": {}})],
+        responses=[
+            empty_catalogue_response(),
+            ok_response({"reply": "SELECT 1", "tool_calls": [], "usage": {}}),
+        ],
         traces=[native_agent_trace("different-request")],
     )
 

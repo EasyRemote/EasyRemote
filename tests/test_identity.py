@@ -43,17 +43,20 @@ def test_corrupt_credentials_fail_the_round_trip_loudly():
 
 
 def test_local_identity_load_uses_sdk_runtime_projection(monkeypatch):
-    class FakeEnvironment:
-        def runtime_identity_projection(self, credentials_path: object):
-            assert str(credentials_path).endswith("credentials.json")
-            return easynet_sdk.RuntimeIdentityProjection(
-                realm="acme",
-                runtime_instance_id="dev-a",
-                principal="alice",
-                control_plane_endpoint="hub:443",
-            )
-
-    monkeypatch.setattr(config, "sdk_environment", lambda: FakeEnvironment())
+    environment = easynet_sdk.SdkEnvironment(control_path="/tmp/control.json")
+    monkeypatch.setattr(
+        config,
+        "sdk_environment",
+        lambda: environment,
+    )
+    monkeypatch.setattr(
+        environment,
+        "runtime_identity_projection",
+        lambda: easynet_sdk.RuntimeIdentityProjection(
+            realm="acme",
+            runtime_instance_id="dev-a",
+        ),
+    )
     monkeypatch.setattr(
         config,
         "settings",
@@ -68,5 +71,5 @@ def test_local_identity_load_uses_sdk_runtime_projection(monkeypatch):
 
     assert identity.realm == "acme"
     assert identity.node_id == "dev-a"
-    assert identity.username == "alice"
-    assert identity.hub_endpoint == "hub:443"
+    assert identity.username is None
+    assert identity.hub_endpoint == ""

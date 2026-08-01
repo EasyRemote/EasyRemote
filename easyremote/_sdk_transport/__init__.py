@@ -105,6 +105,29 @@ class Transport:
             raise error_from_sdk(exc) from exc
         return [_ability_descriptor_row(descriptor) for descriptor in page.descriptors]
 
+    def get_ability_descriptor(
+        self,
+        call: easynet_sdk.RuntimeCallContext,
+        *,
+        ability_ura: str,
+        call_mode: str = "",
+        descriptor_version: str = "",
+        scope: str = "",
+    ) -> dict[str, Any]:
+        try:
+            descriptor = self._descriptor_provider.get(
+                easynet_sdk.AbilityDescriptorGetRequest(
+                    call=call,
+                    ability_ura=ability_ura,
+                    call_mode=call_mode,
+                    descriptor_version=descriptor_version,
+                    scope=scope,
+                )
+            )
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
+        return _ability_descriptor_row(descriptor)
+
     def invocation_trace(
         self,
         call: easynet_sdk.RuntimeCallContext,
@@ -119,8 +142,33 @@ class Transport:
                 )
             )
         except easynet_sdk.SDKError as exc:
+            fallback = self._single_record_trace(call, request_id)
+            if fallback is not None:
+                return fallback
             raise error_from_sdk(exc) from exc
         return result.graph
+
+    def _single_record_trace(
+        self,
+        call: easynet_sdk.RuntimeCallContext,
+        request_id: str,
+    ) -> easynet_sdk.InvocationTraceGraph | None:
+        try:
+            result = self._receipt_provider.get(
+                easynet_sdk.ReceiptGetRequest(
+                    call=call,
+                    lookup=easynet_sdk.ReceiptLookup(request_id=request_id),
+                )
+            )
+        except easynet_sdk.SDKError:
+            return None
+        if result.record is None:
+            return None
+        return easynet_sdk.InvocationTraceGraph(
+            trace_id=result.record.trace_id or request_id,
+            records=(result.record,),
+            edges=(),
+        )
 
     def invoke(
         self,
@@ -278,6 +326,8 @@ def _ability_descriptor_row(
         "ability_ura": descriptor.ability_ura,
         "descriptor_ref": descriptor.descriptor_ref,
         "owner_ura": descriptor.owner_ura,
+        "descriptor_version": descriptor.version,
+        "call_mode": descriptor.call_mode,
         "description": descriptor.description,
         "input_schema": dict(descriptor.input_schema),
         "metadata": dict(descriptor.metadata),

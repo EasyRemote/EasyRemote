@@ -23,37 +23,67 @@ class AgentChatResult:
     """One successful Agent chat result joined to its native Axon trace."""
 
     prediction: str
+    session_id: str
     request_id: str
     invocation_ura: str
     trace_id: str
     status: str
+    elapsed_ms: int | None
     usage: Mapping[str, object]
+    skills_loaded: tuple[str, ...]
+    context_used: tuple[Mapping[str, object], ...]
     tool_calls: tuple[Mapping[str, object], ...]
+    timeline: tuple[Mapping[str, object], ...]
     trace: Mapping[str, object]
 
     def to_dict(self) -> dict[str, object]:
         return {
             "prediction": self.prediction,
+            "session_id": self.session_id,
             "request_id": self.request_id,
             "invocation_ura": self.invocation_ura,
             "trace_id": self.trace_id,
             "status": self.status,
+            "elapsed_ms": self.elapsed_ms,
             "usage": dict(self.usage),
+            "skills_loaded": list(self.skills_loaded),
+            "context_used": [dict(item) for item in self.context_used],
             "tool_calls": [dict(item) for item in self.tool_calls],
+            "timeline": [dict(item) for item in self.timeline],
             "trace": dict(self.trace),
         }
+
+
+@dataclass(frozen=True)
+class _TraceIdentity:
+    request_id: str
+    invocation_ura: str
+    trace_id: str
+    status: str
+    trace: Mapping[str, object]
 
 
 class RemoteAgent(RemoteOwner):
     """An agent owner with a strict, structured single-turn chat operation."""
 
-    def __init__(self, client: Client, owner_ura: str, agent_name: str) -> None:
+    def __init__(
+        self,
+        client: Client,
+        owner_ura: str,
+        agent_name: str,
+        *,
+        resolve_owner: bool = False,
+    ) -> None:
         super().__init__(client, owner_ura)
         self._agent_name = agent_name
+        self._resolve_owner = resolve_owner
 
     @property
     def name(self) -> str:
         return self._agent_name
+
+    def _target(self, function: str) -> CallTarget:
+        return CallTarget(function=function, owner_ura=self._resolved_owner_ura())
 
     def chat(
         self,
@@ -61,14 +91,21 @@ class RemoteAgent(RemoteOwner):
         messages: Sequence[Mapping[str, object]],
         subject: str,
         execution: Mapping[str, object],
+        driver: Mapping[str, object] | None = None,
     ) -> AgentChatResult:
         normalized_messages = _messages(messages)
         normalized_execution, timeout_seconds = _execution(execution)
+        normalized_driver = _driver(driver)
         external_subject = _required_text(subject, "subject")
         canonical_subject = _subject_ura(self._client, external_subject)
+        owner_ura = self._resolved_owner_ura()
+        chat_ability_ura = self._client._addressing.owner_ability_ura(
+            owner_ura,
+            "chat",
+        )
         target = CallTarget(
-            function=f"{self._agent_name}.chat",
-            owner_ura=self.owner_ura,
+            function=chat_ability_ura,
+            owner_ura=owner_ura,
             timeout=timeout_seconds + _CLIENT_TIMEOUT_MARGIN_SECONDS,
             metadata={
                 "easyremote.external_subject": external_subject,
@@ -77,10 +114,15 @@ class RemoteAgent(RemoteOwner):
             invocation_policy=FreshRoot(ExplicitSubject(canonical_subject)),
         )
         try:
+            args: dict[str, object] = {
+                "messages": normalized_messages,
+                "execution": normalized_execution,
+            }
+            if normalized_driver:
+                args["driver"] = normalized_driver
             invocation = self._client.invoke(
                 target,
-                messages=normalized_messages,
-                execution=normalized_execution,
+                **args,
             )
         except RemoteError as error:
             _attach_failure_trace(self._client, error)
@@ -90,16 +132,6 @@ class RemoteAgent(RemoteOwner):
             raise InternalError(
                 "Agent invocation completed without a canonical request id",
                 reason="missing_invocation_identity",
-            )
-        graph = self._client._invocation_trace(request_id)
-        record = next(
-            (item for item in graph.records if item.request_id == request_id),
-            None,
-        )
-        if record is None:
-            raise InternalError(
-                f"native trace has no record for request {request_id}",
-                reason="trace_record_missing",
             )
         response = invocation.result()
         if not isinstance(response, Mapping):
@@ -116,24 +148,35 @@ class RemoteAgent(RemoteOwner):
         usage = response.get("usage")
         if not isinstance(usage, Mapping):
             usage = {}
-        raw_tool_calls = response.get("tool_calls")
-        if not isinstance(raw_tool_calls, list) or not all(
-            isinstance(item, Mapping) for item in raw_tool_calls
-        ):
-            raise InternalError(
-                "Agent chat result field 'tool_calls' must be an object array",
-                reason="invalid_agent_response",
-            )
+        elapsed_ms = _optional_non_negative_int(response.get("elapsed_ms"))
+        session_id = response.get("session_id")
+        if not isinstance(session_id, str):
+            session_id = ""
+        skills_loaded = _string_array(response.get("skills_loaded"), "skills_loaded")
+        context_used = _object_array(response.get("context_used"), "context_used")
+        raw_tool_calls = _object_array(response.get("tool_calls"), "tool_calls")
+        raw_timeline = _object_array(response.get("timeline"), "timeline")
+        trace_identity = _trace_identity(self._client, invocation, request_id)
         return AgentChatResult(
             prediction=prediction,
-            request_id=record.request_id,
-            invocation_ura=record.invocation_ura,
-            trace_id=record.trace_id,
-            status=record.state,
+            session_id=session_id,
+            request_id=trace_identity.request_id,
+            invocation_ura=trace_identity.invocation_ura,
+            trace_id=trace_identity.trace_id,
+            status=trace_identity.status,
+            elapsed_ms=elapsed_ms,
             usage=dict(usage),
+            skills_loaded=tuple(skills_loaded),
+            context_used=tuple(dict(item) for item in context_used),
             tool_calls=tuple(dict(item) for item in raw_tool_calls),
-            trace=graph.to_dict(),
+            timeline=tuple(dict(item) for item in raw_timeline),
+            trace=trace_identity.trace,
         )
+
+    def _resolved_owner_ura(self) -> str:
+        if not self._resolve_owner:
+            return self.owner_ura
+        return self._client._agent_call_owner_ura(self._agent_name, self.owner_ura)
 
 
 def agent(spec: str, *, client: Client | None = None) -> RemoteAgent:
@@ -153,6 +196,53 @@ def _attach_failure_trace(client: Client, error: RemoteError) -> None:
         error.trace = graph.to_dict()
     except Exception as trace_error:
         error.trace_lookup_error = f"{type(trace_error).__name__}: {trace_error}"
+
+
+def _trace_identity(
+    client: Client,
+    invocation: object,
+    request_id: str,
+) -> _TraceIdentity:
+    try:
+        graph = client._invocation_trace(request_id)
+    except RemoteError as trace_error:
+        receipt = getattr(invocation, "receipt", None)
+        receipt_ura = str(getattr(receipt, "receipt_ura", "") or "")
+        return _TraceIdentity(
+            request_id=request_id,
+            invocation_ura=receipt_ura,
+            trace_id="",
+            status=_invocation_status(invocation),
+            trace={
+                "trace_lookup_error": (
+                    f"{type(trace_error).__name__}: {trace_error}"
+                ),
+                "records": [],
+                "edges": [],
+            },
+        )
+    record = next(
+        (item for item in graph.records if item.request_id == request_id),
+        None,
+    )
+    if record is None:
+        raise InternalError(
+            f"native trace has no record for request {request_id}",
+            reason="trace_record_missing",
+        )
+    return _TraceIdentity(
+        request_id=record.request_id,
+        invocation_ura=record.invocation_ura,
+        trace_id=record.trace_id,
+        status=record.state,
+        trace=graph.to_dict(),
+    )
+
+
+def _invocation_status(invocation: object) -> str:
+    state = getattr(invocation, "state", None)
+    name = str(getattr(state, "name", "") or "")
+    return name.lower() if name else ""
 
 
 def _messages(
@@ -241,6 +331,65 @@ def _execution(execution: Mapping[str, object]) -> tuple[dict[str, object], floa
         {"cwd": cwd, "timeout_ms": timeout_ms, "isolation": "strict"},
         timeout_ms / 1000.0,
     )
+
+
+def _driver(driver: Mapping[str, object] | None) -> dict[str, object]:
+    if driver is None:
+        return {}
+    if not isinstance(driver, Mapping):
+        raise InvalidArgument(
+            "driver must be an object",
+            reason="invalid_agent_driver",
+        )
+    unknown = set(driver) - {"model"}
+    if unknown:
+        raise InvalidArgument(
+            f"driver has unsupported fields: {sorted(unknown)}",
+            reason="invalid_agent_driver",
+        )
+    raw_model = driver.get("model")
+    if raw_model is None:
+        return {}
+    if not isinstance(raw_model, str) or not raw_model.strip():
+        raise InvalidArgument(
+            "driver.model must be a non-empty string",
+            reason="invalid_agent_driver_model",
+        )
+    return {"model": raw_model.strip()}
+
+
+def _object_array(value: object, field: str) -> list[Mapping[str, object]]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(
+        isinstance(item, Mapping) for item in value
+    ):
+        raise InternalError(
+            f"Agent chat result field '{field}' must be an object array",
+            reason="invalid_agent_response",
+        )
+    return value
+
+
+def _string_array(value: object, field: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise InternalError(
+            f"Agent chat result field '{field}' must be a string array",
+            reason="invalid_agent_response",
+        )
+    return value
+
+
+def _optional_non_negative_int(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, float) and value >= 0:
+        return int(value)
+    return None
 
 
 def _subject_ura(client: Client, external_subject: str) -> str:

@@ -42,6 +42,7 @@ from ._addressing import (
 from ._sdk_transport import FrameStream, Transport, UnaryDispatchPool
 from .errors import (
     InvalidArgument,
+    RemoteError,
     Unavailable,
     error_from_sdk,
 )
@@ -52,9 +53,7 @@ from .invocation import (
     StreamSpec,
 )
 from .invocation_policy import (
-    FreshRoot,
     InvocationDerivationPolicy,
-    ResolvedTargetSubject,
     require_invocation_policy,
     runtime_root_context,
 )
@@ -271,7 +270,7 @@ class BidiSession:
 
     def recv(self, timeout: float | None = None) -> dict[str, Any] | None:
         try:
-            return self._session.recv(timeout=timeout)
+            return cast("dict[str, Any] | None", self._session.recv(timeout=timeout))
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
@@ -446,7 +445,13 @@ class Client:
         resolved = self._address(
             target.function, target.node, target.pick, target.owner_ura
         )
-        return self._prepare_resolved(target, resolved, args, kwargs, call_mode=call_mode)
+        return self._prepare_resolved(
+            target,
+            resolved,
+            args,
+            kwargs,
+            call_mode=call_mode,
+        )
 
     def _prepare_resolved(
         self,
@@ -477,10 +482,14 @@ class Client:
             metadata=target.metadata or {},
         )
         request = replace(request, call_mode=call_mode)
-        if resolved.descriptor_ref:
+        descriptor_ref = resolved.descriptor_ref or self._runtime_descriptor_ref(
+            resolved,
+            call_mode=call_mode,
+        )
+        if descriptor_ref:
             request = replace(
                 request,
-                descriptor_ref=resolved.descriptor_ref,
+                descriptor_ref=descriptor_ref,
                 ability_ura="",
             )
         draft = self._connected().build_target_invocation(request)
@@ -552,7 +561,10 @@ class Client:
                 reason="invalid_agent_spec",
             )
         owner_spec = normalized
-        if not self._addressing.is_owner_ura(normalized) and "." not in normalized:
+        resolve_owner = (
+            not self._addressing.is_owner_ura(normalized) and "." not in normalized
+        )
+        if resolve_owner:
             username = (self._who().username or "").strip()
             if not username:
                 raise InvalidArgument(
@@ -568,7 +580,57 @@ class Client:
                 f"agent owner URA has no agent id: {owner_ura}",
                 reason="invalid_agent_spec",
             )
-        return RemoteAgent(self, owner_ura, agent_name)
+        return RemoteAgent(self, owner_ura, agent_name, resolve_owner=resolve_owner)
+
+    def _agent_call_owner_ura(self, agent_id: str, fallback_owner_ura: str) -> str:
+        """Resolve a bare agent id to the daemon catalogue's canonical owner."""
+        owner_ura = self._cached_agent_owner_ura(agent_id)
+        if owner_ura:
+            return owner_ura
+        self._preflight_agent_catalogue()
+        return self._cached_agent_owner_ura(agent_id) or fallback_owner_ura
+
+    def _cached_agent_owner_ura(self, agent_id: str) -> str:
+        owners = self._addressing.cache.agent_owner_uras(agent_id)
+        if not owners:
+            return ""
+        if len(owners) == 1:
+            return owners[0]
+        username = (self._who().username or "").strip()
+        if username:
+            preferred = [
+                owner_ura
+                for owner_ura in owners
+                if _agent_owner_user_id(owner_ura) == username
+            ]
+            if len(preferred) == 1:
+                return preferred[0]
+        raise InvalidArgument(
+            f"agent id {agent_id!r} is ambiguous in the daemon catalogue; use"
+            " a <user-id>.<agent-id> token or a full agent owner URA",
+            reason="ambiguous_agent_owner",
+        )
+
+    def _preflight_agent_catalogue(self) -> None:
+        local = self._who().device_ura
+        try:
+            rows = self._connected().list_ability_descriptors(
+                runtime_root_context(
+                    caller_ura=local,
+                    callee_ura=local,
+                    subject_ura=local,
+                ),
+                scope="realm",
+            )
+        except (RemoteError, easynet_sdk.SDKError):
+            return
+        if not isinstance(rows, list) or not all(
+            isinstance(row, Mapping) for row in rows
+        ):
+            return
+        self._addressing.cache.remember_catalog_rows(
+            row for row in rows if isinstance(row, Mapping)
+        )
 
     def hub(self) -> RemoteOwner:
         """A handle to the realm hub's abilities."""
@@ -600,7 +662,9 @@ class Client:
             ),
             scope=catalogue_scope if catalogue_scope == "realm" else "",
         )
-        if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
+        if not isinstance(rows, list) or not all(
+            isinstance(row, Mapping) for row in rows
+        ):
             raise InvalidArgument(
                 "meta.list_abilities response field 'abilities' is not an object array",
                 reason="invalid_daemon_response",
@@ -798,6 +862,38 @@ class Client:
             request_id=request_id,
         )
 
+    def _runtime_descriptor_ref(
+        self,
+        resolved: ResolvedAbility,
+        *,
+        call_mode: str,
+    ) -> str:
+        """Resolve one catalog descriptor_ref for an uncached ability."""
+
+        local = self._who().device_ura
+        try:
+            row = self._connected().get_ability_descriptor(
+                runtime_root_context(
+                    caller_ura=local,
+                    callee_ura=local,
+                    subject_ura=local,
+                ),
+                ability_ura=resolved.ability_ura,
+                call_mode=call_mode,
+            )
+        except RemoteError:
+            return ""
+        descriptor_ref = str(row.get("descriptor_ref") or "")
+        if not descriptor_ref:
+            return ""
+        schema = row.get("input_schema")
+        self._addressing.cache.remember_descriptor(
+            resolved.ability_ura,
+            descriptor_ref,
+            dict(schema) if isinstance(schema, Mapping) else None,
+        )
+        return descriptor_ref
+
     @property
     def _transport(self) -> Transport | None:
         return self._unary_pool.current_transport
@@ -842,6 +938,16 @@ def _product_function_name(name: str, namespace: str) -> str:
     if namespace and name.startswith(prefix):
         return name[len(prefix) :]
     return name.rsplit(".", 1)[-1] if "." in name else name
+
+
+def _agent_owner_user_id(owner_ura: str) -> str:
+    try:
+        projection = easynet_sdk.parse_ura(owner_ura)
+    except easynet_sdk.SDKError:
+        return ""
+    if projection.kind != "agent":
+        return ""
+    return str((projection.components or {}).get("user_id") or "")
 
 
 class AsyncClient:

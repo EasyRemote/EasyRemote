@@ -26,6 +26,7 @@ import threading
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -41,13 +42,38 @@ from .errors import InvalidArgument, Unavailable, error_from_sdk
 from .runtime_provider import LocalRuntimeProvider, RuntimeConnectionProvider
 from .schema import PARAMETER_ORDER_KEY, derive
 
-__all__ = ["AbilityInfo", "ComputeNode", "RegisteredFunction"]
+__all__ = ["AbilityInfo", "ComputeNode", "PublicationState", "RegisteredFunction"]
 
 _NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+_BINDING_LEASE_MS = 9_000
+_BINDING_RENEW_INTERVAL_SECONDS = 3.0
 
 
 class _AbilityInstaller(Protocol):
-    def install(self, path: str | Path, *, node: str = "local") -> object: ...
+    def install(
+        self,
+        path: str | Path,
+        *,
+        node: str = "local",
+        binding_lease_ms: int | None = None,
+    ) -> object: ...
+
+    def uninstall(
+        self,
+        ability_ura: str,
+        *,
+        install_id: str | None = None,
+        node: str = "local",
+    ) -> object: ...
+
+
+class PublicationState(str, Enum):
+    """Observable host/publication lifecycle without claiming early realm visibility."""
+
+    STOPPED = "STOPPED"
+    LOCAL_ACTIVE = "LOCAL_ACTIVE"
+    ADVERTISE_PENDING = "ADVERTISE_PENDING"
+    REALM_VISIBLE = "REALM_VISIBLE"
 
 
 @dataclass(frozen=True)
@@ -63,6 +89,7 @@ class AbilityInfo:
     qualified_name: str
     package_dir: Path
     ura: str | None
+    install_id: str | None = None
 
 
 class RegisteredFunction:
@@ -122,7 +149,11 @@ class ComputeNode:
         self._host = HostServer(self._abilities_dir.parent / "host.sock")
         self._abilities: dict[str, AbilityInfo] = {}
         self._started = False
+        self._publication_state = PublicationState.STOPPED
         self._gateway_checked = False
+        self._lease_stop = threading.Event()
+        self._lease_thread: threading.Thread | None = None
+        self._lease_failure: BaseException | None = None
 
     # -- registration ------------------------------------------------------
 
@@ -191,7 +222,10 @@ class ComputeNode:
         try:
             self._abilities[ability_name] = info
             if self._started:
-                self._deploy(info)  # post-start registration: publish immediately
+                info = self._deploy(info)
+                self._abilities[ability_name] = info
+                self._publication_state = PublicationState.ADVERTISE_PENDING
+                self._start_binding_lease_renewal()
         except BaseException:
             self._abilities.pop(ability_name, None)
             self._host.remove(qualified)
@@ -224,23 +258,36 @@ class ComputeNode:
         connection = self._runtime_provider.connect()
         try:
             self._host.start()
-            for info in self._abilities.values():
-                self._deploy(info)
-        except BaseException:
+            self._publication_state = PublicationState.LOCAL_ACTIVE
+            for ability_name, info in list(self._abilities.items()):
+                self._abilities[ability_name] = self._deploy(info)
+            self._publication_state = PublicationState.ADVERTISE_PENDING
+        except BaseException as error:
+            try:
+                self._revoke_deployments()
+            except BaseException as revoke_error:
+                error.add_note(f"rollback ability.uninstall failed: {revoke_error}")
             self._host.stop()
             _close_runtime_connection(connection)
             self._started = False
+            self._publication_state = PublicationState.STOPPED
             raise
         self._runtime_connection = connection
         self._started = True
+        self._start_binding_lease_renewal()
 
     def stop(self) -> None:
+        if not self._started:
+            return
+        self._stop_binding_lease_renewal()
+        self._revoke_deployments()
         try:
             self._host.stop()
         finally:
             connection = self._runtime_connection
             self._runtime_connection = None
             self._started = False
+            self._publication_state = PublicationState.STOPPED
             if connection is not None:
                 _close_runtime_connection(connection)
 
@@ -265,11 +312,69 @@ class ComputeNode:
     def host_socket(self) -> Path:
         return self._host.socket_path
 
+    @property
+    def publication_state(self) -> PublicationState:
+        return self._publication_state
+
+    @property
+    def lease_failure(self) -> BaseException | None:
+        return self._lease_failure
+
     # -- internals ---------------------------------------------------------------
 
-    def _deploy(self, info: AbilityInfo) -> None:
-        """Publish onto this device's own ability registry."""
-        self._ability_control.install(info.package_dir, node="local")
+    def _deploy(self, info: AbilityInfo) -> AbilityInfo:
+        """Bind the live host implementation and retain its revocation identity."""
+        result = self._ability_control.install(
+            info.package_dir,
+            node="local",
+            binding_lease_ms=_BINDING_LEASE_MS,
+        )
+        ability_ura = getattr(result, "ability_ura", None) or info.ura
+        install_id = getattr(result, "install_id", None)
+        return dataclasses.replace(info, ura=ability_ura, install_id=install_id)
+
+    def _start_binding_lease_renewal(self) -> None:
+        if not self._abilities or self._lease_thread is not None:
+            return
+        self._lease_stop.clear()
+        self._lease_failure = None
+        self._lease_thread = threading.Thread(
+            target=self._renew_binding_leases,
+            name="easyremote-binding-lease",
+            daemon=True,
+        )
+        self._lease_thread.start()
+
+    def _stop_binding_lease_renewal(self) -> None:
+        self._lease_stop.set()
+        thread = self._lease_thread
+        if thread is not None:
+            thread.join()
+        self._lease_thread = None
+
+    def _renew_binding_leases(self) -> None:
+        while not self._lease_stop.wait(_BINDING_RENEW_INTERVAL_SECONDS):
+            try:
+                for ability_name, info in list(self._abilities.items()):
+                    if self._lease_stop.is_set():
+                        return
+                    self._abilities[ability_name] = self._deploy(info)
+                self._lease_failure = None
+                self._publication_state = PublicationState.ADVERTISE_PENDING
+            except BaseException as error:
+                self._lease_failure = error
+                self._publication_state = PublicationState.LOCAL_ACTIVE
+
+    def _revoke_deployments(self) -> None:
+        for ability_name, info in reversed(list(self._abilities.items())):
+            if info.install_id is None or info.ura is None:
+                continue
+            self._ability_control.uninstall(
+                info.ura,
+                install_id=info.install_id,
+                node="local",
+            )
+            self._abilities[ability_name] = dataclasses.replace(info, install_id=None)
 
     def _print_ready(self) -> None:
         """Show the user what became callable through the connected runtime."""
@@ -278,7 +383,9 @@ class ComputeNode:
             return
         print("✓ Connected to canonical runtime")
         for ability in self._abilities.values():
-            print(f"✓ Published {ability.ura or ability.qualified_name}")
+            print(f"✓ Local active {ability.ura or ability.qualified_name}")
+        if self._abilities:
+            print("… Realm advertisement pending")
 
     def _write_package(
         self,
@@ -309,6 +416,7 @@ class ComputeNode:
             namespace=self._namespace,
             description=description,
             admission_action="stream",
+            exposure="task",
             input_schema=input_schema,
             output_schema=output_schema,
             exec=easynet_sdk.HostStreamExec(

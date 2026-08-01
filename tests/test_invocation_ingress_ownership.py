@@ -25,6 +25,7 @@ PUBLIC_DISPATCH_METHODS = {
     "stream",
 }
 RUNTIME_ROOT_CONTEXT_CONSUMERS = {
+    "get_ability_descriptor",
     "invocation_trace",
     "invoke_runtime_ability",
     "list_ability_descriptors",

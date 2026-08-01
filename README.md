@@ -94,7 +94,9 @@ Then it's the twelve lines above. `examples/` has runnable node/client pairs:
 If this is the first run, `node.serve()` does not invent an identity. It prints
 the one required action — `easynet pair` — and exits. Once paired, the same
 script checks the SDK, reuses a running daemon or starts a device daemon, then
-starts the warm host and publishes every registered capability.
+starts the warm host and activates every registered capability locally. Realm
+advertisement converges asynchronously; local activation is not a publication
+acknowledgement.
 
 | Example | Shows |
 |---|---|
@@ -170,8 +172,9 @@ See [`examples/05_remote_on_class.py`](examples/05_remote_on_class.py).
 
 ### Owner handles — the mirror of `@node.register`
 
-The serving side groups functions on a `ComputeNode` and publishes them with
-`@node.register`. The calling side is symmetric: a handle to an ability owner
+The serving side groups functions on a `ComputeNode` and registers them with
+`@node.register`; `start()` binds them locally before realm advertisement. The
+calling side is symmetric: a handle to an ability owner
 carries the target identity, and `@handle.remote` declares a stub bound to it.
 
 ```python
@@ -213,17 +216,26 @@ result = Client().agent("claude-code").chat(
     ],
     subject="benchmark://suite/case-001",
     execution={"cwd": "benchmark-runs/run-001/case-001", "timeout_ms": 300_000},
+    driver={"model": "gpt-5.5"},
 )
 
 print(result.prediction)
 print(result.request_id, result.invocation_ura, result.trace_id)
+print(result.elapsed_ms, result.usage)
+print(result.tool_calls)  # ordered tool/operator calls, if reported by the runtime
+print(result.timeline)    # optional per-event timeline for streaming-capable drivers
 print(result.trace)  # Axon InvocationTraceGraph.to_dict()
 ```
 
 The external `subject` is retained as invocation metadata and projected to a
 device-owned canonical subject URA. Invocation identifiers, terminal state, and
 the trace graph are read back from the native Axon ledger record. Benchmark
-case selection, hidden answers, and scoring remain outside EasyRemote.
+case selection, hidden answers, and scoring remain outside EasyRemote. Agent
+observability is returned as first-class data: `session_id`, `elapsed_ms`,
+`usage`, `skills_loaded`, `context_used`, `tool_calls`, and optional `timeline`.
+`tool_calls` carries operator invocations such as MCP/EasyNet abilities when
+the underlying agent driver reports them; `timeline` is an ordered event stream
+when the runtime exposes one.
 When an invocation fails after receiving a runtime identity, the raised
 `RemoteError` retains that `invocation_id` and attempts to attach the matching
 native graph as `error.trace`; `error.trace_lookup_error` explains an unavailable
@@ -269,6 +281,7 @@ v2 is a clean reimplementation on the EasyNet stack ([EasyNet-Axon](https://gith
 |---|---|
 | register → deploy package generation (device abilities, warm host) | ✅ implemented in the facade and unit-tested against the host_stream contract |
 | Runtime ability deployment / hot-load | ✅ facade invokes daemon `ability.deploy` through complete Invocation; live daemon hot-load is an EasyNet-Cli contract |
+| Warm-host binding lifecycle | ✅ process binding uses a 9-second daemon lease renewed every 3 seconds; expiry removes the callable route while retaining the durable descriptor install |
 | Ability catalogue / install control facade | ✅ `Client().abilities` plus `easyremote ability install/list/show`; `--scope realm` reads the hub-published network catalogue |
 | Agent lifecycle control facade | ✅ `Client().agents` plus `easyremote agent add/list/refresh` |
 | invoke closed loop against a live daemon | 🧪 integration/manual path only; CI skips without `EASYNET_CLI_LIB` + a running daemon |

@@ -2,9 +2,9 @@
 
 import json
 
+import easynet_sdk
 import pytest
 
-import easynet_sdk
 import easyremote.config as config
 from easyremote.errors import Unavailable
 
@@ -21,8 +21,36 @@ def test_defaults_point_into_easynet_home():
     s = config.settings()
     assert s.credentials_path.name == "credentials.json"
     assert s.control_path.name == "control.json"
-    assert s.credentials_path.parent == easynet_sdk.runtime_state_root()
+    assert s.credentials_path.parent == s.control_path.parent
     assert s.library_path is None
+
+
+def test_defaults_prefer_desktop_easynet_root_when_populated(monkeypatch, tmp_path):
+    sdk_root = tmp_path / ".runtime-host"
+    desktop_root = tmp_path / ".easynet"
+    desktop_root.mkdir()
+    (desktop_root / "control.json").write_text("{}")
+    monkeypatch.setattr(config, "_DESKTOP_EASYNET_DIR", desktop_root)
+    monkeypatch.setattr(config.easynet_sdk, "runtime_state_root", lambda: sdk_root)
+
+    s = config.settings()
+
+    assert s.control_path == desktop_root / "control.json"
+    assert s.credentials_path == desktop_root / "credentials.json"
+
+
+def test_defaults_fall_back_to_sdk_root_when_desktop_root_is_empty(
+    monkeypatch, tmp_path
+):
+    sdk_root = tmp_path / ".runtime-host"
+    desktop_root = tmp_path / ".easynet"
+    monkeypatch.setattr(config, "_DESKTOP_EASYNET_DIR", desktop_root)
+    monkeypatch.setattr(config.easynet_sdk, "runtime_state_root", lambda: sdk_root)
+
+    s = config.settings()
+
+    assert s.control_path == sdk_root / "control.json"
+    assert s.credentials_path == sdk_root / "credentials.json"
 
 
 def test_environment_overrides(monkeypatch, tmp_path):
@@ -30,6 +58,7 @@ def test_environment_overrides(monkeypatch, tmp_path):
     monkeypatch.setenv("EASYNET_CLI_LIB", str(tmp_path / "lib.dylib"))
     s = config.settings()
     assert s.control_path == tmp_path / "c.json"
+    assert s.credentials_path == tmp_path / "credentials.json"
     assert s.library_path == tmp_path / "lib.dylib"
 
 
@@ -71,8 +100,21 @@ def test_missing_control_tells_user_to_start_daemon(tmp_path):
     assert "easynet start" in str(exc_info.value)
 
 
-def test_missing_credentials_tells_user_to_pair(tmp_path):
-    config.configure(credentials=tmp_path / "absent.json")
+def test_control_without_device_identity_tells_user_to_pair(tmp_path):
+    path = tmp_path / "control.json"
+    path.write_text(
+        json.dumps(
+            {
+                "socket_path": "/tmp/control.sock",
+                "invocation_endpoint": "unix:///tmp/daemon.sock",
+                "pid": 123,
+                "daemon_version": "0.65.0",
+                "supported_ipc_versions": {"min": 1, "max": 1},
+                "capability_flags": [],
+            }
+        )
+    )
+    config.configure(control=path)
     with pytest.raises(Unavailable) as exc_info:
         config.read_credentials()
     assert exc_info.value.reason == "not_paired"

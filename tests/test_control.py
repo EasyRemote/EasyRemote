@@ -63,6 +63,28 @@ class FakeTransport:
     def build_target_invocation(self, request):
         return self._invoker.build_target_invocation(request)
 
+    def get_ability_descriptor(
+        self,
+        call,
+        *,
+        ability_ura,
+        call_mode="",
+        descriptor_version="",
+        scope="",
+    ):
+        del call, scope
+        projection = self._addressing.project_ability_ura(ability_ura)
+        return {
+            "name": str(projection.public_name),
+            "ability_ura": ability_ura,
+            "descriptor_ref": expected_descriptor_ref(ability_ura),
+            "owner_ura": str(projection.owner_ura),
+            "descriptor_version": descriptor_version or "1.0.0",
+            "call_mode": call_mode,
+            "input_schema": {},
+            "metadata": {},
+        }
+
     def invoke(self, draft):
         return self._record_invocation(draft)
 
@@ -185,6 +207,25 @@ def test_install_invokes_ability_deploy_with_resource_ref(tmp_path):
     assert ref["revision"] == "fs-local-mapping-v1"
 
 
+def test_install_forwards_process_binding_lease(tmp_path):
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "ability.json").write_text("{}")
+    client, transport = client_with(
+        ok_response(
+            {
+                "install_id": "inst-1",
+                "ability_ura": "easynet:///r/acme/ability/device.dev-a.er.fn",
+                "state": "ACTIVE",
+            }
+        )
+    )
+
+    AbilityControl(client).install(package, binding_lease_ms=9_000)
+
+    assert transport.invocations[0]["args"]["binding_lease_ms"] == 9_000
+
+
 def test_install_resolves_named_node_to_canonical_target_ura(tmp_path):
     package = tmp_path / "pkg"
     package.mkdir()
@@ -206,6 +247,34 @@ def test_install_resolves_named_node_to_canonical_target_ura(tmp_path):
     assert wire["callee_ura"] == "easynet:///r/acme/device/gpu-2"
     assert wire["args"]["node_id"] == "gpu-2"
     assert wire["args"]["target_ura"] == "easynet:///r/acme/device/gpu-2"
+
+
+def test_uninstall_revokes_exact_install_binding():
+    ability_ura = "easynet:///r/acme/ability/device.dev-a.er.fn"
+    client, transport = client_with(
+        ok_response(
+            {
+                "ability_ura": ability_ura,
+                "install_ids": ["inst-1"],
+                "state": "REMOVED",
+            }
+        )
+    )
+
+    result = AbilityControl(client).uninstall(ability_ura, install_id="inst-1")
+
+    assert result["state"] == "REMOVED"
+    wire = transport.invocations[0]
+    assert wire["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/device.dev-a.ability.uninstall"
+    )
+    assert wire["callee_ura"] == DEVICE_URA
+    assert wire["subject_ura"] == ability_ura
+    assert wire["args"] == {
+        "ability_ura": ability_ura,
+        "install_id": "inst-1",
+        "target_ura": DEVICE_URA,
+    }
 
 
 def test_install_rejects_missing_package(tmp_path):
@@ -384,6 +453,22 @@ def test_agent_add_and_list_use_daemon_system_abilities():
         "easynet:///r/acme/ability/device.dev-a.agent.stop"
     )
     assert transport.invocations[2]["args"] == {"name": "caesura"}
+
+
+def test_agent_add_can_request_custom_root_path():
+    client, transport = client_with(ok_response({"root_path": "/tmp/run-agent"}))
+
+    control = AgentControl(client)
+    result = control.add(
+        "codex-exp",
+        kind="codex",
+        model="gpt-5.5",
+        root_path="/tmp/run-agent",
+    )
+
+    wire = transport.invocations[0]
+    assert wire["args"]["root_path"] == "/tmp/run-agent"
+    assert result.root_path == "/tmp/run-agent"
 
 
 def test_agent_add_preserves_explicit_model_presence_without_a_model():

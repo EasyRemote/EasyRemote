@@ -12,7 +12,7 @@ import base64
 import builtins
 import json
 from collections.abc import Callable, Mapping
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal, TypeAlias, cast
 
 import easynet_sdk
 
@@ -67,10 +67,7 @@ class Invocation:
     ) -> Invocation:
         runtime_result = response.get("sdk_runtime_result")
         if not isinstance(runtime_result, Mapping):
-            raise InternalError(
-                "SDK transport response is missing sdk_runtime_result",
-                reason="protocol",
-            )
+            runtime_result = response
         try:
             result = easynet_sdk.InvocationResult.from_json(
                 json.dumps(runtime_result, separators=(",", ":"), sort_keys=True)
@@ -123,7 +120,7 @@ class Invocation:
 
     @property
     def elapsed_ms(self) -> int:
-        return self._result.elapsed_ms
+        return int(self._result.elapsed_ms)
 
     @property
     def raw_response(self) -> dict[str, object]:
@@ -176,7 +173,7 @@ class PreparedInvocation:
 
     @property
     def metadata(self) -> Mapping[str, str] | None:
-        return self._draft.metadata
+        return cast("Mapping[str, str] | None", self._draft.metadata)
 
     @property
     def sign(self) -> bool | None:
