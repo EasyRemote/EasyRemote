@@ -98,6 +98,18 @@ starts the warm host and activates every registered capability locally. Realm
 advertisement converges asynchronously; local activation is not a publication
 acknowledgement.
 
+EasyRemote keeps identity roles separate throughout this flow:
+
+- the paired **User** is the accountable caller for user-driven operations;
+- a Device-sponsored **SystemAgent** owns each runtime behavior and is its callee;
+- the **Device** is only the selected execution host and resource-custody scope.
+
+Accordingly, `client.device("gpu-1")` selects where an EasyRemote function runs;
+it does not turn the Device account into an Agent or an ability owner. Deployed
+functions belong to that host's `ability-management` SystemAgent. Catalogue,
+Agent lifecycle, Mission, and trace operations target `runtime-introspection`,
+`agent-management`, `automation`, and `runtime-governance` respectively.
+
 | Example | Shows |
 |---|---|
 | `01_hello_node.py` / `02_hello_client.py` | minimal register → call |
@@ -228,7 +240,7 @@ print(result.trace)  # Axon InvocationTraceGraph.to_dict()
 ```
 
 The external `subject` is retained as invocation metadata and projected to a
-device-owned canonical subject URA. Invocation identifiers, terminal state, and
+canonical benchmark resource subject. Invocation identifiers, terminal state, and
 the trace graph are read back from the native Axon ledger record. Benchmark
 case selection, hidden answers, and scoring remain outside EasyRemote. Agent
 observability is returned as first-class data: `session_id`, `elapsed_ms`,

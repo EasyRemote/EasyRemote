@@ -194,7 +194,8 @@ credentials.json 密钥自动签名。`sign=None` 表示按路径自动判定，
 
 **D2 warm 进程（v1 "0ms always-warm" 卖点的存续）。** 当前实现只有一条
 执行路径：`ability deploy --node local` 安装 `exec.kind = "host_stream"`
-的 device-owned ability；daemon 直接连接 `_host.HostServer` 的 Unix socket，
+的 SystemAgent-owned ability；Device 仅为执行宿主，能力归属其
+`ability-management` SystemAgent。daemon 直接连接 `_host.HostServer` 的 Unix socket，
 发送 `{request: {fn, args, caller, call_id}}`，宿主返回 `stream_item` /
 `terminal` / `error` 帧。没有 shell 转发器、Python forwarder、C fastpath
 三套旁路。
@@ -632,7 +633,7 @@ coroutine；`Stream` 同时实现 `__iter__` 与 `__aiter__`；
 | ① | 磁盘上的 release dylib 曾是 v1/v2 旧产物（只导出已弃用的 `easynet_ability_invoke` 面）；重建后 17 符号与头文件逐一对齐 | 绑定层已加固：先握手后声明全集，旧库报 `abi_mismatch`/`abi_symbol_missing` + 重建指引 |
 | ② | 历史 daemon 曾在 unary 路径返回空 receipt | 不保留兼容 fallback；当前 live contract 要求 SDK `RuntimeReceipt`，缺失即集成失败 |
 | ③ | Ability URA 形状由 SDK Addressing provider 验证 | `FunctionInfo.ability_ura` 为内部 canonical 字段，`qualified_name` 保留产品读取兼容 |
-| ④ | **本体修正（CTO 裁定）：node = device，不是 agent**。正确通路是 `ability.deploy` system ability + ability.json，URA = `easynet:///r/<realm>/ability/device.<node-id>.<ns>.<fn>` | `ComputeNode` 只打包 device-owned ability，不再写 agents.json/TOML，不再调用 agent refresh |
+| ④ | **本体修正：User、SystemAgent、Device 三者分离**。User 是问责 caller，SystemAgent 是行为 owner/callee，Device 只是 execution host。正确通路是 User 调用目标 Device 的 `ability-management` SystemAgent 执行 `ability.deploy`，部署后的 URA = `easynet:///r/<realm>/ability/system-agent.<node-id>.ability-management.<ns>.<fn>` | `ComputeNode` 只打包由 `ability-management` SystemAgent 拥有、在 Device 上执行的 ability，不再写 agents.json/TOML，不再调用 agent refresh |
 | ⑤ | **闭环执行模型唯一化**：register → ability.json → Python ResourceRef → daemon `ability.deploy` Invocation → daemon `host_stream` executor → warm host → stream frames/terminal | `Client.call()` drains host_stream for result-first use；`Client.stream()` exposes live frames；`Client.invoke()`/`PreparedInvocation.send()` 保留给 daemon unary/system ability |
 | ⑥ | **无 forwarder 旁路**：warm host 路径不维护 shell forwarder / Python shim / C fast forwarder 三套实现 | latency 与正确性只看 daemon `host_stream` executor 直接连 Unix socket 的正式路径 |
 | ⑦ | gRPC / C ABI 错误折叠仍可能把 daemon 细节压进 `last_error` | facade 只做 taxonomy 映射，不发明路由语义 |

@@ -10,10 +10,10 @@ Recreated from the v1 `examples/decorator_route/` demos on the v2
 
 ## Execution path
 
-Each registered function is deployed as a device-owned ability whose
-manifest uses the daemon's `host_stream` executor. The daemon connects
-directly to the warm Python host socket, so there is no per-call Python
-or native package-level shim.
+Each registered function is deployed as an ability-management SystemAgent-owned
+ability whose execution host is the paired Device. Its manifest uses the
+daemon's `host_stream` executor. The daemon connects directly to the warm
+Python host socket, so there is no per-call Python or native package-level shim.
 
 Use `examples/04_streaming_node.py` and `examples/04_streaming_client.py`
 for the dedicated streaming proof.

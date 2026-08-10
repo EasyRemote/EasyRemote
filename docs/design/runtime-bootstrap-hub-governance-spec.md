@@ -82,14 +82,14 @@ Expected console:
 
 ```text
 ✓ reused easynet-daemon for easynet:///r/acme/device/dev-a
-✓ Published easynet:///r/acme/ability/device.dev-a.er.add
+✓ Published easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.add
 ```
 
 If daemon is absent but identity exists:
 
 ```text
 ✓ started easynet-daemon for easynet:///r/acme/device/dev-a
-✓ Published easynet:///r/acme/ability/device.dev-a.er.add
+✓ Published easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.add
 ```
 
 Unpaired device:
