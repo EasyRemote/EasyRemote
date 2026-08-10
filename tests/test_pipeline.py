@@ -10,6 +10,14 @@ from easyremote.errors import InternalError, InvalidArgument
 from easyremote.mission import MissionStatus
 from easyremote.pipeline import MissionRun, Pipeline, StepOutput
 
+AUTOMATION_SYSTEM_AGENT_URA = "easynet:///r/acme/agent/device.dev-a.automation"
+RUNTIME_INTROSPECTION_SYSTEM_AGENT_URA = (
+    "easynet:///r/acme/agent/device.dev-a.runtime-introspection"
+)
+RUNTIME_HEALTH_SUBJECT_URA = (
+    "easynet:///r/acme/resource/device.dev-a/runtime-health"
+)
+
 
 def make_client(responses=None):
     transport = FakeTransport(responses=responses)
@@ -141,9 +149,9 @@ def test_pipeline_validates_daemon_child_invocation_facts():
               "trace_id": "run-1",
               "ability": "observe.health",
               "invocation_ura": "easynet:///r/acme/invocation/req-1",
-              "caller_ura": "easynet:///r/acme/device/dev-a",
-              "callee_ura": "easynet:///r/acme/device/dev-a",
-              "subject_ura": "easynet:///r/acme/device/dev-a",
+              "caller_ura": "easynet:///r/acme/agent/device.dev-a.automation",
+              "callee_ura": "easynet:///r/acme/agent/device.dev-a.runtime-introspection",
+              "subject_ura": "easynet:///r/acme/resource/device.dev-a/runtime-health",
               "metadata_state": "receipt_backed",
               "ledger_state": "completed",
               "receipt": {
@@ -194,9 +202,9 @@ def test_mission_status_projects_child_receipt_anchor_through_sdk(monkeypatch):
                     "trace_id": "run-1",
                     "ability": "observe.health",
                     "invocation_ura": "easynet:///r/acme/invocation/req-1",
-                    "caller_ura": "easynet:///r/acme/device/dev-a",
-                    "callee_ura": "easynet:///r/acme/device/dev-a",
-                    "subject_ura": "easynet:///r/acme/device/dev-a",
+                    "caller_ura": AUTOMATION_SYSTEM_AGENT_URA,
+                    "callee_ura": RUNTIME_INTROSPECTION_SYSTEM_AGENT_URA,
+                    "subject_ura": RUNTIME_HEALTH_SUBJECT_URA,
                     "metadata_state": "receipt_backed",
                     "ledger_state": "completed",
                     "receipt": {
@@ -238,9 +246,9 @@ def test_mission_status_rejects_invalid_child_receipt_anchor():
                         "trace_id": "run-1",
                         "ability": "observe.health",
                         "invocation_ura": "easynet:///r/acme/invocation/req-1",
-                        "caller_ura": "easynet:///r/acme/device/dev-a",
-                        "callee_ura": "easynet:///r/acme/device/dev-a",
-                        "subject_ura": "easynet:///r/acme/device/dev-a",
+                        "caller_ura": AUTOMATION_SYSTEM_AGENT_URA,
+                        "callee_ura": RUNTIME_INTROSPECTION_SYSTEM_AGENT_URA,
+                        "subject_ura": RUNTIME_HEALTH_SUBJECT_URA,
                         "metadata_state": "receipt_backed",
                         "ledger_state": "completed",
                         "receipt": {
@@ -261,9 +269,9 @@ def test_mission_status_rejects_duplicate_child_step_facts():
         "trace_id": "run-1",
         "ability": "observe.health",
         "invocation_ura": "easynet:///r/acme/invocation/req-1",
-        "caller_ura": "easynet:///r/acme/device/dev-a",
-        "callee_ura": "easynet:///r/acme/device/dev-a",
-        "subject_ura": "easynet:///r/acme/device/dev-a",
+        "caller_ura": AUTOMATION_SYSTEM_AGENT_URA,
+        "callee_ura": RUNTIME_INTROSPECTION_SYSTEM_AGENT_URA,
+        "subject_ura": RUNTIME_HEALTH_SUBJECT_URA,
         "metadata_state": "running",
         "ledger_state": "running",
         "receipt": None,
@@ -287,7 +295,7 @@ def test_created_by_header_uses_identity():
     client, _ = make_client()
     pipe = Pipeline("p", client=client)
     pipe.step("er.fn", a=1)
-    assert "// created_by: easynet:///r/acme/device/dev-a" in pipe.to_eal()
+    assert "// created_by: easynet:///r/acme/user/silan" in pipe.to_eal()
 
 
 def test_run_submits_source_to_mission_run():
@@ -303,9 +311,9 @@ def test_run_submits_source_to_mission_run():
 
     run = pipe.run()
     wire = transport.invocations[0]
-    assert transport.carriers == ["unary"]
+    assert transport.carriers == ["runtime"]
     assert wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.mission.run"
+        "easynet:///r/acme/ability/system-agent.dev-a.automation.mission.run"
     )
     assert wire["args"]["label"] == "nightly"
     assert 'mission "nightly"' in wire["args"]["source"]
@@ -326,13 +334,13 @@ def test_track_and_cancel_use_run_id():
 
     assert run.track() == {"state": "running"}
     run.cancel()
-    assert transport.carriers == ["unary", "unary", "unary"]
+    assert transport.carriers == ["runtime", "runtime", "runtime"]
     assert transport.invocations[1]["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.mission.track"
+        "easynet:///r/acme/ability/system-agent.dev-a.automation.mission.track"
     )
     assert transport.invocations[1]["args"] == {"run_id": "run-9"}
     assert transport.invocations[2]["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.mission.cancel"
+        "easynet:///r/acme/ability/system-agent.dev-a.automation.mission.cancel"
     )
 
 
@@ -366,9 +374,9 @@ def test_pipeline_run_handle_fetches_events():
     page = run.events()
 
     assert page["events"][0]["payload"] == {"reply": "done"}
-    assert transport.carriers == ["unary", "unary"]
+    assert transport.carriers == ["runtime", "runtime"]
     assert transport.invocations[1]["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.mission.events"
+        "easynet:///r/acme/ability/system-agent.dev-a.automation.mission.events"
     )
 
 
@@ -426,7 +434,7 @@ def test_pipeline_run_handle_tails_events_until_terminal():
 
     assert [event["event_type"] for event in events] == ["progress", "completed"]
     assert events[1]["payload"] == {"reply": "done"}
-    assert transport.carriers == ["unary", "unary", "unary"]
+    assert transport.carriers == ["runtime", "runtime", "runtime"]
     assert transport.invocations[1]["args"] == {
         "run_id": "run-9",
         "cursor_sequence": 0,

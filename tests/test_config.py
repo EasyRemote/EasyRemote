@@ -114,7 +114,7 @@ def test_control_without_device_identity_tells_user_to_pair(tmp_path):
             }
         )
     )
-    config.configure(control=path)
+    config.configure(control=path, credentials=tmp_path / "credentials.json")
     with pytest.raises(Unavailable) as exc_info:
         config.read_credentials()
     assert exc_info.value.reason == "not_paired"

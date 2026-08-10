@@ -1,14 +1,14 @@
-"""ComputeNode: publish local functions as device-owned abilities.
+"""ComputeNode: publish local functions on a Device execution host.
 
 Ontology, corrected: **a node is a device, not an agent.** Registered
-functions become SDK-addressed device-owned abilities, deployed through the
+functions become ability-management SystemAgent-owned abilities, deployed through the
 Python ``AbilityControl`` facade, which invokes
 the daemon's canonical ``ability.deploy`` install transaction. Every
 EasyRemote ability binds to the daemon-owned ``host_stream`` executor:
 the daemon opens the warm host socket, sends the JSON argument object
 plus read-only caller identity, and receives one or many stream frames.
-Unary functions are single-frame streams; generators are multi-frame
-streams.
+That executor is an implementation transport. The public descriptor remains
+RPC for ordinary functions and Stream for generators.
 
 This module owns packaging and local host registration only. Runtime process
 lifecycle, Invocation admission, descriptor binding, routing, receipt
@@ -80,7 +80,7 @@ class PublicationState(str, Enum):
 class AbilityInfo:
     """One registered capability, as packaged on disk.
 
-    ``ura`` is the canonical device-ability URA when this machine is
+    ``ura`` is the canonical SystemAgent-owned Ability URA when this machine is
     paired (RFC-001 shape, mirrored from `easynet ability invoke`'s own
     documentation); None in unpaired/test environments.
     """
@@ -218,7 +218,7 @@ class ComputeNode:
             name=ability_name,
             qualified_name=qualified,
             package_dir=package_dir,
-            ura=self._device_ability_ura(ability_name),
+            ura=self._hosted_ability_ura(ability_name),
         )
         try:
             self._abilities[ability_name] = info
@@ -435,15 +435,19 @@ class ComputeNode:
         )
         return package_dir
 
-    def _device_ability_ura(self, ability_name: str) -> str | None:
+    def _hosted_ability_ura(self, ability_name: str) -> str | None:
         try:
-            from .identity import LocalIdentity, device_ability_ura
+            from ._product_abilities import SystemAgentId
+            from .identity import LocalIdentity, system_agent_ability_ura
 
             identity = LocalIdentity.load()
         except Exception:
             return None  # unpaired / test environment: absent beats invented
-        return device_ability_ura(
-            identity.realm, identity.node_id, self._namespace, ability_name
+        return system_agent_ability_ura(
+            identity.realm,
+            identity.node_id,
+            str(SystemAgentId.ABILITY_MANAGEMENT),
+            f"{self._namespace}.{ability_name}",
         )
 
     def _check_gateway(self) -> None:

@@ -264,7 +264,7 @@ class Pipeline:
         if self.client is None:
             return ""
         try:
-            value = self.client._who().device_ura
+            value = self.client._who().user_ura
             return value if isinstance(value, str) else ""
         except Exception:
             return ""

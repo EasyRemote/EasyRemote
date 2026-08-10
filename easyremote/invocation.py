@@ -86,7 +86,7 @@ class Invocation:
     @property
     def id(self) -> str:
         receipt = self.receipt
-        return receipt.invocation_id if receipt is not None else ""
+        return cast(str, receipt.invocation_id) if receipt is not None else ""
 
     @property
     def state(self) -> easynet_sdk.InvocationLifecycleState:

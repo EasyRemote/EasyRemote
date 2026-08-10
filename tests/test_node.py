@@ -1,4 +1,4 @@
-"""ComputeNode: device-ability packaging, deploy announcements, lifecycle."""
+"""ComputeNode: SystemAgent ability packaging, deploy announcements, lifecycle."""
 
 import json
 import socket
@@ -91,7 +91,7 @@ def host_stream_frames(socket_path, fn, args):
         "request": {
             "fn": fn,
             "args": args,
-            "caller": "easynet:///r/acme/device/test-caller",
+            "caller": "easynet:///r/acme/user/test-caller",
             "call_id": "t",
         }
     }
@@ -183,9 +183,10 @@ def test_device_ontology_naming_paired(tmp_path, monkeypatch):
     monkeypatch.setattr(
         environment,
         "runtime_identity_projection",
-        lambda: easynet_sdk.RuntimeIdentityProjection(
+        lambda _credentials_path="": easynet_sdk.RuntimeIdentityProjection(
             realm="acme",
             runtime_instance_id="dev-a",
+            principal="easynet:///r/acme/user/u-alice",
         ),
     )
     node = ComputeNode(
@@ -196,9 +197,10 @@ def test_device_ontology_naming_paired(tmp_path, monkeypatch):
     def fn(a: int) -> int:
         return a
 
-    # The canonical device-ability shape (RFC-001; `easynet ability
-    # invoke` documents the same form).
-    assert fn.info.ura == "easynet:///r/acme/ability/device.dev-a.er.fn"
+    assert fn.info.ura == (
+        "easynet:///r/acme/ability/"
+        "system-agent.dev-a.ability-management.er.fn"
+    )
 
 
 def test_nothing_deploys_before_start(node):
@@ -275,7 +277,7 @@ def test_stop_revokes_live_binding_before_host_shutdown(short_tmp):
         "InstallResult",
         (),
         {
-            "ability_ura": "easynet:///r/acme/ability/device.dev-a.er.fn",
+            "ability_ura": "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn",
             "install_id": "inst-1",
         },
     )()
@@ -294,7 +296,7 @@ def test_stop_revokes_live_binding_before_host_shutdown(short_tmp):
     node.stop()
 
     assert installer.uninstalls == [
-        ("easynet:///r/acme/ability/device.dev-a.er.fn", "inst-1", "local")
+        ("easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn", "inst-1", "local")
     ]
     assert node.publication_state.value == "STOPPED"
     assert not node.host_socket.exists()
@@ -309,7 +311,7 @@ def test_live_host_renews_process_binding_lease(short_tmp, monkeypatch):
         "InstallResult",
         (),
         {
-            "ability_ura": "easynet:///r/acme/ability/device.dev-a.er.fn",
+            "ability_ura": "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn",
             "install_id": "inst-1",
         },
     )()
@@ -337,7 +339,7 @@ def test_stop_keeps_host_alive_when_binding_revocation_fails(short_tmp):
         "InstallResult",
         (),
         {
-            "ability_ura": "easynet:///r/acme/ability/device.dev-a.er.fn",
+            "ability_ura": "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn",
             "install_id": "inst-1",
         },
     )()

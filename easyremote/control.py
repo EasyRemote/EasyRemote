@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import easynet_sdk
 
-from ._product_abilities import AgentAbility
+from ._product_abilities import AgentAbility, SystemAgentId
 from .errors import InvalidArgument, RemoteError, Unavailable, error_from_sdk
 from .identity import LocalIdentity
 from .invocation_policy import runtime_root_context
@@ -57,6 +57,7 @@ class AbilityRecord:
     input_schema: Mapping[str, Any] = field(default_factory=dict)
     metadata: Mapping[str, Any] = field(default_factory=dict)
     descriptor_ref: str = ""
+    call_mode: str = ""
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -75,6 +76,7 @@ class AbilityRecord:
             input_schema=_optional_dict(value.get("input_schema")),
             metadata=_optional_dict(value.get("metadata")),
             descriptor_ref=str(value.get("descriptor_ref") or ""),
+            call_mode=str(value.get("call_mode") or ""),
             raw=dict(value),
         )
 
@@ -238,7 +240,10 @@ class AbilityControl:
             args["binding_lease_ms"] = binding_lease_ms
         result = self._invoke(
             "ability.deploy",
-            callee_ura=target_ura,
+            callee_ura=self._system_agent_ura(
+                node_id,
+                SystemAgentId.ABILITY_MANAGEMENT,
+            ),
             subject_ura=resource_ura,
             args=args,
         )
@@ -270,7 +275,10 @@ class AbilityControl:
             args["install_id"] = normalized_install_id
         return self._invoke(
             "ability.uninstall",
-            callee_ura=target_ura,
+            callee_ura=self._system_agent_ura(
+                node_id,
+                SystemAgentId.ABILITY_MANAGEMENT,
+            ),
             subject_ura=ability_ura,
             args=args,
         )
@@ -278,7 +286,34 @@ class AbilityControl:
     def _deploy_target_ura(self, node_id: str) -> str:
         if node_id == "local":
             return self._client._who().device_ura
-        return self._client.device(node_id).owner_ura
+        return self._client.device(node_id).execution_host_ura
+
+    def _system_agent_ura(
+        self,
+        device_selector: str,
+        agent_id: SystemAgentId,
+    ) -> str:
+        identity = self._client._who()
+        if device_selector == "local":
+            target_realm = identity.realm
+            target_node_id = identity.node_id
+        else:
+            execution_host = self._client.device(device_selector).execution_host_ura
+            projection = easynet_sdk.parse_ura(execution_host)
+            target_realm = str(projection.realm)
+            target_node_id = str(projection.components.get("device_id") or "")
+            if not target_node_id:
+                raise InvalidArgument(
+                    "device selector did not resolve to a Device id",
+                    reason="invalid_device_selector",
+                )
+        return str(
+            easynet_sdk.device_agent_ura(
+                target_realm,
+                target_node_id,
+                str(agent_id),
+            )
+        )
 
     def list(
         self,
@@ -294,9 +329,9 @@ class AbilityControl:
         `node` selects which daemon to ask; `scope` selects the
         daemon's local catalogue or the realm-wide hub-published view.
 
-        `owner_ura` is encoded into the daemon's historical
-        `agent_ura` request field. The field name is historical; the
-        value is any canonical ability owner URA accepted by the daemon.
+        `owner_ura` filters by the catalogue's canonical Agent/SystemAgent or
+        Authority owner. Device is an execution host and is not accepted as an
+        ability owner.
         """
         if scope not in {"local", "realm"}:
             raise InvalidArgument(
@@ -307,21 +342,22 @@ class AbilityControl:
             args["scope"] = scope
         if owner_ura:
             _require_ura_kind(
-                owner_ura, {"device", "agent", "authority", "user"}, "owner_ura"
+                owner_ura, {"agent", "authority"}, "owner_ura"
             )
         if subject_ura:
             _require_ura_kind(subject_ura, {"ability"}, "subject_ura")
             args["ability_ura"] = subject_ura
-        owner = (
-            self._client._who().device_ura
-            if not node
-            else self._client.device(node).owner_ura
+        identity = self._client._who()
+        node_id = node if node else identity.node_id
+        catalogue_owner = self._system_agent_ura(
+            node_id,
+            SystemAgentId.RUNTIME_INTROSPECTION,
         )
         rows = self._client._connected().list_ability_descriptors(
             runtime_root_context(
-                caller_ura=self._client._who().device_ura,
-                callee_ura=owner,
-                subject_ura=owner,
+                caller_ura=identity.user_ura,
+                callee_ura=catalogue_owner,
+                subject_ura=identity.runtime_state_read_subject_ura,
             ),
             scope=str(args.get("scope") or ""),
             owner_ura=owner_ura or "",
@@ -350,10 +386,14 @@ class AbilityControl:
         return records
 
     def list_device(self, device: str | None = None) -> builtins.list[AbilityRecord]:
-        """List abilities owned by this device, or another device owner."""
+        """List abilities hosted by a Device and owned by ability-management."""
         if device is None:
-            return self.list(owner_ura=self._client._who().device_ura)
-        owner = self._client.device(device).owner_ura
+            owner = self._system_agent_ura(
+                self._client._who().node_id,
+                SystemAgentId.ABILITY_MANAGEMENT,
+            )
+            return self.list(owner_ura=owner)
+        owner = self._client.device(device).ability_owner_ura
         return self.list(node=device, owner_ura=owner)
 
     def list_user(
@@ -399,7 +439,7 @@ class AbilityControl:
         try:
             result = self._client._connected().invoke_runtime_ability(
                 runtime_root_context(
-                    caller_ura=self._client._who().device_ura,
+                    caller_ura=self._client._who().user_ura,
                     callee_ura=callee_ura,
                     subject_ura=subject_ura,
                 ),
@@ -510,12 +550,14 @@ class AgentControl:
         args: Mapping[str, object],
     ) -> dict[str, Any]:
         try:
-            local = self._client._who().device_ura
+            identity = self._client._who()
             result = self._client._connected().invoke_runtime_ability(
                 runtime_root_context(
-                    caller_ura=local,
-                    callee_ura=local,
-                    subject_ura=local,
+                    caller_ura=identity.user_ura,
+                    callee_ura=identity.system_agent_ura(
+                        str(SystemAgentId.AGENT_MANAGEMENT)
+                    ),
+                    subject_ura=identity.device_ura,
                 ),
                 str(ability),
                 dict(args),

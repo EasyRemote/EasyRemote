@@ -9,6 +9,9 @@ from easyremote.client import Client
 from easyremote.errors import InternalError, InvalidArgument, Unavailable
 from easyremote.mission import MissionControl
 
+AUTOMATION_URA = "easynet:///r/acme/agent/device.dev-a.automation"
+USER_URA = "easynet:///r/acme/user/silan"
+
 
 def make_client(responses=None):
     transport = FakeTransport(responses=responses)
@@ -23,11 +26,13 @@ def test_run_eal_uses_daemon_unary_system_ability():
     run = MissionControl(client).run_eal('mission "nightly" {}\n', label="nightly")
 
     assert run.run_id == "run-1"
-    assert transport.carriers == ["unary"]
+    assert transport.carriers == ["runtime"]
     wire = transport.invocations[0]
     assert wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.mission.run"
+        easynet_sdk.owner_ability_ura(AUTOMATION_URA, "mission.run")
     )
+    assert wire["caller_ura"] == USER_URA
+    assert wire["callee_ura"] == AUTOMATION_URA
     assert wire["args"] == {
         "source": 'mission "nightly" {}\n',
         "label": "nightly",
@@ -58,10 +63,10 @@ def test_track_and_cancel_validate_run_id_and_use_unary():
     assert control.track("run-9") == {"state": "running"}
     assert control.cancel("run-9") == {"cancelled": True}
 
-    assert transport.carriers == ["unary", "unary"]
+    assert transport.carriers == ["runtime", "runtime"]
     assert transport.invocations[0]["args"] == {"run_id": "run-9"}
     assert transport.invocations[1]["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.mission.cancel"
+        easynet_sdk.owner_ability_ura(AUTOMATION_URA, "mission.cancel")
     )
     with pytest.raises(InvalidArgument) as exc_info:
         control.track(" ")
@@ -107,7 +112,7 @@ def test_events_fetches_mission_event_page():
     assert page["events"][0]["event_type"] == "completed"
     assert handle_page["next_cursor_sequence"] == 6
     assert transport.invocations[0]["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.mission.events"
+        easynet_sdk.owner_ability_ura(AUTOMATION_URA, "mission.events")
     )
     assert transport.invocations[0]["args"] == {
         "run_id": "run-9",
@@ -138,7 +143,13 @@ def test_invalid_eal_inputs_are_rejected():
 
 def test_execution_adapter_preserves_generic_sdk_error_taxonomy():
     class OfflineClient:
-        def invoke(self, *_args, **_kwargs):
+        def _who(self):
+            return IDENTITY
+
+        def _connected(self):
+            return self
+
+        def invoke_runtime_ability(self, *_args, **_kwargs):
             raise easynet_sdk.SDKError(
                 code=easynet_sdk.ErrorCode.RUNTIME_OFFLINE,
                 stage="transport",

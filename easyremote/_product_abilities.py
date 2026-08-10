@@ -7,6 +7,16 @@ addressing, signing, and transport remain owned by easynet-sdk.
 from enum import StrEnum
 
 
+class SystemAgentId(StrEnum):
+    """SystemAgent owners consumed by EasyRemote product facades."""
+
+    ABILITY_MANAGEMENT = "ability-management"
+    AGENT_MANAGEMENT = "agent-management"
+    AUTOMATION = "automation"
+    RUNTIME_INTROSPECTION = "runtime-introspection"
+    RUNTIME_GOVERNANCE = "runtime-governance"
+
+
 class MissionAbility(StrEnum):
     RUN = "mission.run"
     TRACK = "mission.track"

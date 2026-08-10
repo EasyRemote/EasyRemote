@@ -33,7 +33,7 @@ def stream_request(
     fn,
     args,
     *,
-    caller="easynet:///r/acme/device/test-caller",
+    caller="easynet:///r/acme/user/test-caller",
     call_id="t",
     parent_receipt=None,
 ):
@@ -290,12 +290,12 @@ def test_stream_context_function_reads_caller_each_frame(host):
         host,
         "er.tagged",
         {"prompt": "p"},
-        caller="easynet:///r/acme/device/bob",
+        caller="easynet:///r/acme/user/bob",
         call_id="inv-2",
     )
 
     assert stream_items(frames) == [
-        {"i": i, "by": "easynet:///r/acme/device/bob"} for i in range(3)
+        {"i": i, "by": "easynet:///r/acme/user/bob"} for i in range(3)
     ]
 
 

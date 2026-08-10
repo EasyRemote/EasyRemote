@@ -64,12 +64,13 @@ class Transport:
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
-    def build_target_invocation(
+    def build_invocation(
         self,
-        request: easynet_sdk.AbilityTargetRequest,
+        request: easynet_sdk.AbilityCallRequest,
     ) -> easynet_sdk.InvocationDraft:
+        """Delegate explicit-callee Invocation construction to the SDK."""
         try:
-            return self._invoker.build_target_invocation(request)
+            return self._invoker.build_invocation(request)
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
@@ -142,33 +143,8 @@ class Transport:
                 )
             )
         except easynet_sdk.SDKError as exc:
-            fallback = self._single_record_trace(call, request_id)
-            if fallback is not None:
-                return fallback
             raise error_from_sdk(exc) from exc
         return result.graph
-
-    def _single_record_trace(
-        self,
-        call: easynet_sdk.RuntimeCallContext,
-        request_id: str,
-    ) -> easynet_sdk.InvocationTraceGraph | None:
-        try:
-            result = self._receipt_provider.get(
-                easynet_sdk.ReceiptGetRequest(
-                    call=call,
-                    lookup=easynet_sdk.ReceiptLookup(request_id=request_id),
-                )
-            )
-        except easynet_sdk.SDKError:
-            return None
-        if result.record is None:
-            return None
-        return easynet_sdk.InvocationTraceGraph(
-            trace_id=result.record.trace_id or request_id,
-            records=(result.record,),
-            edges=(),
-        )
 
     def invoke(
         self,

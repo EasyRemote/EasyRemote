@@ -1,14 +1,14 @@
 """Client: call capabilities (SPEC §5.6).
 
-Three layers, two daemon carriers:
+Three layers over descriptor-selected public carriers:
 
 - L0 ``execute`` — v2 hello-world surface, keyword-or-discovered args.
-- L1 ``call`` / ``stream`` / ``session`` — hosted abilities on
-  ``host_stream``; unary functions are single-frame streams.
-- L2 ``invoke`` / ``prepare`` — daemon unary/system abilities, with
+- L1 ``call`` / ``stream`` / ``session`` — public RPC, Stream, or Bidi mode
+  selected by the committed ability descriptor.
+- L2 ``invoke`` / ``prepare`` — explicit receipt-oriented invocation, with
   the seven-tuple inspectable before dispatch.
 
-Addressing: the caller is this device (pairing identity). Product target
+Addressing: the caller is the paired User. Product target
 selection is projected to an Ability URA through the SDK Addressing provider,
 and the SDK Invocation provider derives the complete canonical draft. Daemon
 route policy remains behind easynet-daemon.
@@ -39,6 +39,7 @@ from ._addressing import (
     ResolvedAbility,
     canonical_addressing_client,
 )
+from ._product_abilities import SystemAgentId
 from ._sdk_transport import FrameStream, Transport, UnaryDispatchPool
 from .errors import (
     InvalidArgument,
@@ -65,6 +66,7 @@ __all__ = [
     "Client",
     "FunctionInfo",
     "RemoteAbility",
+    "RemoteDevice",
     "RemoteFunction",
     "RemoteOwner",
     "Stream",
@@ -93,6 +95,11 @@ class FunctionInfo:
     visibility: str
     score: float
     descriptor_ref: str = ""
+    call_mode: str = ""
+
+    @property
+    def owner_ura(self) -> str:
+        return self.owner
 
     @property
     def ability_ura(self) -> str:
@@ -111,6 +118,7 @@ class FunctionInfo:
             visibility=str(candidate.get("visibility", "")),
             score=float(candidate.get("score", 0.0)),
             descriptor_ref=str(candidate.get("descriptor_ref") or ""),
+            call_mode=str(candidate.get("call_mode") or ""),
         )
 
     @classmethod
@@ -148,6 +156,7 @@ class FunctionInfo:
             visibility=str(row.get("visibility") or ""),
             score=float(row.get("score", 1.0)),
             descriptor_ref=str(row.get("descriptor_ref") or ""),
+            call_mode=str(row.get("call_mode") or ""),
         )
 
 
@@ -358,7 +367,10 @@ class Client:
     ) -> Any:
         target = self._target(function)
         resolved = self._address(
-            target.function, target.node, target.pick, target.owner_ura
+            target.function,
+            target.node,
+            target.pick,
+            target.owner_ura,
         )
         prepared = self._prepare_resolved(
             target,
@@ -369,11 +381,9 @@ class Client:
         )
         if prepared.call_carrier == "unary":
             return prepared.send().result()
-        # EasyRemote abilities register stream-mode (host_stream), so a
-        # result-first call drains the frame stream. A unary function
-        # emits exactly one frame → return it; a generator drained via
-        # `call` returns its frames as a list (use `stream()` for live
-        # iteration). Empty stream → None.
+        # Public call geometry comes from the committed descriptor. The
+        # host_stream executor is an implementation transport and must not
+        # force every ability onto the public Stream carrier.
         frames = list(self._open_stream(prepared, timeout=target.timeout))
         if not frames:
             return None
@@ -443,7 +453,10 @@ class Client:
         call_mode: str,
     ) -> PreparedInvocation:
         resolved = self._address(
-            target.function, target.node, target.pick, target.owner_ura
+            target.function,
+            target.node,
+            target.pick,
+            target.owner_ura,
         )
         return self._prepare_resolved(
             target,
@@ -475,7 +488,7 @@ class Client:
                 reason="missing_invocation_derivation_policy",
             )
         request = policy.derive(
-            caller_ura=self._who().device_ura,
+            caller_ura=self._who().user_ura,
             ability_ura=resolved.ability_ura,
             resolved_subject_ura=resolved.resolved_subject_ura,
             args=payload,
@@ -492,7 +505,14 @@ class Client:
                 descriptor_ref=descriptor_ref,
                 ability_ura="",
             )
-        draft = self._connected().build_target_invocation(request)
+        if not request.descriptor_ref:
+            raise Unavailable(
+                f"ability descriptor is unavailable for {resolved.ability_ura}",
+                reason="ability_descriptor_unavailable",
+            )
+        draft = self._connected().build_invocation(
+            resolved.to_call_request(request)
+        )
 
         def dispatch(prepared: PreparedInvocation) -> Invocation:
             if prepared.sign:
@@ -537,14 +557,23 @@ class Client:
 
     # -- owner handles ---------------------------------------------------------
 
-    def device(self, device_id: str) -> RemoteOwner:
-        """A handle to a device's abilities (``@handle.remote`` / ``.call``).
+    def device(self, device_id: str) -> RemoteDevice:
+        """Select a Device execution host for EasyRemote abilities.
 
         ``device_id`` is a node id in this client's realm, or a full device
         owner URA (a cross-realm URA only routes where federation is
         configured). Symmetric to ``ComputeNode`` on the serving side.
         """
-        return RemoteOwner(self, self._owner_ura(device_id, "device"))
+        execution_host_ura = self._owner_ura(device_id, "device")
+        projection = easynet_sdk.parse_ura(execution_host_ura)
+        realm = str(projection.realm)
+        target_device_id = str(projection.components.get("device_id") or "")
+        owner_ura = easynet_sdk.device_agent_ura(
+            realm,
+            target_device_id,
+            str(SystemAgentId.ABILITY_MANAGEMENT),
+        )
+        return RemoteDevice(self, execution_host_ura, owner_ura)
 
     def agent(self, spec: str) -> RemoteAgent:
         """A handle to an agent's abilities.
@@ -582,13 +611,19 @@ class Client:
             )
         return RemoteAgent(self, owner_ura, agent_name, resolve_owner=resolve_owner)
 
-    def _agent_call_owner_ura(self, agent_id: str, fallback_owner_ura: str) -> str:
+    def _agent_call_owner_ura(self, agent_id: str) -> str:
         """Resolve a bare agent id to the daemon catalogue's canonical owner."""
         owner_ura = self._cached_agent_owner_ura(agent_id)
         if owner_ura:
             return owner_ura
         self._preflight_agent_catalogue()
-        return self._cached_agent_owner_ura(agent_id) or fallback_owner_ura
+        owner_ura = self._cached_agent_owner_ura(agent_id)
+        if not owner_ura:
+            raise Unavailable(
+                f"agent {agent_id!r} is absent from the canonical catalogue",
+                reason="agent_owner_unresolved",
+            )
+        return owner_ura
 
     def _cached_agent_owner_ura(self, agent_id: str) -> str:
         owners = self._addressing.cache.agent_owner_uras(agent_id)
@@ -612,22 +647,24 @@ class Client:
         )
 
     def _preflight_agent_catalogue(self) -> None:
-        local = self._who().device_ura
-        try:
-            rows = self._connected().list_ability_descriptors(
-                runtime_root_context(
-                    caller_ura=local,
-                    callee_ura=local,
-                    subject_ura=local,
+        identity = self._who()
+        rows = self._connected().list_ability_descriptors(
+            runtime_root_context(
+                caller_ura=identity.user_ura,
+                callee_ura=identity.system_agent_ura(
+                    str(SystemAgentId.RUNTIME_INTROSPECTION)
                 ),
-                scope="realm",
-            )
-        except (RemoteError, easynet_sdk.SDKError):
-            return
+                subject_ura=identity.runtime_state_read_subject_ura,
+            ),
+            scope="realm",
+        )
         if not isinstance(rows, list) or not all(
             isinstance(row, Mapping) for row in rows
         ):
-            return
+            raise InvalidArgument(
+                "agent catalogue response must be an object array",
+                reason="invalid_daemon_response",
+            )
         self._addressing.cache.remember_catalog_rows(
             row for row in rows if isinstance(row, Mapping)
         )
@@ -653,12 +690,14 @@ class Client:
     def functions(self, query: str = "", scope: str = "device") -> list[FunctionInfo]:
         """Discoverable capabilities from the canonical daemon catalogue."""
         catalogue_scope = _catalogue_scope(scope)
-        local = self._who().device_ura
+        identity = self._who()
         rows = self._connected().list_ability_descriptors(
             runtime_root_context(
-                caller_ura=local,
-                callee_ura=local,
-                subject_ura=local,
+                caller_ura=identity.user_ura,
+                callee_ura=identity.system_agent_ura(
+                    str(SystemAgentId.RUNTIME_INTROSPECTION)
+                ),
+                subject_ura=identity.runtime_state_read_subject_ura,
             ),
             scope=catalogue_scope if catalogue_scope == "realm" else "",
         )
@@ -852,12 +891,14 @@ class Client:
         return self._unary_pool.connected_transport()
 
     def _invocation_trace(self, request_id: str) -> easynet_sdk.InvocationTraceGraph:
-        local = self._who().device_ura
+        identity = self._who()
         return self._connected().invocation_trace(
             runtime_root_context(
-                caller_ura=local,
-                callee_ura=local,
-                subject_ura=local,
+                caller_ura=identity.user_ura,
+                callee_ura=identity.system_agent_ura(
+                    str(SystemAgentId.RUNTIME_GOVERNANCE)
+                ),
+                subject_ura=identity.runtime_state_read_subject_ura,
             ),
             request_id=request_id,
         )
@@ -870,13 +911,15 @@ class Client:
     ) -> str:
         """Resolve one catalog descriptor_ref for an uncached ability."""
 
-        local = self._who().device_ura
+        identity = self._who()
         try:
             row = self._connected().get_ability_descriptor(
                 runtime_root_context(
-                    caller_ura=local,
-                    callee_ura=local,
-                    subject_ura=local,
+                    caller_ura=identity.user_ura,
+                    callee_ura=identity.system_agent_ura(
+                        str(SystemAgentId.RUNTIME_INTROSPECTION)
+                    ),
+                    subject_ura=identity.runtime_state_read_subject_ura,
                 ),
                 ability_ura=resolved.ability_ura,
                 call_mode=call_mode,
@@ -1063,7 +1106,7 @@ class RemoteFunction:
         self._bound: weakref.WeakKeyDictionary[Any, _BoundRemote] = (
             weakref.WeakKeyDictionary()
         )
-        self._fallback_clients: weakref.WeakKeyDictionary[Any, Client] = (
+        self._implicit_clients: weakref.WeakKeyDictionary[Any, Client] = (
             weakref.WeakKeyDictionary()
         )
 
@@ -1090,22 +1133,16 @@ class RemoteFunction:
         return bound
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        # EasyRemote abilities register stream-mode (host_stream), so the
-        # result-first call drains the frame stream for a single value —
-        # same as `Client.call`. (Use `.stream(...)` for live iteration of
-        # a generator ability.)
+        # Client.call follows the committed descriptor's public call mode.
         return self._bound_client().call(
             self._target,
             **self._bind(args, kwargs),
         )
 
     def invoke(self, *args: Any, **kwargs: Any) -> Invocation:
-        raise Unavailable(
-            "@remote stubs represent EasyRemote-hosted host_stream abilities;"
-            " use the stub call for result-first dispatch or .stream(...) for"
-            " live frames. Client.invoke remains reserved for daemon unary/system"
-            " abilities.",
-            reason="host_stream_invoke_not_supported",
+        return self._bound_client().invoke(
+            self._target,
+            **self._bind(args, kwargs),
         )
 
     def stream(self, *args: Any, **kwargs: Any) -> Stream:
@@ -1167,17 +1204,18 @@ class RemoteFunction:
             if isinstance(host, Client):
                 return host
             # A descriptor with no client= and a host that exposes none gets a
-            # per-host fallback — never cache it on the shared descriptor, or
+            # Each client-less host receives one implicit client; never cache
+            # it on the shared descriptor, or
             # one client-less host would poison every other host's dispatch.
-            return self._fallback_client(instance)
+            return self._implicit_client(instance)
         self._client = Client()
         return self._client
 
-    def _fallback_client(self, instance: Any) -> Client:
-        client = self._fallback_clients.get(instance)
+    def _implicit_client(self, instance: Any) -> Client:
+        client = self._implicit_clients.get(instance)
         if client is None:
             client = Client()
-            self._fallback_clients[instance] = client
+            self._implicit_clients[instance] = client
         return client
 
 
@@ -1307,7 +1345,7 @@ class RemoteAbility:
 
 
 class RemoteOwner:
-    """A handle to one ability owner — the client-side mirror of ``ComputeNode``.
+    """A handle to one logical ability owner.
 
     ``client.device(id)`` / ``client.agent(spec)`` / ``client.hub()`` return
     these. ``@handle.remote`` declares a typed stub bound to this owner (the
@@ -1316,7 +1354,11 @@ class RemoteOwner:
     lives on the handle, so it never clutters the call site.
     """
 
-    def __init__(self, client: Client, owner_ura: str) -> None:
+    def __init__(
+        self,
+        client: Client,
+        owner_ura: str,
+    ) -> None:
         self._client = client
         self._owner_ura = owner_ura
 
@@ -1365,4 +1407,58 @@ class RemoteOwner:
         )
 
     def _target(self, function: str) -> CallTarget:
-        return CallTarget(function=function, owner_ura=self._owner_ura)
+        return CallTarget(
+            function=function,
+            owner_ura=self._owner_ura,
+        )
+
+
+class RemoteDevice:
+    """Device execution-host selector composed with its ability endpoint."""
+
+    def __init__(
+        self,
+        client: Client,
+        execution_host_ura: str,
+        ability_owner_ura: str,
+    ) -> None:
+        self._execution_host_ura = execution_host_ura
+        self._abilities = RemoteOwner(client, ability_owner_ura)
+
+    @property
+    def execution_host_ura(self) -> str:
+        return self._execution_host_ura
+
+    @property
+    def device_ura(self) -> str:
+        """Canonical execution-host URA; not an ability owner or callee."""
+        return self._execution_host_ura
+
+    @property
+    def ability_owner_ura(self) -> str:
+        """The ability-management SystemAgent that owns hosted abilities."""
+        return self._abilities.owner_ura
+
+    def ability(self, function: str) -> RemoteAbility:
+        return self._abilities.ability(function)
+
+    def remote(
+        self,
+        fn: Callable[..., Any] | None = None,
+        *,
+        name: str | None = None,
+        timeout: float | None = None,
+        invocation_policy: InvocationDerivationPolicy | None = None,
+    ) -> Any:
+        return self._abilities.remote(
+            fn,
+            name=name,
+            timeout=timeout,
+            invocation_policy=invocation_policy,
+        )
+
+    def call(self, function: str, /, *args: Any, **kwargs: Any) -> Any:
+        return self._abilities.call(function, *args, **kwargs)
+
+    def stream(self, function: str, /, *args: Any, **kwargs: Any) -> Stream:
+        return self._abilities.stream(function, *args, **kwargs)

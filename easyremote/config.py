@@ -154,9 +154,10 @@ def read_credentials() -> dict[str, Any]:
 
 
 def runtime_identity_projection() -> easynet_sdk.RuntimeIdentityProjection:
-    path = settings().control_path
+    current = settings()
+    path = current.credentials_path
     try:
-        return sdk_environment().runtime_identity_projection()
+        return sdk_environment().runtime_identity_projection(path)
     except easynet_sdk.SDKError as exc:
         raise _runtime_identity_projection_error(path, exc) from exc
 

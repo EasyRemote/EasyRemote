@@ -52,7 +52,7 @@ def test_ability_install_command_uses_control(monkeypatch, tmp_path, capsys):
 
     class FakeResult:
         def __init__(self):
-            self.ability_ura = "easynet:///r/acme/ability/device.dev-a.er.fn"
+            self.ability_ura = "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn"
             self.install_id = "inst-1"
             self.state = "ACTIVE"
             self.raw = {
@@ -74,7 +74,7 @@ def test_ability_install_command_uses_control(monkeypatch, tmp_path, capsys):
 
     assert calls == [(str(package), "local")]
     assert (
-        "installed: easynet:///r/acme/ability/device.dev-a.er.fn"
+        "installed: easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn"
         in capsys.readouterr().out
     )
 

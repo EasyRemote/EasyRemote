@@ -15,8 +15,8 @@ from easyremote.invocation_policy import (
 )
 
 NONCE_BASE64 = "AQIDBAUGBwgJCgsMDQ4PEA=="
-CALLER = "easynet:///r/test/device/caller"
-ABILITY = "easynet:///r/test/ability/device.callee.jobs.run"
+CALLER = "easynet:///r/test/user/alice"
+ABILITY = "easynet:///r/test/ability/alice.worker.jobs.run"
 SUBJECT = "easynet:///r/test/resource/job-1"
 RESOLVED_SUBJECT = ABILITY
 RECEIPT_URA = "easynet:///r/test/resource/agent.callee/invocation/inv-1/receipt"

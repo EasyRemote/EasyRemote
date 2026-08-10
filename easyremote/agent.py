@@ -176,7 +176,7 @@ class RemoteAgent(RemoteOwner):
     def _resolved_owner_ura(self) -> str:
         if not self._resolve_owner:
             return self.owner_ura
-        return self._client._agent_call_owner_ura(self._agent_name, self.owner_ura)
+        return self._client._agent_call_owner_ura(self._agent_name)
 
 
 def agent(spec: str, *, client: Client | None = None) -> RemoteAgent:

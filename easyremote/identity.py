@@ -21,10 +21,12 @@ from .errors import InternalError, Unavailable
 __all__ = [
     "LocalIdentity",
     "agent_ura",
-    "device_ability_ura",
     "device_ura",
     "hub_ura",
     "resource_ura",
+    "system_agent_ability_ura",
+    "system_agent_ura",
+    "user_ura",
 ]
 
 
@@ -66,17 +68,28 @@ def resource_ura(realm: str, owner_id: str, path: str) -> str:
     return _validated_build(lambda: easynet_sdk.resource_ura(owner, clean_path))
 
 
-def device_ability_ura(
-    realm: str, node_id: str, namespace: str, local_name: str
-) -> str:
-    """Build a device-owned Ability URA through the canonical SDK provider."""
+def user_ura(realm: str, user_id: str) -> str:
+    """Build an accountable User URA through the canonical SDK provider."""
+    return _validated_build(lambda: easynet_sdk.user_ura(realm, user_id))
+
+
+def system_agent_ura(realm: str, node_id: str, agent_id: str) -> str:
+    """Build a Device-sponsored SystemAgent URA through the SDK provider."""
     return _validated_build(
-        lambda: easynet_sdk.device_ability_ura(
-            realm,
-            node_id,
-            namespace,
-            local_name,
-        )
+        lambda: easynet_sdk.device_agent_ura(realm, node_id, agent_id)
+    )
+
+
+def system_agent_ability_ura(
+    realm: str,
+    node_id: str,
+    agent_id: str,
+    ability_name: str,
+) -> str:
+    """Build an Ability URA owned by one Device-sponsored SystemAgent."""
+    owner = system_agent_ura(realm, node_id, agent_id)
+    return _validated_build(
+        lambda: easynet_sdk.owner_ability_ura(owner, ability_name)
     )
 
 
@@ -109,7 +122,7 @@ def _identity_internal_error(message: str) -> InternalError:
 
 @dataclass(frozen=True)
 class LocalIdentity:
-    """The paired device this process runs on."""
+    """Paired runtime identity with distinct User and Device roles."""
 
     realm: str
     node_id: str
@@ -163,6 +176,47 @@ class LocalIdentity:
     @property
     def device_ura(self) -> str:
         return device_ura(self.realm, self.node_id)
+
+    @property
+    def user_ura(self) -> str:
+        """The paired accountable principal; never substituted by Device."""
+        principal = (self.username or "").strip()
+        if not principal:
+            raise Unavailable(
+                "paired user identity is required — re-pair with `easynet pair`",
+                reason="paired_user_required",
+            )
+        try:
+            projection = easynet_sdk.parse_ura(principal)
+        except easynet_sdk.SDKError:
+            return user_ura(self.realm, principal)
+        if projection.kind != "user":
+            raise Unavailable(
+                "paired principal must be a User, not an Agent or Device —"
+                " re-pair with `easynet pair`",
+                reason="paired_user_invalid",
+            )
+        return str(projection.ura)
+
+    def system_agent_ura(self, agent_id: str) -> str:
+        return system_agent_ura(self.realm, self.node_id, agent_id)
+
+    @property
+    def runtime_state_read_subject_ura(self) -> str:
+        """User-owned subject for catalogue, descriptor, and trace reads."""
+        projection = easynet_sdk.parse_ura(self.user_ura)
+        user_id = str(projection.components.get("user_id") or "").strip()
+        if not user_id:
+            raise Unavailable(
+                "paired User URA has no user id — re-pair with `easynet pair`",
+                reason="paired_user_invalid",
+            )
+        return _validated_build(
+            lambda: easynet_sdk.runtime_state_read_subject_ura(
+                self.realm,
+                user_id,
+            )
+        )
 
     @property
     def hub_ura(self) -> str:

@@ -14,8 +14,12 @@ from conftest import (
 from easyremote.errors import InternalError
 from easyremote.invocation import Invocation
 
-CALLER = "easynet:///r/test/device/caller"
-ABILITY = "easynet:///r/test/ability/device.callee.observe.health"
+CALLER = "easynet:///r/test/user/alice"
+CALLEE = "easynet:///r/test/agent/device.callee.runtime-introspection"
+ABILITY = (
+    "easynet:///r/test/ability/"
+    "system-agent.callee.runtime-introspection.observe.health"
+)
 SUBJECT = "easynet:///r/test/device/callee"
 NONCE = "AQIDBAUGBwgJCgsMDQ4PEA=="
 
@@ -114,7 +118,7 @@ def test_sdk_provider_owns_complete_invocation_draft() -> None:
     draft = canonical_draft()
 
     assert draft.caller_ura == CALLER
-    assert draft.callee_ura == "easynet:///r/test/device/callee"
+    assert draft.callee_ura == CALLEE
     assert draft.descriptor_ref == expected_descriptor_ref(ABILITY)
     assert draft.subject_ura == SUBJECT
     assert draft.nonce_base64 == NONCE

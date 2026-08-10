@@ -143,7 +143,10 @@ def test_sdk_provider_path_is_load_bearing() -> None:
     addressing = (PACKAGE / "_addressing.py").read_text(encoding="utf-8")
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
-    assert "build_target_invocation(request)" in client
+    assert "build_invocation(" in client
+    assert "self._invoker.build_invocation(request)" in transport
+    assert "easynet_sdk.InvocationBuilder()" not in transport
+    assert "build_target_invocation" not in transport
     assert 'candidate.get("ability_ura")' in client
     assert "info.ability_ura" in addressing
     assert "easynet_sdk.AbilityInvocationClient" in transport

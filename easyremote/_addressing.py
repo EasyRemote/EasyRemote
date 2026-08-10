@@ -9,6 +9,7 @@ from typing import Any, Literal, Protocol
 
 import easynet_sdk
 
+from ._product_abilities import SystemAgentId
 from .errors import InvalidArgument
 from .identity import LocalIdentity
 
@@ -29,17 +30,45 @@ class Candidate(Protocol):
     @property
     def descriptor_ref(self) -> str: ...
 
+    @property
+    def owner_ura(self) -> str: ...
+
+    @property
+    def call_mode(self) -> str: ...
+
 
 @dataclass(frozen=True)
 class ResolvedAbility:
     """Product selection facts consumed by the SDK Invocation provider."""
 
     ability_ura: str
+    callee_ura: str
     resolved_subject_ura: str
     call_carrier: CallCarrier
     input_schema: dict[str, Any] | None = None
     argument_label: str | None = None
     descriptor_ref: str = ""
+
+    def to_call_request(
+        self,
+        request: easynet_sdk.AbilityTargetRequest,
+    ) -> easynet_sdk.AbilityCallRequest:
+        """Bind a policy-derived request to this resolved logical callee."""
+        return easynet_sdk.AbilityCallRequest(
+            caller_ura=request.caller_ura,
+            callee_ura=self.callee_ura,
+            subject_ura=request.subject_ura,
+            nonce_base64=request.nonce_base64,
+            causal_context=request.causal_context,
+            descriptor_ref=request.descriptor_ref,
+            descriptor_version=request.descriptor_version,
+            call_mode=request.call_mode,
+            content_type=request.content_type,
+            args=request.args,
+            arguments_base64=request.arguments_base64,
+            metadata=request.metadata,
+            caller_signature=request.caller_signature,
+        )
 
 
 class DiscoveryCache:
@@ -49,6 +78,8 @@ class DiscoveryCache:
         self._schemas: dict[str, dict[str, Any]] = {}
         self._schemas_by_ura: dict[str, dict[str, Any]] = {}
         self._descriptor_refs_by_ura: dict[str, str] = {}
+        self._owners_by_ura: dict[str, str] = {}
+        self._carriers_by_ura: dict[str, CallCarrier] = {}
         self._candidates: dict[str, list[Candidate]] = {}
         self._agent_owners_by_id: dict[str, set[str]] = {}
         self._round_robin: dict[str, int] = {}
@@ -57,6 +88,8 @@ class DiscoveryCache:
         self._schemas.clear()
         self._schemas_by_ura.clear()
         self._descriptor_refs_by_ura.clear()
+        self._owners_by_ura.clear()
+        self._carriers_by_ura.clear()
         self._candidates.clear()
         self._agent_owners_by_id.clear()
         self._round_robin.clear()
@@ -70,8 +103,16 @@ class DiscoveryCache:
                 self._schemas_by_ura[info.ability_ura] = dict(info.input_schema)
             if info.ability_ura and info.descriptor_ref:
                 self._descriptor_refs_by_ura[info.ability_ura] = info.descriptor_ref
+            owner_ura = _candidate_owner_ura(info)
+            if info.ability_ura and owner_ura:
+                self._owners_by_ura[info.ability_ura] = owner_ura
+            call_mode = str(getattr(info, "call_mode", "") or "")
+            if info.ability_ura and call_mode:
+                self._carriers_by_ura[info.ability_ura] = (
+                    "stream" if call_mode == "stream" else "unary"
+                )
             self._remember_agent_owner(
-                _candidate_owner_ura(info) or _ability_owner_ura(info.ability_ura)
+                owner_ura or _ability_owner_ura(info.ability_ura)
             )
         for verb, group in self._candidates.items():
             schemas = [info.input_schema for info in group]
@@ -104,6 +145,12 @@ class DiscoveryCache:
 
     def descriptor_ref_for_ura(self, ability_ura: str) -> str:
         return self._descriptor_refs_by_ura.get(ability_ura, "")
+
+    def owner_for_ura(self, ability_ura: str) -> str:
+        return self._owners_by_ura.get(ability_ura, "")
+
+    def carrier_for_ura(self, ability_ura: str) -> CallCarrier | None:
+        return self._carriers_by_ura.get(ability_ura)
 
     def remember_descriptor(
         self,
@@ -180,20 +227,34 @@ class AbilityAddressResolver:
                 input_schema=self.cache.schema_for_ura(function),
                 descriptor_ref=self.cache.descriptor_ref_for_ura(function),
                 argument_label=function,
+                callee_ura=self.cache.owner_for_ura(function),
+                call_carrier=self.cache.carrier_for_ura(function),
             )
 
         verb = function.rsplit(".", 1)[-1]
         if node is not None:
             owner = self._sdk_call(
-                lambda: self._addressing.device_ura(identity.realm, node),
-                reason="invalid_device_owner",
+                lambda: self._addressing.device_agent_ura(
+                    identity.realm,
+                    node,
+                    str(SystemAgentId.ABILITY_MANAGEMENT),
+                ),
+                reason="invalid_system_agent_owner",
             )
-            return self._resolved_short_name(function, owner, verb)
+            return self._resolved_short_name(
+                function,
+                owner,
+                verb,
+            )
         if pick is not None:
             selected = self._pick(verb, pick)
             if selected is not None:
                 return selected
-        return self._resolved_short_name(function, identity.device_ura, verb)
+        return self._resolved_short_name(
+            function,
+            identity.system_agent_ura(str(SystemAgentId.ABILITY_MANAGEMENT)),
+            verb,
+        )
 
     def _resolved_short_name(
         self,
@@ -204,19 +265,33 @@ class AbilityAddressResolver:
         ability_ura = self._owner_ability_ura(owner_ura, function)
         return ResolvedAbility(
             ability_ura=ability_ura,
-            resolved_subject_ura=owner_ura,
-            call_carrier=_call_carrier_for_kind(self.owner_kind(owner_ura)),
-            input_schema=self.cache.schema_for_verb(verb),
+            callee_ura=owner_ura,
+            resolved_subject_ura=ability_ura,
+            call_carrier=self.cache.carrier_for_ura(ability_ura) or "unary",
+            input_schema=self.cache.schema_for_ura(ability_ura)
+            or self.cache.schema_for_verb(verb),
             argument_label=function,
+            descriptor_ref=self.cache.descriptor_ref_for_ura(ability_ura),
         )
 
-    def _resolve_owner(self, function: str, owner_ura: str) -> ResolvedAbility:
+    def _resolve_owner(
+        self,
+        function: str,
+        owner_ura: str,
+    ) -> ResolvedAbility:
+        if self.owner_kind(owner_ura) == "device":
+            raise InvalidArgument(
+                "Device selects an execution host but cannot own a public ability;"
+                " target its responsible SystemAgent",
+                reason="device_is_not_ability_owner",
+            )
         if self.is_ability_ura(function):
             return self.from_ability_ura(
                 function,
                 input_schema=self.cache.schema_for_ura(function),
                 descriptor_ref=self.cache.descriptor_ref_for_ura(function),
                 argument_label=function,
+                callee_ura=owner_ura,
             )
         ability_name = function if "." in function else f"{self._namespace}.{function}"
         ability_ura = self._owner_ability_ura(owner_ura, ability_name)
@@ -225,7 +300,8 @@ class AbilityAddressResolver:
             input_schema=self.cache.schema_for_ura(ability_ura),
             descriptor_ref=self.cache.descriptor_ref_for_ura(ability_ura),
             argument_label=ability_ura,
-            call_carrier=_call_carrier_for_kind(self.owner_kind(owner_ura)),
+            call_carrier=self.cache.carrier_for_ura(ability_ura) or "unary",
+            callee_ura=owner_ura,
         )
 
     def from_ability_ura(
@@ -236,20 +312,30 @@ class AbilityAddressResolver:
         argument_label: str | None = None,
         call_carrier: CallCarrier | None = None,
         descriptor_ref: str = "",
+        callee_ura: str = "",
     ) -> ResolvedAbility:
         try:
             projection = self._addressing.project_ability_ura(ability_ura)
-            owner_ura = projection.owner_ura
+            projected_owner_ura = projection.owner_ura
         except easynet_sdk.SDKError as exc:
             raise InvalidArgument(
                 f"invalid Ability URA {ability_ura!r}: {exc}",
                 reason="invalid_ability_ura",
             ) from exc
+        resolved_callee_ura = callee_ura or projected_owner_ura
+        if self.owner_kind(resolved_callee_ura) == "device":
+            raise InvalidArgument(
+                "Device-owned public Ability URAs are obsolete; use a"
+                " SystemAgent-owned descriptor or a device execution-host handle",
+                reason="device_is_not_ability_owner",
+            )
         return ResolvedAbility(
             ability_ura=projection.ura,
+            callee_ura=resolved_callee_ura,
             resolved_subject_ura=projection.ura,
             call_carrier=call_carrier
-            or _call_carrier_for_kind(self.owner_kind(owner_ura)),
+            or self.cache.carrier_for_ura(projection.ura)
+            or "unary",
             input_schema=input_schema,
             argument_label=argument_label or projection.ura,
             descriptor_ref=descriptor_ref,
@@ -311,6 +397,7 @@ class AbilityAddressResolver:
             argument_label=info.ability_ura,
             descriptor_ref=info.descriptor_ref
             or self.cache.descriptor_ref_for_ura(info.ability_ura),
+            callee_ura=_candidate_owner_ura(info),
         )
 
     @staticmethod
@@ -325,12 +412,12 @@ def canonical_addressing_client() -> easynet_sdk.AddressingClient:
     return easynet_sdk.AddressingClient(easynet_sdk.AxonAddressingTransport())
 
 
-def _call_carrier_for_kind(kind: str) -> CallCarrier:
-    return "stream" if kind == "device" else "unary"
-
-
 def _candidate_owner_ura(candidate: Candidate) -> str:
-    return str(getattr(candidate, "owner_ura", "") or "")
+    return str(
+        getattr(candidate, "owner_ura", "")
+        or getattr(candidate, "owner", "")
+        or ""
+    )
 
 
 def _ability_owner_ura(ability_ura: str) -> str:

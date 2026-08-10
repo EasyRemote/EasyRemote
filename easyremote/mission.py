@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Protocol
 
 import easynet_sdk
 
-from ._product_abilities import MissionAbility
+from ._product_abilities import MissionAbility, SystemAgentId
 from .errors import (
     InternalError,
     InvalidArgument,
@@ -27,10 +27,11 @@ from .errors import (
     Unavailable,
     error_from_sdk,
 )
-from .invocation_policy import FreshRoot, ResolvedTargetSubject
+from .invocation_policy import runtime_root_context
 
 if TYPE_CHECKING:
-    from .client import CallTarget, Client
+    from .client import Client
+    from .identity import LocalIdentity
 
 __all__ = [
     "MissionChildInvocation",
@@ -43,18 +44,19 @@ __all__ = [
 ]
 
 
-class _InvocationResult(Protocol):
-    def result(self) -> object: ...
+class _MissionTransport(Protocol):
+    def invoke_runtime_ability(
+        self,
+        call: easynet_sdk.RuntimeCallContext,
+        ability_name: str,
+        arguments: object,
+    ) -> object: ...
 
 
 class _MissionClient(Protocol):
-    def invoke(
-        self,
-        function: str | CallTarget,
-        /,
-        *args: object,
-        **kwargs: object,
-    ) -> _InvocationResult: ...
+    def _who(self) -> LocalIdentity: ...
+
+    def _connected(self) -> _MissionTransport: ...
 
 
 @dataclass(frozen=True)
@@ -247,16 +249,21 @@ class MissionExecutionAdapter:
         ability: MissionAbility,
         args: Mapping[str, object],
     ) -> dict[str, object]:
-        from .client import Client
-
         try:
-            result = self._client.invoke(
-                Client.target(
-                    str(ability),
-                    invocation_policy=FreshRoot(ResolvedTargetSubject()),
+            identity = self._client._who()
+            callee_ura = identity.system_agent_ura(str(SystemAgentId.AUTOMATION))
+            result = self._client._connected().invoke_runtime_ability(
+                runtime_root_context(
+                    caller_ura=identity.user_ura,
+                    callee_ura=callee_ura,
+                    subject_ura=easynet_sdk.owner_ability_ura(
+                        callee_ura,
+                        str(ability),
+                    ),
                 ),
-                **dict(args),
-            ).result()
+                str(ability),
+                dict(args),
+            )
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
         except RemoteError:

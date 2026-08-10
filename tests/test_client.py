@@ -28,6 +28,7 @@ from easyremote.client import (
     Client,
     FunctionInfo,
     RemoteAbility,
+    RemoteDevice,
     RemoteFunction,
     RemoteOwner,
     Stream,
@@ -53,6 +54,16 @@ IDENTITY = LocalIdentity(
     realm="acme", node_id="dev-a", username="silan", hub_endpoint="hub.example:443"
 )
 DEVICE_URA = "easynet:///r/acme/device/dev-a"
+USER_URA = "easynet:///r/acme/user/silan"
+ABILITY_MANAGER_URA = (
+    "easynet:///r/acme/agent/device.dev-a.ability-management"
+)
+INTROSPECTION_URA = (
+    "easynet:///r/acme/agent/device.dev-a.runtime-introspection"
+)
+RUNTIME_STATE_SUBJECT = (
+    "easynet:///r/acme/resource/user.silan/runtime-state/read"
+)
 UUID_AGENT_OWNER_URA = (
     "easynet:///r/acme/agent/"
     "019fb758-94a8-7441-acd1-55280797b9a90.claude-code"
@@ -257,8 +268,20 @@ class FakeTransport:
             self._addressing,
         )
 
-    def build_target_invocation(self, request):
-        return self._invoker.build_target_invocation(request)
+    def build_invocation(self, request):
+        return (
+            easynet_sdk.InvocationBuilder()
+            .with_caller_ura(request.caller_ura)
+            .with_callee_ura(request.callee_ura)
+            .with_descriptor_ref(request.descriptor_ref)
+            .with_subject_ura(request.subject_ura)
+            .with_nonce_base64(request.nonce_base64)
+            .with_causal_context(request.causal_context)
+            .with_content_type(request.content_type)
+            .with_metadata(dict(request.metadata))
+            .with_json_args(request.args)
+            .build()
+        )
 
     def get_ability_descriptor(
         self,
@@ -314,6 +337,9 @@ class FakeTransport:
         self.invocations.append(
             {
                 "descriptor_ref": descriptor_ref,
+                "caller_ura": call.caller_ura,
+                "callee_ura": call.callee_ura,
+                "subject_ura": call.subject_ura,
                 "args": arguments,
             }
         )
@@ -492,22 +518,24 @@ def test_identity_uras_are_canonical():
     assert IDENTITY.hub_ura == "easynet:///r/acme/authority"
 
 
-def test_explicit_root_policy_addresses_local_device_with_namespaced_ability():
+def test_explicit_root_policy_uses_user_and_ability_management_system_agent():
     client, transport = make_client()
     client.execute("ai_inference", prompt="hi")
     wire = transport.invocations[0]
-    assert wire["caller_ura"] == DEVICE_URA
-    assert wire["callee_ura"] == DEVICE_URA
-    assert wire["subject_ura"] == DEVICE_URA
+    assert wire["caller_ura"] == USER_URA
+    assert wire["callee_ura"] == ABILITY_MANAGER_URA
+    assert wire["subject_ura"] == easynet_sdk.owner_ability_ura(
+        ABILITY_MANAGER_URA, "er.ai_inference"
+    )
     assert wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.er.ai_inference"
+        easynet_sdk.owner_ability_ura(ABILITY_MANAGER_URA, "er.ai_inference")
     )
     assert wire["args"] == {"prompt": "hi"}
     assert wire["causal_context"] == {"form": "none"}
     assert "caller_signature" not in wire  # local-fast admission
 
 
-def test_dotted_names_pass_through_and_node_targets_device():
+def test_dotted_names_pass_through_and_device_selector_projects_ability_manager():
     client, transport = make_client()
     client.call(
         Client.target("team.fetch_sales", node="gpu-1"),
@@ -515,26 +543,21 @@ def test_dotted_names_pass_through_and_node_targets_device():
     )
     wire = transport.invocations[0]
     assert wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.gpu-1.team.fetch_sales"
+        "easynet:///r/acme/ability/system-agent.gpu-1.ability-management.team.fetch_sales"
     )
-    assert wire["callee_ura"] == "easynet:///r/acme/device/gpu-1"
+    assert wire["callee_ura"] == (
+        "easynet:///r/acme/agent/device.gpu-1.ability-management"
+    )
 
 
-def test_ability_ura_projects_to_explicit_invocation_tuple():
+def test_obsolete_device_owned_ability_ura_is_rejected():
     ability_ura = "easynet:///r/acme/ability/device.gpu-1.team.fetch_sales"
     client, transport = make_client(responses=[ok_response({"rows": 3})])
 
-    result = client.call(ability_ura, quarter="Q2")
-
-    assert result == {"rows": 3}
-    assert transport.carriers == ["stream"]
-    wire = transport.invocations[0]
-    assert wire["callee_ura"] == "easynet:///r/acme/device/gpu-1"
-    assert wire["subject_ura"] == ability_ura
-    assert wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.gpu-1.team.fetch_sales"
-    )
-    assert wire["args"] == {"quarter": "Q2"}
+    with pytest.raises(InvalidArgument) as exc_info:
+        client.call(ability_ura, quarter="Q2")
+    assert exc_info.value.reason == "device_is_not_ability_owner"
+    assert transport.invocations == []
 
 
 def test_agent_owned_ability_ura_uses_same_daemon_invoke_path():
@@ -600,9 +623,9 @@ def test_dotted_namespace_does_not_read_local_agent_registry(monkeypatch, tmp_pa
     client.invoke("caesura.discover", scope="self", query="")
 
     wire = transport.invocations[0]
-    assert wire["callee_ura"] == DEVICE_URA
+    assert wire["callee_ura"] == ABILITY_MANAGER_URA
     assert wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.caesura.discover"
+        "easynet:///r/acme/ability/system-agent.dev-a.ability-management.caesura.discover"
     )
 
 
@@ -770,7 +793,7 @@ def test_discovery_enables_positionals_and_fills_defaults():
     assert infos[0].ability_ura == "easynet:///r/acme/ability/user.er.fn"
     assert infos[0].qualified_name == "easynet:///r/acme/ability/user.er.fn"
     assert transport.invocations[0]["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.meta.list_abilities",
+        "easynet:///r/acme/ability/system-agent.dev-a.runtime-introspection.meta.list_abilities",
         action="read",
     )
     assert transport.invocations[0]["args"] == {}
@@ -807,7 +830,7 @@ def test_functions_with_owner_ura_namespace_discovers_canonical_owner():
     assert infos[0].qualified_name == "easynet:///r/acme/ability/dev.caesura.fn"
     wire = transport.invocations[0]
     assert wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.meta.list_abilities",
+        "easynet:///r/acme/ability/system-agent.dev-a.runtime-introspection.meta.list_abilities",
         action="read",
     )
     assert wire["args"] == {}
@@ -842,7 +865,7 @@ def test_duplicate_positional_and_keyword_rejected():
 
 
 def _seed_verb_schema(client, verb, schema):
-    """Populate the discovery cache with one device-owned verb schema."""
+    """Populate the discovery cache with one SystemAgent-owned verb schema."""
     client._addressing.cache.replace(
         [FunctionInfo.from_candidate(candidate(verb, "dev-a", schema))]
     )
@@ -1143,7 +1166,7 @@ def test_remote_stub_binds_positionals_and_defaults_locally():
     ai_inference("hello")
     wire = transport.invocations[0]
     assert wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.er.ai_inference"
+        "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.ai_inference"
     )
     assert wire["args"] == {"prompt": "hello", "max_tokens": 64}
 
@@ -1157,9 +1180,11 @@ def test_remote_stub_decorator_options():
     fn(5)
     wire = transport.invocations[0]
     assert wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.gpu-1.er.custom"
+        "easynet:///r/acme/ability/system-agent.gpu-1.ability-management.er.custom"
     )
-    assert wire["callee_ura"].endswith("/device/gpu-1")
+    assert wire["callee_ura"] == (
+        "easynet:///r/acme/agent/device.gpu-1.ability-management"
+    )
 
 
 def test_remote_stub_business_args_can_use_control_names():
@@ -1170,7 +1195,7 @@ def test_remote_stub_business_args_can_use_control_names():
 
     echo("business-node", "business-pick", 7)
     wire = transport.invocations[0]
-    assert wire["callee_ura"] == DEVICE_URA
+    assert wire["callee_ura"] == ABILITY_MANAGER_URA
     assert wire["args"] == {
         "node": "business-node",
         "pick": "business-pick",
@@ -1190,15 +1215,16 @@ def test_remote_stub_lowers_bytes_before_json_transport():
     assert wire["args"] == {"image": "AAEC", "size": 2}
 
 
-def test_remote_stub_invoke_rejects_host_stream_ability():
-    client, _ = make_client()
+def test_remote_stub_invoke_uses_descriptor_public_rpc_mode():
+    client, transport = make_client()
 
     @remote(client=client)
     def fn(a: int) -> int: ...
 
-    with pytest.raises(Unavailable) as exc_info:
-        fn.invoke(1)
-    assert exc_info.value.reason == "host_stream_invoke_not_supported"
+    invocation = fn.invoke(1)
+
+    assert invocation.state.is_terminal
+    assert transport.carriers == ["unary"]
 
 
 # -- @remote as a descriptor (the property playbook) ---------------------------
@@ -1219,7 +1245,7 @@ def test_remote_descriptor_on_class_strips_self():
     # The host instance never reaches the wire; only business args do.
     assert wire["args"] == {"prompt": "hello", "max_tokens": 64}
     assert wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.er.ai_inference"
+        "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.ai_inference"
     )
 
 
@@ -1235,7 +1261,7 @@ def test_remote_descriptor_uses_declared_name():
 
     Cluster(client).ai_inference("hi")
     assert transport.invocations[0]["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.er.ai_inference"
+        "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.ai_inference"
     )
 
 
@@ -1251,7 +1277,7 @@ def test_remote_descriptor_explicit_name_wins_over_attribute():
 
     Cluster(client).ai_inference("hi")
     assert transport.invocations[0]["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.er.custom"
+        "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.custom"
     )
 
 
@@ -1382,9 +1408,9 @@ def test_agent_chat_preserves_benchmark_messages_and_joins_native_trace():
     assert wire["descriptor_ref"] == expected_descriptor_ref(UUID_AGENT_CHAT_URA)
     assert len(transport.descriptor_requests) == 1
     descriptor_request = transport.descriptor_requests[0]
-    assert descriptor_request["call"].caller_ura == DEVICE_URA
-    assert descriptor_request["call"].callee_ura == DEVICE_URA
-    assert descriptor_request["call"].subject_ura == DEVICE_URA
+    assert descriptor_request["call"].caller_ura == USER_URA
+    assert descriptor_request["call"].callee_ura == INTROSPECTION_URA
+    assert descriptor_request["call"].subject_ura == RUNTIME_STATE_SUBJECT
     assert (
         descriptor_request["ability_ura"]
         == UUID_AGENT_CHAT_URA
@@ -1422,6 +1448,19 @@ def test_agent_chat_preserves_benchmark_messages_and_joins_native_trace():
     assert result.tool_calls == ()
     assert result.timeline == ()
     assert result.trace == native_agent_trace().to_dict()
+
+
+def test_bare_agent_id_fails_closed_when_catalogue_has_no_owner():
+    client, _ = make_client(responses=[empty_catalogue_response()])
+
+    with pytest.raises(Unavailable) as exc_info:
+        client.agent("claude-code").chat(
+            messages=[{"role": "user", "content": "hello"}],
+            subject="benchmark://suite/case",
+            execution={"cwd": "benchmarks/run/case", "timeout_ms": 1_000},
+        )
+
+    assert exc_info.value.reason == "agent_owner_unresolved"
 
 
 def test_agent_chat_preserves_observability_records():
@@ -1517,7 +1556,7 @@ def test_agent_chat_does_not_mask_success_when_trace_lookup_is_unavailable():
 
     transport = TraceUnavailableTransport(
         responses=[
-            empty_catalogue_response(),
+            agent_catalogue_response(),
             ok_response(
                 {
                     "reply": "intentdb-easyremote-sdk-ok",
@@ -1580,7 +1619,10 @@ def test_agent_chat_preserves_runtime_failure_identity():
             )
 
     failure_trace = native_agent_trace("inv-failed-1", "failed")
-    transport = FailingAgentTransport(traces=[failure_trace])
+    transport = FailingAgentTransport(
+        responses=[agent_catalogue_response()],
+        traces=[failure_trace],
+    )
     client = Client(
         transport=transport,
         identity=IDENTITY,
@@ -1610,7 +1652,7 @@ def test_agent_chat_trace_lookup_failure_does_not_mask_runtime_failure():
                 invocation_id="inv-failed-2",
             )
 
-    transport = FailingAgentTransport()
+    transport = FailingAgentTransport(responses=[agent_catalogue_response()])
     client = Client(
         transport=transport,
         identity=IDENTITY,
@@ -1635,7 +1677,7 @@ def test_agent_chat_trace_lookup_failure_does_not_mask_runtime_failure():
 def test_agent_chat_rejects_native_trace_without_matching_record():
     client, _ = make_client(
         responses=[
-            empty_catalogue_response(),
+            agent_catalogue_response(),
             ok_response({"reply": "SELECT 1", "tool_calls": [], "usage": {}}),
         ],
         traces=[native_agent_trace("different-request")],
@@ -1653,7 +1695,8 @@ def test_agent_chat_rejects_native_trace_without_matching_record():
 
 def test_device_handle_call_matches_node_target():
     client, transport = make_client()
-    client.device("gpu-2").call("chat", prompt="hi")
+    device = client.device("gpu-2")
+    device.call("chat", prompt="hi")
 
     other, other_tx = make_client()
     other.call(Client.target("chat", node="gpu-2"), prompt="hi")
@@ -1661,28 +1704,40 @@ def test_device_handle_call_matches_node_target():
     assert (
         transport.invocations[0]["descriptor_ref"]
         == other_tx.invocations[0]["descriptor_ref"]
-        == expected_descriptor_ref("easynet:///r/acme/ability/device.gpu-2.er.chat")
+        == expected_descriptor_ref("easynet:///r/acme/ability/system-agent.gpu-2.ability-management.er.chat")
     )
-    assert transport.invocations[0]["callee_ura"] == "easynet:///r/acme/device/gpu-2"
+    assert transport.invocations[0]["callee_ura"] == (
+        "easynet:///r/acme/agent/device.gpu-2.ability-management"
+    )
+    assert isinstance(device, RemoteDevice)
+    assert not isinstance(device, RemoteOwner)
+    assert device.execution_host_ura == "easynet:///r/acme/device/gpu-2"
+    assert device.ability_owner_ura == (
+        "easynet:///r/acme/agent/device.gpu-2.ability-management"
+    )
 
 
 def test_owner_ability_handle_calls_fully_qualified_native_ability():
-    client, transport = make_client(responses=[{"source": "easynet-native"}])
+    client, transport = make_client(
+        responses=[ok_response({"source": "easynet-native"})]
+    )
 
     result = client.device("gpu-2").ability("nativeer.native_echo").call(text="hi")
 
     assert result == {"source": "easynet-native"}
     wire = transport.invocations[0]
-    assert wire["callee_ura"] == "easynet:///r/acme/device/gpu-2"
+    assert wire["callee_ura"] == (
+        "easynet:///r/acme/agent/device.gpu-2.ability-management"
+    )
     assert wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.gpu-2.nativeer.native_echo"
+        "easynet:///r/acme/ability/system-agent.gpu-2.ability-management.nativeer.native_echo"
     )
     assert wire["args"] == {"text": "hi"}
-    assert transport.carriers == ["stream"]
+    assert transport.carriers == ["unary"]
 
 
 def test_owner_ability_handle_can_declare_typed_stub():
-    client, transport = make_client(responses=[{"value": 7}])
+    client, transport = make_client(responses=[ok_response({"value": 7})])
     native = client.device("gpu-2").ability("nativeer.native_echo")
 
     @native.remote
@@ -1691,10 +1746,12 @@ def test_owner_ability_handle_can_declare_typed_stub():
     assert native_echo("hi", times=2) == {"value": 7}
     assert isinstance(native, RemoteAbility)
     assert native.name == "nativeer.native_echo"
-    assert native.owner_ura == "easynet:///r/acme/device/gpu-2"
+    assert native.owner_ura == (
+        "easynet:///r/acme/agent/device.gpu-2.ability-management"
+    )
     wire = transport.invocations[0]
     assert wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.gpu-2.nativeer.native_echo"
+        "easynet:///r/acme/ability/system-agent.gpu-2.ability-management.nativeer.native_echo"
     )
     assert wire["args"] == {"text": "hi", "times": 2}
 
@@ -1709,7 +1766,7 @@ def test_owner_ability_handle_streams_fully_qualified_native_ability():
     assert frames == [{"tick": 1}]
     wire = transport.invocations[0]
     assert wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.gpu-2.nativeer.native_stream"
+        "easynet:///r/acme/ability/system-agent.gpu-2.ability-management.nativeer.native_stream"
     )
     assert wire["args"] == {"count": 1}
     assert transport.carriers == ["stream"]
@@ -1740,10 +1797,11 @@ def test_hub_handle_projects_product_policy_onto_realm_authority():
     )
 
 
-def test_handle_factories_return_remote_owner():
+def test_handle_factories_preserve_owner_and_execution_host_types():
     client, _ = make_client()
     assert isinstance(client.agent("u-alice.chatbot"), RemoteOwner)
-    assert isinstance(client.device("gpu-2"), RemoteOwner)
+    assert isinstance(client.device("gpu-2"), RemoteDevice)
+    assert not isinstance(client.device("gpu-2"), RemoteOwner)
     assert isinstance(client.hub(), RemoteOwner)
     assert isinstance(client.missions, MissionControl)
 
@@ -1753,7 +1811,9 @@ def test_owner_handle_accepts_full_cross_realm_ura():
     client.device("easynet:///r/other/device/box1").call("chat", prompt="hi")
     wire = transport.invocations[0]
     # The facade encodes the wire; whether it routes is daemon federation policy.
-    assert wire["callee_ura"] == "easynet:///r/other/device/box1"
+    assert wire["callee_ura"] == (
+        "easynet:///r/other/agent/device.box1.ability-management"
+    )
 
 
 def test_owner_target_rejects_node_and_pick():
@@ -1787,12 +1847,15 @@ def test_agent_handle_dotted_ability_passes_through():
 def candidate(verb, device_id, schema=None):
     return {
         "ability": verb,
-        "qualified_name": f"easynet:///r/acme/ability/device.{device_id}.er.{verb}",
-        "owner": "device",
+        "qualified_name": f"easynet:///r/acme/ability/system-agent.{device_id}.ability-management.er.{verb}",
+        "owner": (
+            f"easynet:///r/acme/agent/device.{device_id}.ability-management"
+        ),
         "description": "",
         "input_schema": schema or {"type": "object", "properties": {}},
         "visibility": "device",
         "score": 1.0,
+        "call_mode": "stream",
     }
 
 
@@ -1802,7 +1865,7 @@ def native_candidate(ability_ura, schema=None, descriptor_ref=""):
         "ability_ura": ability_ura,
         "qualified_name": ability_ura,
         "descriptor_ref": descriptor_ref,
-        "owner": "easynet:///r/acme/device/gpu-2",
+        "owner": "easynet:///r/acme/agent/device.gpu-2.ability-management",
         "description": "Native EasyNet ability.",
         "input_schema": schema
         or {
@@ -1812,11 +1875,12 @@ def native_candidate(ability_ura, schema=None, descriptor_ref=""):
         },
         "visibility": "user",
         "score": 1.0,
+        "call_mode": "stream",
     }
 
 
 def test_functions_user_scope_discovers_native_easynet_ability_for_canonical_ura_call():
-    ability_ura = "easynet:///r/acme/ability/device.gpu-2.nativeer.native_echo"
+    ability_ura = "easynet:///r/acme/ability/system-agent.gpu-2.ability-management.nativeer.native_echo"
     discover = ok_response({"candidates": [native_candidate(ability_ura)]})
     client, transport = make_client(responses=[discover, {"source": "native"}])
 
@@ -1827,17 +1891,19 @@ def test_functions_user_scope_discovers_native_easynet_ability_for_canonical_ura
     assert result == {"source": "native"}
     discover_wire, call_wire = transport.invocations
     assert discover_wire["args"] == {"scope": "realm"}
-    assert call_wire["callee_ura"] == "easynet:///r/acme/device/gpu-2"
+    assert call_wire["callee_ura"] == (
+        "easynet:///r/acme/agent/device.gpu-2.ability-management"
+    )
     assert call_wire["subject_ura"] == ability_ura
     assert call_wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.gpu-2.nativeer.native_echo"
+        "easynet:///r/acme/ability/system-agent.gpu-2.ability-management.nativeer.native_echo"
     )
     assert call_wire["args"] == {"text": "hi"}
     assert transport.carriers == ["runtime", "stream"]
 
 
 def test_discovered_descriptor_ref_is_used_for_canonical_ura_call():
-    ability_ura = "easynet:///r/acme/ability/device.gpu-2.nativeer.native_echo"
+    ability_ura = "easynet:///r/acme/ability/system-agent.gpu-2.ability-management.nativeer.native_echo"
     descriptor_ref = f"{ability_ura}@1.0.0#{'a' * 64}!stream"
     discover = ok_response(
         {"candidates": [native_candidate(ability_ura, descriptor_ref=descriptor_ref)]}
@@ -1866,12 +1932,12 @@ def test_round_robin_alternates_device_candidates():
     assert transport.carriers[1:] == ["stream", "stream"]
     selected = [w["subject_ura"] for w in transport.invocations[1:]]
     assert selected == [
-        "easynet:///r/acme/ability/device.dev-a.er.fn",
-        "easynet:///r/acme/ability/device.dev-b.er.fn",
+        "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn",
+        "easynet:///r/acme/ability/system-agent.dev-b.ability-management.er.fn",
     ]
-    assert transport.invocations[1]["callee_ura"] == DEVICE_URA
+    assert transport.invocations[1]["callee_ura"] == ABILITY_MANAGER_URA
     assert transport.invocations[1]["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.er.fn"
+        "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn"
     )
 
 
@@ -1884,8 +1950,8 @@ def test_pick_random_chooses_a_known_candidate():
     client.execute(Client.target("fn", pick="random"))
     assert transport.carriers[1] == "stream"
     assert transport.invocations[1]["subject_ura"] in (
-        "easynet:///r/acme/ability/device.dev-a.er.fn",
-        "easynet:///r/acme/ability/device.dev-b.er.fn",
+        "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn",
+        "easynet:///r/acme/ability/system-agent.dev-b.ability-management.er.fn",
     )
 
 
@@ -1930,7 +1996,7 @@ def test_discovery_does_not_cache_schema_when_candidate_omits_schema():
     }
     missing_schema = {
         "ability": "fn",
-        "qualified_name": "easynet:///r/acme/ability/device.dev-c.er.fn",
+        "qualified_name": "easynet:///r/acme/ability/system-agent.dev-c.ability-management.er.fn",
         "owner": "device",
         "description": "",
         "visibility": "device",
@@ -1950,14 +2016,14 @@ def test_discovery_does_not_cache_schema_when_candidate_omits_schema():
 def test_pick_without_candidates_falls_back_to_local():
     client, transport = make_client()
     client.execute(Client.target("fn", pick="round_robin"))
-    assert transport.invocations[0]["callee_ura"] == DEVICE_URA
+    assert transport.invocations[0]["callee_ura"] == ABILITY_MANAGER_URA
 
 
 def test_agent_owned_candidates_are_pickable_from_canonical_ura():
     agent_candidate = {
         "ability": "fn",
         "qualified_name": "easynet:///r/acme/ability/user-1.claude.fn",
-        "owner": "claude",
+        "owner": "easynet:///r/acme/agent/user-1.claude",
         "description": "",
         "input_schema": {},
         "visibility": "device",
@@ -1996,7 +2062,7 @@ def test_aio_mirror_executes_same_dispatch():
     result = asyncio.run(client.aio.execute("fn", x=1))
     assert result == {"echo": True}
     assert transport.invocations[0]["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.er.fn"
+        "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn"
     )
 
 
@@ -2013,12 +2079,12 @@ def test_aio_mirror_exposes_prepare_stream_and_session():
     stream = asyncio.run(client.aio.stream("fn", x=2))
     assert list(stream) == [{"echo": True}]
     assert transport.invocations[0]["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.er.fn"
+        "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn"
     )
 
     session = asyncio.run(client.aio.session("fn", x=3))
     assert transport.invocations[1]["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.er.fn"
+        "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn"
     )
     assert transport.streams[0].stream_id == 1
     session.send({"payload": "hi"})

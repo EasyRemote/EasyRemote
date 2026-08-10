@@ -22,6 +22,21 @@ IDENTITY = LocalIdentity(
     realm="acme", node_id="dev-a", username="u-alice", hub_endpoint="hub:443"
 )
 DEVICE_URA = "easynet:///r/acme/device/dev-a"
+USER_URA = "easynet:///r/acme/user/u-alice"
+ABILITY_MANAGER_URA = (
+    "easynet:///r/acme/agent/device.dev-a.ability-management"
+)
+AGENT_MANAGER_URA = "easynet:///r/acme/agent/device.dev-a.agent-management"
+INTROSPECTION_URA = (
+    "easynet:///r/acme/agent/device.dev-a.runtime-introspection"
+)
+RUNTIME_STATE_SUBJECT = (
+    "easynet:///r/acme/resource/user.u-alice/runtime-state/read"
+)
+
+
+def system_ability_ura(owner_ura: str, ability_name: str) -> str:
+    return easynet_sdk.owner_ability_ura(owner_ura, ability_name)
 
 
 def ok_response(result):
@@ -60,8 +75,20 @@ class FakeTransport:
             self._runtime_ability,
         )
 
-    def build_target_invocation(self, request):
-        return self._invoker.build_target_invocation(request)
+    def build_invocation(self, request):
+        return (
+            easynet_sdk.InvocationBuilder()
+            .with_caller_ura(request.caller_ura)
+            .with_callee_ura(request.callee_ura)
+            .with_descriptor_ref(request.descriptor_ref)
+            .with_subject_ura(request.subject_ura)
+            .with_nonce_base64(request.nonce_base64)
+            .with_causal_context(request.causal_context)
+            .with_content_type(request.content_type)
+            .with_metadata(dict(request.metadata))
+            .with_json_args(request.args)
+            .build()
+        )
 
     def get_ability_descriptor(
         self,
@@ -182,7 +209,7 @@ def test_install_invokes_ability_deploy_with_resource_ref(tmp_path):
         ok_response(
             {
                 "install_id": "inst-1",
-                "ability_ura": "easynet:///r/acme/ability/device.dev-a.er.fn",
+                "ability_ura": "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn",
                 "state": "ACTIVE",
             }
         )
@@ -193,11 +220,12 @@ def test_install_invokes_ability_deploy_with_resource_ref(tmp_path):
     assert result.install_id == "inst-1"
     wire = transport.invocations[0]
     assert wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.ability.deploy"
+        system_ability_ura(ABILITY_MANAGER_URA, "ability.deploy")
     )
     assert wire["subject_ura"].startswith("easynet:///r/acme/resource/device.dev-a/fs/")
     assert wire["args"]["node_id"] == "local"
-    assert wire["callee_ura"] == DEVICE_URA
+    assert wire["caller_ura"] == USER_URA
+    assert wire["callee_ura"] == ABILITY_MANAGER_URA
     assert wire["args"]["target_ura"] == DEVICE_URA
     ref = wire["args"]["resource_ref"]
     assert ref["resource_ura"] == wire["subject_ura"]
@@ -215,7 +243,7 @@ def test_install_forwards_process_binding_lease(tmp_path):
         ok_response(
             {
                 "install_id": "inst-1",
-                "ability_ura": "easynet:///r/acme/ability/device.dev-a.er.fn",
+                "ability_ura": "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn",
                 "state": "ACTIVE",
             }
         )
@@ -234,7 +262,7 @@ def test_install_resolves_named_node_to_canonical_target_ura(tmp_path):
         ok_response(
             {
                 "install_id": "inst-1",
-                "ability_ura": "easynet:///r/acme/ability/device.gpu-2.er.fn",
+                "ability_ura": "easynet:///r/acme/ability/system-agent.gpu-2.ability-management.er.fn",
                 "state": "ACTIVE",
             }
         )
@@ -244,13 +272,16 @@ def test_install_resolves_named_node_to_canonical_target_ura(tmp_path):
 
     assert result.node_id == "gpu-2"
     wire = transport.invocations[0]
-    assert wire["callee_ura"] == "easynet:///r/acme/device/gpu-2"
+    assert wire["caller_ura"] == USER_URA
+    assert wire["callee_ura"] == (
+        "easynet:///r/acme/agent/device.gpu-2.ability-management"
+    )
     assert wire["args"]["node_id"] == "gpu-2"
     assert wire["args"]["target_ura"] == "easynet:///r/acme/device/gpu-2"
 
 
 def test_uninstall_revokes_exact_install_binding():
-    ability_ura = "easynet:///r/acme/ability/device.dev-a.er.fn"
+    ability_ura = "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn"
     client, transport = client_with(
         ok_response(
             {
@@ -266,9 +297,10 @@ def test_uninstall_revokes_exact_install_binding():
     assert result["state"] == "REMOVED"
     wire = transport.invocations[0]
     assert wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.ability.uninstall"
+        system_ability_ura(ABILITY_MANAGER_URA, "ability.uninstall")
     )
-    assert wire["callee_ura"] == DEVICE_URA
+    assert wire["caller_ura"] == USER_URA
+    assert wire["callee_ura"] == ABILITY_MANAGER_URA
     assert wire["subject_ura"] == ability_ura
     assert wire["args"] == {
         "ability_ura": ability_ura,
@@ -287,12 +319,12 @@ def test_install_rejects_missing_package(tmp_path):
 def test_list_abilities_sends_owner_scope_once():
     ability = {
         "name": "er.fn",
-        "ability_ura": "easynet:///r/acme/ability/device.dev-a.er.fn",
+        "ability_ura": "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn",
         "descriptor_ref": expected_descriptor_ref(
-            "easynet:///r/acme/ability/device.dev-a.er.fn",
+            "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn",
             action="stream",
         ),
-        "owner_ura": DEVICE_URA,
+        "owner_ura": ABILITY_MANAGER_URA,
         "descriptor_version": "1.0.0",
         "description": "demo",
         "state": "ACTIVE",
@@ -300,7 +332,7 @@ def test_list_abilities_sends_owner_scope_once():
     }
     client, transport = client_with(ok_response({"abilities": [ability]}))
 
-    records = AbilityControl(client).list(owner_ura=DEVICE_URA)
+    records = AbilityControl(client).list(owner_ura=ABILITY_MANAGER_URA)
 
     assert records[0].ability_ura == ability["ability_ura"]
     assert records[0].descriptor_ref == ability["descriptor_ref"]
@@ -310,9 +342,12 @@ def test_list_abilities_sends_owner_scope_once():
     )
     wire = transport.invocations[0]
     assert wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.meta.list_abilities"
+        system_ability_ura(INTROSPECTION_URA, "meta.list_abilities")
     )
-    assert wire["args"] == {"owner_ura": DEVICE_URA}
+    assert wire["caller_ura"] == USER_URA
+    assert wire["callee_ura"] == INTROSPECTION_URA
+    assert wire["subject_ura"] == RUNTIME_STATE_SUBJECT
+    assert wire["args"] == {"owner_ura": ABILITY_MANAGER_URA}
 
 
 def test_list_abilities_exposes_realm_scope():
@@ -324,7 +359,7 @@ def test_list_abilities_exposes_realm_scope():
 
 
 def test_show_returns_matching_ability_or_not_found():
-    ability_ura = "easynet:///r/acme/ability/device.dev-a.er.fn"
+    ability_ura = "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn"
     client, _ = client_with(
         ok_response(
             {
@@ -332,7 +367,7 @@ def test_show_returns_matching_ability_or_not_found():
                     {
                         "name": "er.fn",
                         "ability_ura": ability_ura,
-                        "owner_ura": DEVICE_URA,
+                        "owner_ura": ABILITY_MANAGER_URA,
                         "descriptor_version": "1.0.0",
                     }
                 ]
@@ -362,8 +397,8 @@ def test_list_user_filters_agent_and_user_owned_rows():
             "name": "caesura.chat",
         },
         {
-            "ability_ura": "easynet:///r/acme/ability/device.dev-a.er.fn",
-            "owner_ura": DEVICE_URA,
+            "ability_ura": "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn",
+            "owner_ura": ABILITY_MANAGER_URA,
             "descriptor_version": "1.0.0",
             "name": "er.fn",
             "metadata": {"owner_user": "u-alice"},
@@ -375,17 +410,20 @@ def test_list_user_filters_agent_and_user_owned_rows():
 
     assert [record.owner_ura for record in records] == [
         "easynet:///r/acme/agent/u-alice.caesura",
-        DEVICE_URA,
+        ABILITY_MANAGER_URA,
     ]
 
 
-def test_remote_node_catalogue_targets_that_device_owner():
+def test_remote_node_catalogue_targets_runtime_introspection_system_agent():
     client, transport = client_with(ok_response({"abilities": []}))
     AbilityControl(client).list(node="gpu-2")
     wire = transport.invocations[0]
-    assert wire["callee_ura"] == "easynet:///r/acme/device/gpu-2"
+    assert wire["caller_ura"] == USER_URA
+    assert wire["callee_ura"] == (
+        "easynet:///r/acme/agent/device.gpu-2.runtime-introspection"
+    )
     assert wire["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.gpu-2.meta.list_abilities"
+        system_ability_ura(wire["callee_ura"], "meta.list_abilities")
     )
 
 
@@ -395,9 +433,25 @@ def test_list_device_with_explicit_owner_targets_that_device_catalogue():
     AbilityControl(client).list_device("gpu-2")
 
     wire = transport.invocations[0]
-    assert wire["callee_ura"] == "easynet:///r/acme/device/gpu-2"
+    assert wire["callee_ura"] == (
+        "easynet:///r/acme/agent/device.gpu-2.runtime-introspection"
+    )
     assert wire["args"] == {
-        "owner_ura": "easynet:///r/acme/device/gpu-2",
+        "owner_ura": "easynet:///r/acme/agent/device.gpu-2.ability-management",
+    }
+
+
+def test_list_device_accepts_canonical_device_ura_without_treating_it_as_an_id():
+    client, transport = client_with(ok_response({"abilities": []}))
+
+    AbilityControl(client).list_device("easynet:///r/acme/device/gpu-2")
+
+    wire = transport.invocations[0]
+    assert wire["callee_ura"] == (
+        "easynet:///r/acme/agent/device.gpu-2.runtime-introspection"
+    )
+    assert wire["args"] == {
+        "owner_ura": "easynet:///r/acme/agent/device.gpu-2.ability-management",
     }
 
 
@@ -442,15 +496,18 @@ def test_agent_add_and_list_use_daemon_system_abilities():
     assert stopped.stopped is True
     assert stopped.agent_ura == "easynet:///r/acme/agent/caesura"
     assert transport.invocations[0]["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.agent.start"
+        system_ability_ura(AGENT_MANAGER_URA, "agent.start")
     )
+    assert transport.invocations[0]["caller_ura"] == USER_URA
+    assert transport.invocations[0]["callee_ura"] == AGENT_MANAGER_URA
+    assert transport.invocations[0]["subject_ura"] == DEVICE_URA
     assert transport.invocations[0]["args"]["agent_type"] == "claude-code"
     assert transport.invocations[0]["args"]["materialize_directory"] is True
     assert transport.invocations[1]["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.agent.list"
+        system_ability_ura(AGENT_MANAGER_URA, "agent.list")
     )
     assert transport.invocations[2]["descriptor_ref"] == expected_descriptor_ref(
-        "easynet:///r/acme/ability/device.dev-a.agent.stop"
+        system_ability_ura(AGENT_MANAGER_URA, "agent.stop")
     )
     assert transport.invocations[2]["args"] == {"name": "caesura"}
 
