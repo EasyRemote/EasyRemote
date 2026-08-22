@@ -4,6 +4,42 @@ This file is the operating manual for agents working in this repository. Keep
 it concrete: EasyRemote is a Python product facade over EasyNet-Cli and Axon,
 not an independent runtime.
 
+## Agent Bootstrap
+
+Use this order whenever an agent enters the repository:
+
+1. Read this file completely.
+2. Read `AGENTS.md` for repository-level authorship and engineering rules.
+3. Inspect the public surface in `easyremote/__init__.py`; do not infer APIs
+   from old prose or examples.
+4. For an application or concrete use case, load
+   `skills/easyremote-ability-builder/SKILL.md` and inspect the closest project
+   under `gallery/projects/`.
+5. For runtime, SDK, authority, signer, routing, or ABI changes, also read the
+   sibling EasyNet-Cli repository's instructions before editing it.
+6. Check both worktrees before making changes. Never discard unrelated edits.
+
+Source priority is executable code and tests, then this guide, then current
+design documents, then historical PR notes. If two sources disagree, prove the
+current behavior with a focused test before changing documentation.
+
+## Repository Map
+
+| Path | Responsibility |
+|---|---|
+| `easyremote/node.py` | `ComputeNode`, registration, package deployment, lease lifecycle |
+| `easyremote/client.py` | `Client`, `@remote`, targeting, stream and bidi facades |
+| `easyremote/schema.py` | Python signature and JSON-schema derivation |
+| `easyremote/_host/` | Warm resident host and `binary_v1` framed execution |
+| `easyremote/_sdk_transport/` | Thin error/value adapter over public `easynet_sdk` APIs |
+| `easyremote/control.py` | Ability and Agent control facades |
+| `easyremote/mission.py` | Mission/EAL product facade |
+| `tests/` | Public contracts, host protocol, SDK-boundary, and lifecycle tests |
+| `gallery/projects/` | Independent, uv-locked, production-shaped MVP cases |
+| `skills/easyremote-ability-builder/` | Reusable instructions for another agent building with EasyRemote |
+| `docs/design/` | Current architectural rationale; not a substitute for tests |
+| `pr/` | Ignored task notes, invariants, verification, and decisions |
+
 ## Project Scope
 
 EasyRemote lets Python developers publish local Python functions as governed
@@ -42,13 +78,15 @@ EasyNet-Cli owns product/device runtime behavior:
 - Mission/EAL orchestration and product policy.
 - The `host_stream` executor that connects daemon invocation to this Python
   resident host.
+- SDK native transport selection, the base ABI gate, and C ABI v8 raw-stream
+  feature discovery.
 
 Axon owns protocol truth:
 
 - Complete signed Invocation shape.
 - Admission, ordering, cancellation, receipts, terminal stream semantics, and
   canonical verification.
-- Direct stream data plane used by the Python SDK for raw stream payloads.
+- Canonical stream payload and content-type wire semantics.
 
 When unsure where a feature belongs, classify it by policy ownership. If it
 changes Invocation, receipts, stream terminal semantics, admission, signing, or
@@ -80,6 +118,68 @@ This design supports low-overhead multimodal server-streaming on the local
 provider boundary. Do not document it as a universal latency or bandwidth SLO.
 End-to-end results depend on hardware, payload size, codec choice, daemon mode,
 network path, receiver speed, and deployment topology.
+
+## Canonical Lifecycle
+
+Treat provider lifecycle as an explicit state machine:
+
+```text
+Python callable declared
+  -> schema derived
+  -> ability package written
+  -> ability.deploy admitted
+  -> descriptor + Axon runtime + execution-index mode committed
+  -> Local active
+  -> realm advertisement pending/published
+  -> lease renewed or provider stopped
+  -> route unbound and deployment expired/uninstalled
+```
+
+`Local active` is the local invocation readiness boundary. Realm advertisement
+is a separate federation state and may remain pending while the Hub is offline.
+Redeploying a public name with a different call mode must replace the previous
+mode in descriptor, runtime, and execution index together. Rollback, expiry,
+and uninstall must remove the same three facts.
+
+The caller path is:
+
+```text
+typed arguments
+  -> explicit InvocationDerivationPolicy
+  -> SDK descriptor/identity projection
+  -> exact authority binding when required
+  -> active key-service managed signer
+  -> daemon route selection and Axon admission
+  -> host_stream execution
+  -> verified terminal or structured failure
+```
+
+EasyRemote must not parse credentials, derive User UUIDs, mint authority, pick
+signing keys, or select native ABI symbols along this path.
+
+## Building A Concrete Use Case
+
+Start with the production pain, not a protocol feature. Define one user, one
+bounded task, the minimum typed inputs, the exact output projection, the local
+resource that must remain private, and a deterministic terminal condition.
+
+Choose the smallest public shape:
+
+- Unary result: ordinary return annotation and ordinary `@remote` call.
+- Incremental result: finite `Iterator[T]` and `.stream(...)`.
+- Binary media: finite `Iterator[StreamFrame]` with explicit content type.
+- Caller evidence: first provider argument `Context`; omit it from the caller.
+- Duplex interaction: `Client.session(...)`, not an invented decorator.
+
+Keep every Gallery case independently managed by uv. Its README must explain
+`Concrete use case`, precise `Requirements`, `Existing approach`,
+`EasyRemote approach`, `Effect`, and `Run` in concise English prose. Avoid
+prompt-like instructions and do not simulate broader orchestration features in
+the MVP.
+
+Use `skills/easyremote-ability-builder/scripts/scaffold_case.py` only as a
+starting point; replace its placeholder domain logic and claims before
+delivery.
 
 ## Supported Function Shapes
 
@@ -128,8 +228,10 @@ These are intentional until a spec and tests say otherwise:
   needs a separate client-stream/bidi contract.
 - The binary host protocol is process-local Unix socket transport, not a
   network tunneling protocol.
-- C ABI v7 remains unchanged; raw stream media uses the SDK direct provider,
-  while C ABI remains the local prepare/control provider.
+- The installed SDK keeps the base `runtime_abi_version()` contract at 7 and
+  feature-detects the additive `runtime_invocation_stream_open_v8` raw-payload
+  stream extension. EasyRemote uses that SDK-owned C ABI transport; it does not
+  bind ABI symbols or open an independent Axon gRPC channel itself.
 - Benchmark numbers must state scope, frame count, payload size, and machine.
   Never present local Unix-socket throughput as a remote-device guarantee.
 
@@ -279,9 +381,31 @@ cargo fmt --check
 ```
 
 Also run the focused Rust tests that cover `host_stream` binary framing,
-bounded backpressure, raw progress projection, and C ABI v7 symbol count. Keep
+bounded backpressure, raw progress projection, the base C ABI version gate,
+and v8 raw-stream feature discovery. Keep
 the exact test names in the task plan or verification log because they move
 more often than the Python suite entry points.
+
+For every project-local skill change, also run:
+
+```bash
+python /Users/macbook.silan.tech/.codex/skills/.system/skill-creator/scripts/quick_validate.py \
+  skills/easyremote-ability-builder
+uv run pytest -q tests/test_easyremote_ability_builder_skill.py
+```
+
+## Definition Of Done
+
+A change is complete only when:
+
+- Public API behavior has a deterministic test.
+- Runtime-bound behavior has a focused SDK/daemon test at the owning layer.
+- A concrete application change runs through a real provider and caller when
+  the required local runtime is available.
+- uv locks, Ruff, mypy, and relevant pytest suites pass.
+- Documentation describes the implementation that actually ran.
+- Generated artifacts and test processes are cleaned up.
+- Residual limits distinguish local, federation, and production guarantees.
 
 ## Change Discipline
 
@@ -302,7 +426,7 @@ more often than the Python suite entry points.
 
 ## Current Stream Capability Status
 
-As of 2026-08-21, the implemented and verified path is:
+As of 2026-08-22, the implemented and verified path is:
 
 ```text
 Python generator
@@ -310,7 +434,7 @@ Python generator
   -> binary_v1 host_stream Unix socket
   -> easynet-daemon host_stream executor
   -> Axon stream carrier
-  -> Python SDK direct provider
+  -> Python SDK C ABI v8 raw-stream projection
   -> EasyRemote Stream / StreamFrame
 ```
 

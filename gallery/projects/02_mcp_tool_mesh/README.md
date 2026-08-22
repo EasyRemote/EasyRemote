@@ -1,21 +1,55 @@
-# 02 MCP Tool Mesh
+# An Owned Tool Boundary for Enterprise Agents
 
-## Usage Scenario
+## Concrete use case
 
-An enterprise has multiple agents that need to call business functions owned by different teams. The platform team wants one tool mesh for agents instead of one integration per agent and system.
+A sales agent needs three narrow business operations: read an account, read its
+recent revenue series, and create a follow-up task. The CRM team owns account
+facts; sales operations owns task creation. The agent should call those
+functions through stable schemas without receiving database credentials or a
+general-purpose CRM session.
 
-## Concrete Use Case
+The MVP contains two known account identifiers, a revenue window of one to six
+months, a four-person owner allowlist, a due date between one and thirty days,
+and an in-memory fixture capped at one hundred follow-ups. The bounded dataset
+keeps the project runnable; the function boundaries are the parts retained when
+real system adapters replace the fixtures.
 
-An internal analytics agent needs to query CRM data, generate a revenue trend from the data platform, and create a follow-up task in the task system. The three capabilities come from three teams, but the agent should discover and call them through one capability catalog.
+## Requirements
 
-## Current Problem
+- Expose business operations rather than a generic database or HTTP proxy.
+- Validate account identifiers, owner identity, time window, and due date.
+- Keep each system's implementation and credentials on its provider node.
+- Carry caller and invocation identity into the write operation.
+- Return JSON-compatible values suitable for a tool adapter.
 
-Agent tool integration often becomes point-to-point glue. Every new agent requires new wrappers, new permission setup, and new return-shape explanations. As tool count grows, the platform struggles to know which tools are available, who is calling them, and whether the results are trustworthy.
+## Existing approach
 
-## Intent
+Point-to-point agent integration gives each agent its own wrapper, credential
+set, error mapping, and undocumented return conventions. As the number of
+agents and systems grows, ownership becomes unclear and a tool can silently
+turn into broad backend access. MCP improves presentation, but presentation
+alone does not create a governed execution boundary behind the tool.
 
-This project places EasyRemote between the agent runtime and enterprise functions. Business teams publish capabilities, and the agent platform discovers, selects, and calls them through a common protocol. Tool protocol is the entrypoint; capability is the governance unit.
+## EasyRemote approach
 
-## Target Outcome
+`node.py` registers the three owned functions as EasyRemote abilities.
+`client.py` declares typed `@remote` stubs of the kind an agent adapter can
+invoke. The daemon's MCP surface may present those abilities separately; this
+project intentionally demonstrates only the capability backend and does not
+reimplement an MCP server.
 
-Agents no longer couple directly to every business system. The enterprise can maintain a discoverable, callable, auditable capability backend. Business teams can evolve functions independently, and the agent platform can compose them inside one boundary.
+## Effect
+
+An agent platform can validate a reusable tool backend without coupling the
+agent directly to CRM internals. Business owners keep code and credentials,
+while calls have explicit inputs, outputs, caller identity, and receipts. The
+MVP is not a complete enterprise tool catalog; it establishes the smallest
+owned unit from which one can be built.
+
+## Run
+
+```bash
+uv sync
+uv run python node.py
+uv run python client.py
+```

@@ -1,0 +1,24 @@
+[project]
+name = "easyremote-gallery-bounded-robot"
+version = "0.1.0"
+description = "A standalone EasyRemote bounded robot-action use case"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "easyremote",
+    "easynet-sdk>=0.91.31,<0.92",
+]
+
+[tool.uv.sources]
+easyremote = { path = "../../..", editable = true }
+easynet-sdk = { path = "../../../../EasyNet-Cli/sdk/python", editable = true }
+
+[dependency-groups]
+dev = ["ruff>=0.13"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
