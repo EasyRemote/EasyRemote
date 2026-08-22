@@ -1,7 +1,7 @@
 # Notice
 
 EasyRemote
-Copyright (c) 2024 Silan Hu
+Copyright (c) 2024-2026 Silan Hu
 
 This product includes software developed by Silan Hu (silan.hu@u.nus.edu).
 

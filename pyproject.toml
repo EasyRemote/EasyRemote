@@ -5,9 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "easyremote"
 dynamic = ["version"]
-description = "Turn a local function into a globally callable capability"
+description = "Call private Python functions on trusted devices with typed decorators and EasyNet Runtime"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE", "NOTICE.md"]
 authors = [{ name = "Silan Hu", email = "silan.hu@u.nus.edu" }]
 maintainers = [{ name = "Silan Hu", email = "silan.hu@u.nus.edu" }]
 keywords = [
@@ -20,6 +21,7 @@ keywords = [
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -41,9 +43,11 @@ dependencies = [
 easyremote = "easyremote._cli:main"
 
 [project.urls]
-Homepage = "https://github.com/Qingbolan/EasyRemote"
-Repository = "https://github.com/Qingbolan/EasyRemote.git"
-"Bug Tracker" = "https://github.com/Qingbolan/EasyRemote/issues"
+Homepage = "https://github.com/EasyRemote/EasyRemote"
+Documentation = "https://github.com/EasyRemote/EasyRemote#readme"
+Repository = "https://github.com/EasyRemote/EasyRemote"
+Issues = "https://github.com/EasyRemote/EasyRemote/issues"
+Changelog = "https://github.com/EasyRemote/EasyRemote/releases"
 
 [project.optional-dependencies]
 pydantic = ["pydantic>=2.0"]

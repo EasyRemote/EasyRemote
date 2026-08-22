@@ -80,35 +80,16 @@ pip install easyremote
 # `node.serve()` connects to that operator-managed runtime.
 easynet pair
 easyremote doctor                            # optional runtime diagnosis
-
-# Ability and agent control surfaces are also available through the
-# same daemon Invocation facade:
-easyremote ability install ./my_ability
-easyremote ability list --scope realm --json
-easyremote agent add caesura --type claude-code --model sonnet
-easyremote mission run ./nightly.eal --label nightly
 ```
 
-Then it's the twelve lines above. `examples/` has runnable node/client pairs:
+Then it's the twelve lines above. `examples/` has runnable node/client pairs.
 
 If this is the first run, `node.serve()` does not invent an identity. It prints
-the one required action — `easynet pair` — and exits. Once paired, the same
-script checks the SDK, reuses a running daemon or starts a device daemon, then
-starts the warm host and activates every registered capability locally. Realm
-advertisement converges asynchronously; local activation is not a publication
-acknowledgement.
-
-EasyRemote keeps identity roles separate throughout this flow:
-
-- the paired **User** is the accountable caller for user-driven operations;
-- a Device-sponsored **SystemAgent** owns each runtime behavior and is its callee;
-- the **Device** is only the selected execution host and resource-custody scope.
-
-Accordingly, `client.device("gpu-1")` selects where an EasyRemote function runs;
-it does not turn the Device account into an Agent or an ability owner. Deployed
-functions belong to that host's `ability-management` SystemAgent. Catalogue,
-Agent lifecycle, Mission, and trace operations target `runtime-introspection`,
-`agent-management`, `automation`, and `runtime-governance` respectively.
+the one required action — `easynet pair` — and exits. Once paired, an
+operator-managed EasyNet runtime must be running. The script connects to it,
+starts the warm Python host, and publishes every registered function. Pairing
+supplies caller identity and signing; selecting a device chooses where the
+function runs without granting machine access.
 
 | Example | Shows |
 |---|---|
@@ -117,70 +98,54 @@ Agent lifecycle, Mission, and trace operations target `runtime-introspection`,
 | `remote_demo_node.py` / `remote_demo_client.py` | every function shape via `@node.register` + `@remote` (unary, `*args`/`**kwargs`, async, generator, Context) |
 | `04_streaming_node.py` / `04_streaming_client.py` | proves streaming is **incremental, not batched** — measures per-frame arrival gaps |
 
-### Three call layers, progressively disclosed
+### Production use cases
+
+For production-shaped MVPs, [`gallery/projects/`](gallery/projects/) contains
+independent uv applications rather than feature snippets:
+
+| Project | Minimum task |
+|---|---|
+| [Remote quote](gallery/projects/00_basic_remote_math/) | Share one validated pricing rule without building a quote service |
+| [Warm model](gallery/projects/01_team_gpu_pool_load_balancing/) | Call a model that remains on a selected GPU device |
+| [Enterprise tool boundary](gallery/projects/02_mcp_tool_mesh/) | Give agents typed business operations without backend credentials |
+| [Incident evidence](gallery/projects/03_a2a_incident_copilot/) | Diagnose an allowlisted service and stream bounded evidence without SSH |
+| [Function reuse](gallery/projects/04_function_marketplace/) | Consume owned business logic without copying its source |
+| [Data-resident AI](gallery/projects/05_local_data_residency_ai/) | Release a bounded projection while source records remain local |
+| [Device camera](gallery/projects/06_runtime_device_capability_injection/) | Stream finite media from a paired device without opening the device |
+| [Robot action](gallery/projects/07_claude_code_robot_commander_mcp/) | Give an Agent one constrained, attributable action instead of machine control |
+
+Each project owns its `pyproject.toml`, `uv.lock`, provider, caller, and concise
+case paper. Start with the [Gallery index](gallery/projects/README.md).
+
+### Call it like Python
 
 ```python
-from easyremote import Client, FreshRoot, ResolvedTargetSubject
+from easyremote import Client, FreshRoot, ResolvedTargetSubject, remote
 
 client = Client(invocation_policy=FreshRoot(ResolvedTargetSubject()))
 
-# L0 — result-first
-client.execute("ai_inference", prompt="hi")
+@remote(client=client)
+def ai_inference(prompt: str) -> str: ...
 
-# L1 — targeting / streams / timeouts without stealing ability arg names
-client.call(
-    Client.target("ai_inference", node="gpu-1", timeout=10),
-    prompt="hi",
-)
-
-# L2 — inspect the seven-tuple before dispatch
-prepared = client.prepare("ai_inference", prompt="inspect me")
-prepared.tuple.subject_ura
-
-# send() is for daemon unary/system abilities; EasyRemote-hosted
-# abilities are host_stream and should be consumed with call()/stream().
+print(ai_inference("hello"))
 ```
 
-`Client.invocation_policy` exposes only the read-only policy explicitly supplied
-by the caller. `Client()` has no invocation derivation default: dispatch fails
-before SDK request construction unless the client or `Client.target(...)`
-declares an `InvocationDerivationPolicy`. The example policy
-`FreshRoot(ResolvedTargetSubject())` explicitly requests an SDK nonce, root
-causal context, and the subject candidate produced by target resolution.
-Use `CompleteExplicit(...)` when all tuple facts are already available. A normal
-ability argument named `policy` remains an ability argument.
+The stub has the same name and typed signature as the published function, but
+contains no copy of its implementation. The call runs where the provider lives.
 
-The retired `Client.target(..., subject=..., causal=...)` adapter has been
-deleted. Tuple derivation has one authority: the explicitly selected policy.
-
-The released `InvocationTuple`, `Receipt`, `ReceiptChain`, and
-`PreparedInvocation.with_causal` shapes are also bounded product-edge adapters.
-They preserve their released constructors and fields while delegating
-Invocation projection, receipt parsing, and causal projection to `easynet_sdk`.
-`easyremote/edge-adapter-policy.v1.json` is the machine-readable allowlist and
-prohibits new internal callers.
-
-### `@remote` as a class attribute
-
-A `@remote` stub is a descriptor — like `property`. On a class body it
-takes the attribute name as the ability name, and an instance access
-binds it to that host: `self` is stripped from the wire arguments and
-the host's own client is reused. Module-level `@remote` is unchanged.
+### Choose where it runs
 
 ```python
-class GPUCluster:
-    def __init__(self, client):
-        self.client = client          # the host carries the client
+gpu = client.device("gpu-2")
 
-    @remote                            # ability name = "ai_inference"
-    def ai_inference(self, prompt: str, max_tokens: int = 64) -> str: ...
+@gpu.remote
+def ai_inference(prompt: str) -> str: ...
 
-policy = FreshRoot(ResolvedTargetSubject())
-GPUCluster(Client(invocation_policy=policy)).ai_inference("hi")
+print(ai_inference("hello from this GPU"))
 ```
 
-Client precedence is `@remote(client=...)` > `self.client` > `self._client`.
-See [`examples/05_remote_on_class.py`](examples/05_remote_on_class.py).
+Targeting a paired device selects the execution host without exposing SSH,
+ports, model files, database credentials, or the underlying device API.
 
 ### Multimodal binary streams
 
@@ -199,152 +164,39 @@ def camera(frames: int) -> Iterator[StreamFrame]:
     for jpeg in capture_jpegs(frames):
         yield StreamFrame(jpeg, "image/jpeg")
 
-@remote
+@remote(client=client)
 def camera(frames: int) -> Iterator[StreamFrame]: ...
 
 for frame in camera.stream(30):
     consume(frame.payload, frame.content_type)
 ```
 
-The resident host uses `binary_v1`: a bounded, length-prefixed Unix-socket
-protocol whose rolling hash covers sequence, content type, and exact payload
-bytes. Axon still owns the signed Invocation, ordering, cancellation and
-receipt-backed terminal. Run the provider-boundary benchmark with:
-
-```bash
-uv run python benchmarks/host_stream_binary.py --frames 256 --frame-bytes 1048576
-```
-
-Its result is not an end-to-end network SLO; latency and bandwidth across two
-devices still depend on deployment and must be measured there.
-
-### Owner handles — the mirror of `@node.register`
-
-The serving side groups functions on a `ComputeNode` and registers them with
-`@node.register`; `start()` binds them locally before realm advertisement. The
-calling side is symmetric: a handle to an ability owner
-carries the target identity, and `@handle.remote` declares a stub bound to it.
-
-```python
-# serving side                    # calling side (symmetric)
-node = ComputeNode()              gpu   = client.device("gpu-2")
-@node.register                    @gpu.remote
-def chat(...): ...                def chat(...): ...
-```
-
-```python
-gpu   = client.device("gpu-2")              # a device in this realm
-alice = client.agent("u-alice.chatbot")     # an agent: <user-id>.<agent-id>
-hub   = client.hub()                        # the realm hub
-
-@alice.remote
-def chat(prompt: str) -> str: ...
-
-chat("hi")                                  # routed to alice
-hub.call("route", target="gpu-2")           # ad-hoc, no stub
-```
-
-`device`, `agent`, and `hub` owners are first-class daemon routes. A full
-cross-realm owner URA is accepted but only routes where federation peers are
-configured. See [`examples/06_owner_handles.py`](examples/06_owner_handles.py).
-
-### Evaluate a CLI Agent as a function
-
-`agent.chat` invokes a registered local CLI Agent as the system under test. The
-structured profile accepts one user message with one optional preceding system
-message and requires an Agent-root-relative working directory. It does not
-accept prior assistant turns, ambient context, attachments, skills, or session
-resume state.
-
-```python
-result = Client().agent("claude-code").chat(
-    messages=[
-        {"role": "system", "content": "Return only the requested query."},
-        {"role": "user", "content": "<one public benchmark case>"},
-    ],
-    subject="benchmark://suite/case-001",
-    execution={"cwd": "benchmark-runs/run-001/case-001", "timeout_ms": 300_000},
-    driver={"model": "gpt-5.5"},
-)
-
-print(result.prediction)
-print(result.request_id, result.invocation_ura, result.trace_id)
-print(result.elapsed_ms, result.usage)
-print(result.tool_calls)  # ordered tool/operator calls, if reported by the runtime
-print(result.timeline)    # optional per-event timeline for streaming-capable drivers
-print(result.trace)  # Axon InvocationTraceGraph.to_dict()
-```
-
-The external `subject` is retained as invocation metadata and projected to a
-canonical benchmark resource subject. Invocation identifiers, terminal state, and
-the trace graph are read back from the native Axon ledger record. Benchmark
-case selection, hidden answers, and scoring remain outside EasyRemote. Agent
-observability is returned as first-class data: `session_id`, `elapsed_ms`,
-`usage`, `skills_loaded`, `context_used`, `tool_calls`, and optional `timeline`.
-`tool_calls` carries operator invocations such as MCP/EasyNet abilities when
-the underlying agent driver reports them; `timeline` is an ordered event stream
-when the runtime exposes one.
-When an invocation fails after receiving a runtime identity, the raised
-`RemoteError` retains that `invocation_id` and attempts to attach the matching
-native graph as `error.trace`; `error.trace_lookup_error` explains an unavailable
-post-failure lookup without masking the original failure.
-
-### Use-case facade map
-
-| Use case | Minimal facade |
-|---|---|
-| Publish local functions | `node = ComputeNode(); @node.register; node.serve()` |
-| Result-first call | `Client(invocation_policy=policy).execute("ai_inference", prompt="hi")` |
-| Target a device / agent / hub | `Client(invocation_policy=policy).device("gpu-2").call(...)` and the corresponding `agent(...)` / `hub()` handles |
-| Evaluate a registered CLI Agent | `Client().agent("claude-code").chat(messages=..., subject=..., execution=...)` |
-| Inspect and send the invocation tuple | `prepared = Client(invocation_policy=policy).prepare(...); prepared.tuple; prepared.send()` |
-| Compose a mission in Python | `Pipeline("nightly").step(...); pipe.run()` |
-| Run existing EAL source | `Client().missions.run_eal(source, label="nightly")` or `Client().missions.run_file("nightly.eal")` |
-| Control daemon catalogues | `Client().abilities.list(scope="realm")`, `Client().agents.add(...)` |
-
-Mission plans, step/output references, child-fact conformance, result
-projection, and bounded event tailing are EasyRemote product semantics. They
-dispatch through generic `Client.invoke`; easynet-sdk remains responsible for
-generic Invocation, addressing, transport, and typed runtime errors.
+Binary frames preserve their exact bytes and media type without JSON or base64
+conversion. Calls retain the same signed invocation and receipt-backed
+completion semantics as ordinary function results. JSON generators use the same
+`.stream(...)` interface.
 
 ---
 
-## Where it fits
+## Project status
 
-| # | Scenario | Who it's for | What it solves |
-|---|----------|-------------|----------------|
-| K1 | **Private AI Inference Hub** (team GPU pool) | AI teams / R&D groups | Share team GPUs for inference with load spreading; eliminate redundant cloud spend |
-| K2 | **Agent Capability Backend** (enterprise tool mesh) | Agent platform teams | A unified capability catalog custom agent runtimes can discover and call through EasyRemote |
-| K6 | **Local Data Residency AI** | Healthcare / Finance / Government | Inference runs on the device where the data lives — compliant and accountable |
+EasyRemote v2 is currently `2.0.0a0` and is not compatible with v1. It supports
+typed sync and async functions, finite server streams, exact binary/media
+frames, device targeting, warm providers, caller context, and signed invocation
+receipts.
 
----
+Using it requires a paired, running EasyNet runtime. Cross-device latency and
+bandwidth depend on the deployment, and this alpha does not claim a universal
+network SLO. Request-side media streaming, composed `ctx.call` receipt chains,
+and full receipt-chain fetch verification remain future work.
 
-## Status (v2.0.0a0)
+Detailed architecture notes live in the
+[`v2 design`](docs/design/easyremote-v2-easynet-refactor.md).
 
-v2 is a clean reimplementation on the EasyNet stack ([EasyNet-Axon](https://github.com/EasyRemote/EasyNet-Axon) protocol layer + easynet-daemon), **not compatible with v1**. The spec, including the EasyNet-Cli/Axon contract notes, lives at [`docs/design/easyremote-v2-easynet-refactor.md`](docs/design/easyremote-v2-easynet-refactor.md).
-
-`✅` means implemented in this repository and covered by unit/contract tests unless the row explicitly says "live daemon". Daemon availability, runtime ability loading, and receipt persistence are EasyNet-Cli/Axon contracts, so they are documented separately from facade-local behavior.
-
-| Capability | Status |
-|---|---|
-| register → deploy package generation (device abilities, warm host) | ✅ implemented in the facade and unit-tested against the host_stream contract |
-| Runtime ability deployment / hot-load | ✅ facade invokes daemon `ability.deploy` through complete Invocation; live daemon hot-load is an EasyNet-Cli contract |
-| Warm-host binding lifecycle | ✅ process binding uses a 9-second daemon lease renewed every 3 seconds; expiry removes the callable route while retaining the durable descriptor install |
-| Ability catalogue / install control facade | ✅ `Client().abilities` plus `easyremote ability install/list/show`; `--scope realm` reads the hub-published network catalogue |
-| Agent lifecycle control facade | ✅ `Client().agents` plus `easyremote agent add/list/refresh` |
-| invoke closed loop against a live daemon | 🧪 integration/manual path only; CI skips without `EASYNET_CLI_LIB` + a running daemon |
-| Three-layer client / `@remote` stubs / async mirror | ✅ |
-| Pipeline → EAL → mission.run | ✅ EasyRemote owns plan/projection/event-tail semantics; `Pipeline.run()` dispatches via generic `Client.invoke` |
-| Direct Mission/EAL run facade | ✅ `Client().missions.run_eal/run_file/track/cancel` plus `easyremote mission run/track/cancel` |
-| Runtime connection | ✅ `ComputeNode` acquires an SDK `RuntimeConnection`; EasyNet-Cli owns device/Hub configuration and process lifecycle |
-| `easyremote doctor` | ✅ |
-| Streaming | ✅ host_stream producer/consumer implemented; see `examples/04_streaming_*.py` |
-| Async functions / generators (sync + async) | ✅ |
-| Server-side Context (read-only caller identity) | ✅ `ctx.caller` + `ctx.invocation_id` injected from the host_stream envelope |
-| Server-side Context composition (`ctx.call` child invocations) | ⏳ needs the parent-receipt-URA path for causal chaining (RFC-007/008) |
-| Resident-host binary stream | ✅ raw payload + content type, bounded backpressure, verified terminal |
-| End-to-end latency / bandwidth SLO | 🧪 deployment-specific; benchmark before claiming a number |
-| Cryptographic receipt-chain verification | ⏳ pending the full-receipt fetch path (RFC-007/008) |
+EasyRemote is the public Python facade of a wider research system released in
+stages. The [Public Source Release Scope](https://github.com/EasyRemote/EasyRemote/blob/main/SOURCE_RELEASE_SCOPE.md)
+explains the boundary without changing the MIT rights granted for this
+repository.
 
 ## Attribution
 

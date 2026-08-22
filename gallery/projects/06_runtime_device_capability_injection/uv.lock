@@ -3,8 +3,8 @@ revision = 3
 requires-python = ">=3.11"
 
 [[package]]
-name = "axon-sdk"
-version = "0.129.23"
+name = "axon-runtime-sdk"
+version = "0.183.3"
 source = { editable = "../../../../EasyNet-Axon/sdk/python" }
 dependencies = [
     { name = "cryptography" },
@@ -180,7 +180,7 @@ name = "easynet-sdk"
 version = "0.91.31"
 source = { editable = "../../../../EasyNet-Cli/sdk/python" }
 dependencies = [
-    { name = "axon-sdk" },
+    { name = "axon-runtime-sdk" },
     { name = "cryptography" },
     { name = "grpcio" },
     { name = "protobuf" },
@@ -188,11 +188,15 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "axon-sdk", editable = "../../../../EasyNet-Axon/sdk/python" },
+    { name = "axon-runtime-sdk", editable = "../../../../EasyNet-Axon/sdk/python" },
     { name = "cryptography", specifier = ">=41" },
     { name = "grpcio", specifier = ">=1.60" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = "==1.11.2" },
     { name = "protobuf", specifier = ">=4.25" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = "==7.4.4" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.13.2" },
 ]
+provides-extras = ["dev"]
 
 [[package]]
 name = "easyremote"

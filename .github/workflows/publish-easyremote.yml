@@ -1,52 +1,30 @@
-name: Publish easyremote to PyPI
+# EasyRemote Python release
+# Author: Silan Hu <silan.hu@u.nus.edu>
+# Copyright 2024-2026 Silan Hu
+
+name: Publish easyremote
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "easyremote/_version.py"
-      - "pyproject.toml"
-      - "setup.py"
-      - "MANIFEST.in"
-      - "uv.lock"
-      - ".github/workflows/publish-easyremote.yml"
+    tags:
+      - "v*"
   workflow_dispatch:
-    inputs:
-      force_publish:
-        description: "Publish even if this version already exists on PyPI"
-        required: true
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
 
 concurrency:
-  group: publish-easyremote-main
+  group: publish-easyremote-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  quality-and-build:
-    name: Quality gate and build
+  build:
+    name: Validate and build easyremote
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
-      package_version: ${{ steps.version.outputs.package_version }}
+      package_version: ${{ steps.metadata.outputs.package_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Checkout EasyNet-Axon SDK source
-        uses: actions/checkout@v4
-        with:
-          repository: EasyRemote/EasyNet-Axon
-          path: EasyNet-Axon
-
-      - name: Expose Axon SDK at local source path
-        run: |
-          rm -rf ../EasyNet-Axon
-          ln -s "$GITHUB_WORKSPACE/EasyNet-Axon" ../EasyNet-Axon
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -56,48 +34,129 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
 
-      - name: Install dependencies
-        run: uv sync --frozen
+      - name: Resolve package metadata
+        id: metadata
+        run: |
+          PACKAGE_VERSION="$(python - <<'PY'
+          import pathlib
+          import tomllib
 
-      - name: Lint
-        run: uvx ruff check easyremote tests examples --output-format=full
+          project = tomllib.loads(
+              pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+          )["project"]
+          if project["name"] != "easyremote":
+              raise SystemExit(f"unexpected package name: {project['name']}")
+
+          namespace = {}
+          exec(pathlib.Path("easyremote/_version.py").read_text(encoding="utf-8"), namespace)
+          print(namespace["__version__"])
+          PY
+          )"
+          echo "package_version=${PACKAGE_VERSION}" >> "$GITHUB_OUTPUT"
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            EXPECTED_TAG="v${PACKAGE_VERSION}"
+            if [[ "${GITHUB_REF_NAME}" != "${EXPECTED_TAG}" ]]; then
+              echo "::error::tag ${GITHUB_REF_NAME} does not match ${EXPECTED_TAG}"
+              exit 1
+            fi
+          else
+            echo "Manual dispatch is validation-only; no package will be published."
+          fi
+
+      - name: Prove registry-only dependency resolution
+        run: uv lock --no-sources --dry-run
+
+      - name: Require a forward PyPI version
+        if: github.ref_type == 'tag'
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.package_version }}
+        run: |
+          LATEST_VERSION="$(
+            curl --fail --silent --show-error https://pypi.org/pypi/easyremote/json |
+              python -c 'import json, sys; print(json.load(sys.stdin)["info"]["version"])'
+          )"
+          uv run --no-project --with packaging python - \
+            "${PACKAGE_VERSION}" "${LATEST_VERSION}" <<'PY'
+          import sys
+          from packaging.version import Version
+
+          candidate = Version(sys.argv[1])
+          latest = Version(sys.argv[2])
+          if candidate <= latest:
+              raise SystemExit(
+                  f"easyremote {candidate} must be newer than the current PyPI release {latest}"
+              )
+          PY
+
+      - name: Install release dependencies
+        run: uv sync --no-sources
+
+      - name: Lint and type-check
+        run: |
+          uv run ruff check easyremote tests benchmarks --output-format=full
+          uv run mypy easyremote
 
       - name: Test
         run: uv run pytest -q
 
-      - name: Validate publishable dependency metadata
-        run: uv lock --check --no-sources
-
-      - name: Read package version
-        id: version
-        run: |
-          VERSION="$(uv run python -c 'from easyremote._version import __version__; print(__version__)')"
-          echo "package_version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Package version: $VERSION"
-
-      - name: Build distribution artifacts
-        run: uv build
+      - name: Build wheel and source distribution
+        run: uv build --out-dir dist/easyremote
 
       - name: Validate distribution artifacts
-        run: uvx --from twine twine check dist/*
-
-      - name: Validate wheel architecture boundary
+        env:
+          EXPECTED_VERSION: ${{ steps.metadata.outputs.package_version }}
         run: |
-          if unzip -Z1 dist/easyremote-*.whl | grep -Fxq 'easyremote/_authority.py'; then
-            echo 'retired EasyRemote authority policy leaked into the wheel' >&2
-            exit 1
-          fi
+          uvx --from twine twine check dist/easyremote/*
+          python - <<'PY'
+          import email
+          import os
+          import pathlib
+          import zipfile
 
-      - name: Upload dist artifact
+          wheels = sorted(pathlib.Path("dist/easyremote").glob("*.whl"))
+          sdists = sorted(pathlib.Path("dist/easyremote").glob("*.tar.gz"))
+          if len(wheels) != 1 or len(sdists) != 1:
+              raise SystemExit("expected exactly one wheel and one sdist")
+
+          wheel = wheels[0]
+          with zipfile.ZipFile(wheel) as archive:
+              names = archive.namelist()
+              metadata_path = next(
+                  name for name in names if name.endswith(".dist-info/METADATA")
+              )
+              metadata = email.message_from_bytes(archive.read(metadata_path))
+              if "easyremote/_authority.py" in names:
+                  raise SystemExit("retired authority policy leaked into the wheel")
+
+          expected = {
+              "Name": "easyremote",
+              "Version": os.environ["EXPECTED_VERSION"],
+              "License-Expression": "MIT",
+          }
+          for key, value in expected.items():
+              if metadata.get(key) != value:
+                  raise SystemExit(
+                      f"{key}={metadata.get(key)!r}, expected {value!r}"
+                  )
+          if "Silan Hu <silan.hu@u.nus.edu>" not in metadata.get("Author-email", ""):
+              raise SystemExit("missing canonical author metadata")
+          requires = metadata.get_all("Requires-Dist", [])
+          if not any(item.startswith("easynet-sdk") for item in requires):
+              raise SystemExit("missing canonical easynet-sdk dependency")
+          PY
+
+      - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
-          name: easyremote-dist
-          path: dist/
+          name: easyremote-${{ steps.metadata.outputs.package_version }}
+          path: dist/easyremote/
           if-no-files-found: error
 
   publish:
-    name: Publish to PyPI
-    needs: quality-and-build
+    name: Publish easyremote to PyPI
+    needs: build
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -106,14 +165,13 @@ jobs:
       name: pypi
       url: https://pypi.org/p/easyremote
     steps:
-      - name: Download dist artifact
+      - name: Download distributions
         uses: actions/download-artifact@v4
         with:
-          name: easyremote-dist
+          name: easyremote-${{ needs.build.outputs.package_version }}
           path: dist/
 
-      - name: Publish package distributions to PyPI
+      - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
-          skip-existing: true

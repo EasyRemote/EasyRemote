@@ -96,7 +96,11 @@ def test_product_manifest_has_one_sdk_entrypoint() -> None:
     assert all(
         not dependency.startswith("easynet-run-axon") for dependency in dependencies
     )
+    assert all(
+        not dependency.startswith("axon-runtime-sdk") for dependency in dependencies
+    )
     assert "easynet-run-axon" not in manifest["tool"]["uv"]["sources"]
+    assert "axon-runtime-sdk" not in manifest["tool"]["uv"]["sources"]
 
 
 def test_product_ability_names_have_one_owner() -> None:
