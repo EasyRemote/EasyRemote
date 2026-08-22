@@ -1,0 +1,4 @@
+interface:
+  display_name: "EasyRemote Ability Builder"
+  short_description: "Publish typed Python functions as governed abilities"
+  default_prompt: "Use $easyremote-ability-builder to build a minimal governed EasyRemote provider and typed caller."
