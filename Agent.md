@@ -36,6 +36,8 @@ current behavior with a focused test before changing documentation.
 | `easyremote/mission.py` | Mission/EAL product facade |
 | `tests/` | Public contracts, host protocol, SDK-boundary, and lifecycle tests |
 | `gallery/projects/` | Independent, uv-locked, production-shaped MVP cases |
+| `scripts/bump-version.sh` | Capture one Tide coordinate for a clean functional HEAD |
+| `scripts/update-project-version.sh` | Check or synchronize committed version projections |
 | `skills/easyremote-ability-builder/` | Reusable instructions for another agent building with EasyRemote |
 | `docs/design/` | Current architectural rationale; not a substitute for tests |
 | `pr/` | Ignored task notes, invariants, verification, and decisions |
@@ -144,6 +146,40 @@ release tag on that commit. Do not rerun the bump solely because the version
 commit advances HEAD: the stored coordinate intentionally identifies the
 functional HEAD captured immediately before it. The publish workflow requires
 the exact tag, repeats the PyPI forward-version comparison, and rejects drift.
+
+#### Current Tide adoption state
+
+The following is a dated handoff snapshot, not a substitute for running the
+checks below:
+
+- As of 2026-08-23, committed package metadata is `2.190.5`.
+- Local annotated bootstrap tags `v2.0.1` and `v2.0.2` exist and resolve Tide
+  epoch 2; they have not been pushed to `origin`.
+- `tide mark --local-only` on any later commit returns a coordinate newer than
+  `2.190.5`. This is expected because the version-only and documentation
+  commits advance HEAD; it is not metadata drift and must not trigger another
+  bump unless a new release is being prepared.
+- PyPI has EasyRemote `2.0.2`, so `2.190.5` is forward-moving.
+- Public-registry resolution is still blocked until
+  `easynet-sdk>=0.142.22,<0.143` is published.
+
+Refresh every fact before release:
+
+```bash
+python3 -c 'exec(open("easyremote/_version.py").read()); print(__version__)'
+tide release list --local-only
+tide mark --local-only --explain
+git ls-remote --tags origin
+uv lock --check --no-sources
+```
+
+Do not use `git push --tags`. The bootstrap tags match the current `v*`
+workflow trigger and would start historical validation runs. If establishing
+the remote Tide anchors is explicitly authorized, push only `v2.0.1` and
+`v2.0.2`, expect their forward-version validation to reject the already
+published versions safely, and confirm both remote refs before creating the
+new release tag. Never create extra historical anchors to silence a Tide
+coordinate mismatch.
 
 Release preparation:
 
