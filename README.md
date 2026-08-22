@@ -180,7 +180,7 @@ completion semantics as ordinary function results. JSON generators use the same
 
 ## Project status
 
-EasyRemote v2 is currently `2.1.0a1` and is not compatible with v1. It supports
+EasyRemote v2 is currently in alpha and is not compatible with v1. It supports
 typed sync and async functions, finite server streams, exact binary/media
 frames, device targeting, warm providers, caller context, and signed invocation
 receipts.

@@ -178,7 +178,7 @@ JSON generator 也使用同一个 `.stream(...)` 接口。
 
 ## 项目状态
 
-EasyRemote v2 当前版本为 `2.1.0a1`，不兼容 v1。当前已经支持类型化同步与异步
+EasyRemote v2 当前处于 alpha 阶段，不兼容 v1。当前已经支持类型化同步与异步
 函数、有限 server stream、原始 binary/media frame、device targeting、warm
 provider、caller context 和签名 invocation receipt。
 

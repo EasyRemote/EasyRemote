@@ -91,6 +91,10 @@ uv run python client.py
 ### Version and release SOP
 
 - EasyRemote version truth is `easyremote/_version.py`.
+- Tide resolves the next release coordinate from the committed functional HEAD;
+  `.tidemark.toml` fixes the tag, timezone, remote, and cache semantics.
+- `scripts/bump-version.sh` captures that coordinate once and delegates every
+  committed projection to `scripts/update-project-version.sh`.
 - The accepted EasyNet SDK line is declared once in the root `pyproject.toml`;
   Gallery manifests, scaffold output, policy documentation, tests, and locks
   must converge with it.
@@ -108,18 +112,38 @@ uv run python client.py
 are different facts. Resolve them explicitly:
 
 ```bash
-# Current version in this checkout (the candidate metadata source)
+# Current package metadata in this checkout
 python3 -c 'exec(open("easyremote/_version.py").read()); print(__version__)'
 
 # Latest immutable version already published on PyPI
 curl --fail --silent --show-error https://pypi.org/pypi/easyremote/json \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])'
+
+# Next coordinate for the current committed functional HEAD
+git fetch origin 'refs/tags/*:refs/tags/*'
+tide mark --local-only
 ```
 
-EasyRemote does not use Tide. The next version is an explicit release decision:
-it must be written to `easyremote/_version.py`, be strictly newer than the PyPI
-value, and match the exact `v<VERSION>` tag. The publish workflow repeats the
-PyPI comparison and rejects a stale or equal candidate.
+The Tide migration starts from two real annotated release anchors:
+`v2.0.1` at `742e4a653184d9e33fe611a621c30049fc87c813` and `v2.0.2` at
+`e5f163bf46a37b1771c11003757d6bb6528dd029`. They establish epoch 2, so the
+first Tide coordinate remains newer than PyPI `2.0.2`. Earlier releases are
+pre-Tide history and must not be backfilled as extra anchors.
+
+Prepare a release from a clean functional HEAD:
+
+```bash
+./scripts/bump-version.sh --dry-run
+./scripts/bump-version.sh
+VERSION="$(python3 -c 'exec(open("easyremote/_version.py").read()); print(__version__)')"
+./scripts/update-project-version.sh --check "${VERSION}"
+```
+
+Commit the synchronized version once, then create the annotated `v<VERSION>`
+release tag on that commit. Do not rerun the bump solely because the version
+commit advances HEAD: the stored coordinate intentionally identifies the
+functional HEAD captured immediately before it. The publish workflow requires
+the exact tag, repeats the PyPI forward-version comparison, and rejects drift.
 
 Release preparation:
 
