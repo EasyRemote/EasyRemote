@@ -368,7 +368,7 @@ ability descriptor 自动投影为 MCP tool spec（`easynet mcp_server` /
 
 ### 5.5 `Context`（当前只读身份注入；组合面待 receipt URA）
 
-当前 v2.0.0a0 已落地的是 `host_stream` envelope 注入的只读上下文：
+当前 v2.1.0a1 已落地的是 `host_stream` envelope 注入的只读上下文：
 `ctx.invocation_id` 与 `ctx.caller`。服务端子调用、progress、inbox/cancel
 等组合方法在 facade 中保留为显式 API stub，但会抛
 `Unavailable(reason="context_dispatch_not_wired")`。原因是 child invocation
@@ -512,7 +512,7 @@ admission 规则。已发布的 `InvocationTuple`、`Receipt`、`ReceiptChain` �
 `PreparedInvocation.with_causal` 仅作为 policy 枚举的产品边缘形状保留；
 构造后立即委托 SDK 生成或解析 canonical 对象，内部生产路径不得调用这些
 适配器。机器策略 `easyremote/edge-adapter-policy.v1.json` 记录当前包版本
-`2.0.0a0`、删除版本 `1.0.0`、精确公开字段及零新增内部调用者约束。
+`2.1.0a1`、删除版本 `1.0.0`、精确公开字段及零新增内部调用者约束。
 `ReceiptChain.verify_continuity()` 不在 runtime summary 上重写 chain 规则；
 完整回执链验证使用 `easynet_sdk.ReceiptClient.verify_chain`。
 
@@ -807,7 +807,7 @@ coroutine；`Stream` 同时实现 `__iter__` 与 `__aiter__`；
 > 一层。
 >
 > ```
-> pip install easyremote
+> pip install --pre --upgrade easyremote
 > ```
 >
 > **云计算让代码迁移到计算资源。EasyRemote 让计算资源留在原地，同时获得

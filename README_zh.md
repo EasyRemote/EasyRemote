@@ -73,7 +73,7 @@ Ray、Modal、RunPod 把远程执行做**易**，工具协议让 agent 变得**�
 ## 上手
 
 ```bash
-pip install easyremote
+pip install --pre --upgrade easyremote
 
 # 一次性身份配置（为签名调用与回执链建立身份）。
 # 使用 EasyNet-Cli 运维入口启动 device 或 Hub runtime。
@@ -178,7 +178,7 @@ JSON generator 也使用同一个 `.stream(...)` 接口。
 
 ## 项目状态
 
-EasyRemote v2 当前版本为 `2.0.0a0`，不兼容 v1。当前已经支持类型化同步与异步
+EasyRemote v2 当前版本为 `2.1.0a1`，不兼容 v1。当前已经支持类型化同步与异步
 函数、有限 server stream、原始 binary/media frame、device targeting、warm
 provider、caller context 和签名 invocation receipt。
 
