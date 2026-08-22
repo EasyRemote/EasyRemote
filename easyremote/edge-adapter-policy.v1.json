@@ -2,7 +2,7 @@
   "schema_version": 1,
   "package": {
     "name": "easyremote",
-    "current_version": "2.1.0a1"
+    "current_version": "2.190.5"
   },
   "removal_version": "3.0.0",
   "zero_new_internal_callers": true,
