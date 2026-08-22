@@ -138,20 +138,6 @@ def test_sdk_retry_after_is_preserved():
     assert err.retry_after == 1.5
 
 
-def test_signing_path_pending_maps_to_unavailable():
-    err = error_from_sdk(
-        _sdk_error(
-            easynet_sdk.ErrorCode.NOT_IMPLEMENTED,
-            "signed invocation requires SDK signer",
-            details={"reason": "signing_path_pending", "retry_after": 2.0},
-        )
-    )
-
-    assert type(err) is Unavailable
-    assert err.reason == "signing_path_pending"
-    assert err.retry_after == 2.0
-
-
 def test_sdk_error_cause_passthrough():
     cause = InvalidArgument("bad", reason="product_reason")
     err = error_from_sdk(

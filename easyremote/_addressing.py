@@ -346,19 +346,16 @@ class AbilityAddressResolver:
             projection = self._addressing.project_ability_ura(ability_ura)
             projected_owner_ura = projection.owner_ura
         except easynet_sdk.SDKError as exc:
-            try:
-                parsed = self._addressing.parse_ura(ability_ura)
-            except easynet_sdk.SDKError:
-                parsed = None
-            if parsed is not None and parsed.kind == "ability":
-                owner_id = parsed.components.get("owner_id")
-                if isinstance(owner_id, str) and owner_id.startswith("device."):
-                    raise InvalidArgument(
-                        "Device-owned public Ability URAs are obsolete; use a"
-                        " SystemAgent-owned descriptor or a device execution-host"
-                        " handle",
-                        reason="device_is_not_ability_owner",
-                    ) from exc
+            if (
+                easynet_sdk.addressing_error_reason(exc)
+                is easynet_sdk.AddressingErrorReason.DEVICE_OWNED_ABILITY_MIGRATION
+            ):
+                raise InvalidArgument(
+                    "Device-owned public Ability URAs are obsolete; use a"
+                    " SystemAgent-owned descriptor or a device execution-host"
+                    " handle",
+                    reason="device_is_not_ability_owner",
+                ) from exc
             raise InvalidArgument(
                 f"invalid Ability URA {ability_ura!r}: {exc}",
                 reason="invalid_ability_ura",
@@ -400,11 +397,11 @@ class AbilityAddressResolver:
     def is_ability_ura(self, value: str) -> bool:
         try:
             self._addressing.project_ability_ura(value.strip())
-        except easynet_sdk.SDKError:
-            try:
-                return str(self._addressing.parse_ura(value.strip()).kind) == "ability"
-            except easynet_sdk.SDKError:
-                return False
+        except easynet_sdk.SDKError as exc:
+            return (
+                easynet_sdk.addressing_error_reason(exc)
+                is easynet_sdk.AddressingErrorReason.DEVICE_OWNED_ABILITY_MIGRATION
+            )
         return True
 
     def is_owner_ura(self, value: str) -> bool:

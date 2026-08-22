@@ -250,6 +250,7 @@ class FakeTransport:
         self.invocations = []
         self.carriers = []
         self.signers = []
+        self.stream_signers = []
         self.responses = list(responses or [])
         self.traces = list(traces or [])
         self.trace_requests = []
@@ -382,18 +383,6 @@ class FakeTransport:
 
     def invoke_signed(self, draft, *, signer=None, options=None):
         _ = options
-        if signer is None:
-            raise easynet_sdk.SDKError(
-                code=easynet_sdk.ErrorCode.NOT_IMPLEMENTED,
-                stage="easyremote_signing",
-                retry=easynet_sdk.RetryHint.NEVER,
-                retryable=False,
-                message=(
-                    "EasyRemote signed invocation requires a daemon-authorized "
-                    "SDK Signer"
-                ),
-                details={"reason": "signing_path_pending"},
-            )
         if self.delay:
             time.sleep(self.delay)
         wire = draft.to_json_dict()
@@ -406,7 +395,7 @@ class FakeTransport:
         return self._canonical_response(draft, response)
 
     def stream(self, draft, *, signer=None):
-        _ = signer
+        self.stream_signers.append(signer)
         # execute/call now drain a host_stream; record the wire (same
         # assertions as the old invoke path) and yield the ability result
         # as a single chunk frame followed by terminal. Queued responses
@@ -488,25 +477,22 @@ def make_client(**kwargs):
 
 
 def fake_signer():
-    class _StaticSignatureProvider:
-        def sign(self, material, handle):
-            _ = material
-            return easynet_sdk.InvocationSignature(
-                algorithm=handle.algorithm,
-                signature_base64="c2lnbmF0dXJl",
-                key_id_hint=handle.signer_id,
-            )
-
-    handle = easynet_sdk.SignerHandle(
-        profile="identity",
-        signer_id="signer-dev-a",
-        owner_ura=DEVICE_URA,
-        key_id="dev-a-key",
-        algorithm="ed25519",
-        policy={},
-        metadata={},
-    )
-    return easynet_sdk.Signer(handle=handle, provider=_StaticSignatureProvider())
+    return easynet_sdk.ManagedSigner(
+        key=easynet_sdk.ManagedSigningKey(
+            key_id="user-silan-key",
+            purpose="user_signing.cli",
+            public_key=bytes(range(32)),
+            status=easynet_sdk.ManagedSigningStatus.ACTIVE,
+            rotation_epoch=0,
+            bound_subject_ura=USER_URA,
+            signer_policy_ref="provider-key-inventory:sha256:user-silan-key",
+            rotated_from=None,
+            created_unix_ms=1,
+            expires_unix_ms=None,
+            revoked_unix_ms=None,
+        ),
+        socket_path="/tmp/test-keyring.sock",
+    ).invocation_signer()
 
 
 # -- identity and addressing --------------------------------------------------
@@ -575,7 +561,7 @@ def test_obsolete_device_owned_ability_ura_is_rejected():
 
     with pytest.raises(InvalidArgument) as exc_info:
         client.call(ability_ura, quarter="Q2")
-    assert exc_info.value.reason == "invalid_owner_for_ability"
+    assert exc_info.value.reason == "device_is_not_ability_owner"
     assert transport.invocations == []
 
 
@@ -702,6 +688,16 @@ def test_ability_ura_bidi_uses_descriptor_bound_bidi_surface():
     assert wire["descriptor_ref"] == expected_descriptor_ref(
         "easynet:///r/acme/ability/user-1.claude.terminal"
     )
+
+
+def test_signed_bidi_is_rejected_before_draft_or_transport_creation():
+    client, transport = make_client()
+
+    with pytest.raises(InvalidArgument) as exc_info:
+        client.session(Client.target("terminal", sign=True), command="bash")
+
+    assert exc_info.value.reason == "signed_bidi_unsupported"
+    assert transport.invocations == []
 
 
 def test_bidi_session_close_releases_without_claiming_cancellation():
@@ -1074,14 +1070,16 @@ def test_policy_must_produce_an_sdk_request_before_dispatch():
     assert transport.invocations == []
 
 
-def test_sign_true_is_honest_about_pending_path():
-    client, _ = make_client()
+def test_sign_true_delegates_default_signer_selection_to_transport():
+    client, transport = make_client()
     prepared = client.prepare(Client.target("fn", sign=True), x=1)
     assert prepared.sign is True
 
-    with pytest.raises(Unavailable) as exc_info:
-        prepared.send()
-    assert exc_info.value.reason == "signing_path_pending"
+    invocation = prepared.send()
+
+    assert invocation.result() == {"echo": True}
+    assert transport.carriers == ["signed"]
+    assert transport.signers == [None]
 
 
 def test_sign_true_uses_sdk_signed_dispatch_when_signer_is_configured():
@@ -1096,6 +1094,15 @@ def test_sign_true_uses_sdk_signed_dispatch_when_signer_is_configured():
     expected_suffix = f".er.fn@1.0.0#{TEST_DESCRIPTOR_HASH}!{TEST_DESCRIPTOR_ACTION}"
     assert transport.invocations[0]["descriptor_ref"].endswith(expected_suffix)
     assert "caller_signature" not in transport.invocations[0]
+
+
+def test_stream_forwards_requested_managed_key_pin_to_transport():
+    signer = fake_signer()
+    client, transport = make_client(signer=signer)
+
+    assert list(client.stream("fn", x=1)) == [{"echo": True}]
+
+    assert transport.stream_signers == [signer]
 
 
 def test_invalid_client_timeouts_are_rejected_at_facade_boundary():

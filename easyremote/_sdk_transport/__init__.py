@@ -8,7 +8,7 @@ EasyRemote.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -33,7 +33,7 @@ class Transport:
         addressing: easynet_sdk.AddressingClient,
         authority: easynet_sdk.DraftAuthorityProvider,
         *,
-        stream_signer_resolver: Callable[[str], easynet_sdk.Signer] | None = None,
+        signers: easynet_sdk.RuntimeSignerProvider | None = None,
         environment: easynet_sdk.SdkEnvironment | None = None,
     ) -> None:
         self._adapter = adapter
@@ -54,7 +54,7 @@ class Transport:
         self._receipt_provider = easynet_sdk.RuntimeReceiptProvider(
             self._runtime_ability
         )
-        self._stream_signer_resolver = stream_signer_resolver
+        self._signers = signers
         self._environment = environment
 
     @classmethod
@@ -70,8 +70,11 @@ class Transport:
                 adapter,
                 addressing,
                 environment.local_runtime_authority_provider(addressing),
+                signers=environment.local_runtime_signer_provider(),
+                environment=environment,
             )
         except easynet_sdk.SDKError as exc:
+            environment.close()
             raise error_from_sdk(exc) from exc
 
     @classmethod
@@ -87,7 +90,7 @@ class Transport:
                 adapter,
                 addressing,
                 environment.local_runtime_authority_provider(addressing),
-                stream_signer_resolver=(environment.local_runtime_invocation_signer),
+                signers=environment.local_runtime_signer_provider(),
                 environment=environment,
             )
         except easynet_sdk.SDKError as exc:
@@ -193,7 +196,10 @@ class Transport:
         signer: easynet_sdk.Signer | None,
     ) -> dict[str, Any]:
         try:
-            return dict(self._adapter.invoke_signed(invocation, signer=signer))
+            resolved_signer = self._resolve_signer(invocation, signer)
+            return dict(
+                self._adapter.invoke_signed(invocation, signer=resolved_signer)
+            )
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
@@ -204,11 +210,9 @@ class Transport:
         signer: easynet_sdk.Signer | None = None,
     ) -> FrameStream:
         try:
-            if self._stream_signer_resolver is None:
+            if self._signers is None:
                 return FrameStream(self._adapter.stream(invocation))
-            resolved_signer = signer or self._stream_signer_resolver(
-                invocation.caller_ura
-            )
+            resolved_signer = self._resolve_signer(invocation, signer)
             return FrameStream(
                 self._adapter.stream_signed(
                     invocation,
@@ -217,6 +221,21 @@ class Transport:
             )
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
+
+    def _resolve_signer(
+        self,
+        invocation: easynet_sdk.InvocationDraft,
+        requested: easynet_sdk.Signer | None,
+    ) -> easynet_sdk.Signer:
+        if self._signers is None:
+            raise easynet_sdk.SDKError(
+                code=easynet_sdk.ErrorCode.CALLER_SIGNER_UNAVAILABLE,
+                stage="runtime_signer",
+                retry=easynet_sdk.RetryHint.NEVER,
+                retryable=False,
+                message="local runtime signer provider is unavailable",
+            )
+        return self._signers.resolve(invocation.caller_ura, requested)
 
     def bidi(
         self,

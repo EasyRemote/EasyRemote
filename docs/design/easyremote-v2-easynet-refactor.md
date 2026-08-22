@@ -187,10 +187,13 @@ EasyNet-Cli provider 持有；EasyRemote 不创建或写入 daemon 配置。
 
 ### 4.1 关键设计决策
 
-**D1 签名策略。** 本地快路径（Local-fast admission）不带
-`caller_signature`；跨 hub / federated 路径用 `sign_invocation` +
-credentials.json 密钥自动签名。`sign=None` 表示按路径自动判定，
-`sign=True/False` 显式覆盖。
+**D1 签名策略。** daemon-local unary 快路径（Local-fast admission）默认不带
+`caller_signature`；`sign=True` 的 unary 与 direct server-stream 均由 SDK 从
+本机 key-service 解析调用者绑定的 active managed key（purpose
+`user_signing.cli`）后签名。`Client(signer=...)` 只用于锁定预期 key，不能替代
+key-service custody；legacy、外部、已轮换或 owner 不匹配的 signer 在提交前拒绝。
+当前 SDK 尚无 signed-bidi carrier，因此 `session(..., sign=True)` 明确返回
+`signed_bidi_unsupported`，不会静默降级。
 
 **D2 warm 进程（v1 "0ms always-warm" 卖点的存续）。** 当前实现只有一条
 执行路径：`ability deploy --node local` 安装 `exec.kind = "host_stream"`

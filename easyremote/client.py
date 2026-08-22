@@ -410,11 +410,7 @@ class Client:
     ) -> Stream:
         wait_budget = self._timeout if timeout is None else timeout
         transport = self._streaming()
-        frames = (
-            transport.stream(prepared.draft, signer=self._signer)
-            if self._owns_stream_transport
-            else transport.stream(prepared.draft)
-        )
+        frames = transport.stream(prepared.draft, signer=self._signer)
         return Stream(
             frames,
             timeout=wait_budget,
@@ -429,6 +425,11 @@ class Client:
         **kwargs: Any,
     ) -> BidiSession:
         target = self._target(function)
+        if target.sign:
+            raise InvalidArgument(
+                "signed bidi sessions are not supported by the current SDK transport",
+                reason="signed_bidi_unsupported",
+            )
         prepared = self._prepare(target, (), kwargs, call_mode="bidi")
         descriptors = streams or [
             StreamSpec(stream_id=1, content_type="application/json")
