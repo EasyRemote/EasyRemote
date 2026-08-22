@@ -188,7 +188,7 @@ EasyNet-Cli provider 持有；EasyRemote 不创建或写入 daemon 配置。
 ### 4.1 关键设计决策
 
 **D1 签名策略。** daemon-local unary 快路径（Local-fast admission）默认不带
-`caller_signature`；`sign=True` 的 unary 与 direct server-stream 均由 SDK 从
+`caller_signature`；`sign=True` 的 unary 与 C ABI server-stream 均由 SDK 从
 本机 key-service 解析调用者绑定的 active managed key（purpose
 `user_signing.cli`）后签名。`Client(signer=...)` 只用于锁定预期 key，不能替代
 key-service custody；legacy、外部、已轮换或 owner 不匹配的 signer 在提交前拒绝。

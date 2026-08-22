@@ -42,13 +42,15 @@ EasyNet-Cli owns product/device runtime behavior:
 - Mission/EAL orchestration and product policy.
 - The `host_stream` executor that connects daemon invocation to this Python
   resident host.
+- SDK native transport selection, the base ABI gate, and C ABI v8 raw-stream
+  feature discovery.
 
 Axon owns protocol truth:
 
 - Complete signed Invocation shape.
 - Admission, ordering, cancellation, receipts, terminal stream semantics, and
   canonical verification.
-- Direct stream data plane used by the Python SDK for raw stream payloads.
+- Canonical stream payload and content-type wire semantics.
 
 When unsure where a feature belongs, classify it by policy ownership. If it
 changes Invocation, receipts, stream terminal semantics, admission, signing, or
@@ -128,8 +130,10 @@ These are intentional until a spec and tests say otherwise:
   needs a separate client-stream/bidi contract.
 - The binary host protocol is process-local Unix socket transport, not a
   network tunneling protocol.
-- C ABI v7 remains unchanged; raw stream media uses the SDK direct provider,
-  while C ABI remains the local prepare/control provider.
+- The installed SDK keeps the base `runtime_abi_version()` contract at 7 and
+  feature-detects the additive `runtime_invocation_stream_open_v8` raw-payload
+  stream extension. EasyRemote uses that SDK-owned C ABI transport; it does not
+  bind ABI symbols or open an independent Axon gRPC channel itself.
 - Benchmark numbers must state scope, frame count, payload size, and machine.
   Never present local Unix-socket throughput as a remote-device guarantee.
 
@@ -279,7 +283,8 @@ cargo fmt --check
 ```
 
 Also run the focused Rust tests that cover `host_stream` binary framing,
-bounded backpressure, raw progress projection, and C ABI v7 symbol count. Keep
+bounded backpressure, raw progress projection, the base C ABI version gate,
+and v8 raw-stream feature discovery. Keep
 the exact test names in the task plan or verification log because they move
 more often than the Python suite entry points.
 
@@ -310,7 +315,7 @@ Python generator
   -> binary_v1 host_stream Unix socket
   -> easynet-daemon host_stream executor
   -> Axon stream carrier
-  -> Python SDK direct provider
+  -> Python SDK C ABI v8 raw-stream projection
   -> EasyRemote Stream / StreamFrame
 ```
 

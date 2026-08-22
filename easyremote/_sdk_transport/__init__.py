@@ -77,26 +77,6 @@ class Transport:
             environment.close()
             raise error_from_sdk(exc) from exc
 
-    @classmethod
-    def connect_direct(cls, control_path: str | None = None) -> Transport:
-        """Connect a raw Axon stream data plane with local signing support."""
-
-        environment = sdk_environment(control_path=control_path)
-        try:
-            runtime_transport = environment.invocation_transport_direct()
-            adapter = easynet_sdk.InvocationResultAdapter(runtime_transport)
-            addressing = environment.addressing_client()
-            return cls(
-                adapter,
-                addressing,
-                environment.local_runtime_authority_provider(addressing),
-                signers=environment.local_runtime_signer_provider(),
-                environment=environment,
-            )
-        except easynet_sdk.SDKError as exc:
-            environment.close()
-            raise error_from_sdk(exc) from exc
-
     def build_invocation(
         self,
         request: easynet_sdk.AbilityCallRequest,

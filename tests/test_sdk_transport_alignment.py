@@ -49,6 +49,8 @@ def test_facade_has_no_credential_or_authority_policy_implementation() -> None:
     assert "ManagedSigningClient" not in sources
     assert "mint_delegation_proof" not in sources
     assert 'scopes=("*",)' not in sources
+    assert "invocation_transport_direct" not in sources
+    assert "connect_direct" not in sources
     assert not (package / "_authority.py").exists()
 
 

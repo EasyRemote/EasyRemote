@@ -1398,9 +1398,9 @@ def test_remote_decorator_stream_preserves_multimodal_frames():
     assert list(camera.stream(1)) == [StreamFrame(b"jpeg", "image/jpeg")]
 
 
-def test_remote_decorator_uses_dedicated_direct_stream_transport(monkeypatch):
+def test_remote_decorator_uses_dedicated_cabi_stream_transport(monkeypatch):
     unary = FakeTransport()
-    direct = FakeTransport(responses=[{"path": "direct"}])
+    stream_transport = FakeTransport(responses=[{"path": "cabi"}])
     unary_pool = UnaryDispatchPool.from_transport(unary)
     monkeypatch.setattr(
         UnaryDispatchPool,
@@ -1409,8 +1409,8 @@ def test_remote_decorator_uses_dedicated_direct_stream_transport(monkeypatch):
     )
     monkeypatch.setattr(
         Transport,
-        "connect_direct",
-        classmethod(lambda cls, control_path=None: direct),
+        "connect",
+        classmethod(lambda cls, control_path=None: stream_transport),
     )
     client = Client(
         identity=IDENTITY,
@@ -1421,13 +1421,13 @@ def test_remote_decorator_uses_dedicated_direct_stream_transport(monkeypatch):
     def generate(prompt: str): ...
 
     try:
-        assert list(generate.stream("hello")) == [{"path": "direct"}]
+        assert list(generate.stream("hello")) == [{"path": "cabi"}]
     finally:
         client.close()
 
     assert unary.carriers == []
-    assert direct.carriers == ["stream"]
-    assert direct.closed
+    assert stream_transport.carriers == ["stream"]
+    assert stream_transport.closed
 
 
 # -- owner handles (symmetric to @node.register) -------------------------------

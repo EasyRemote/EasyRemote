@@ -926,7 +926,10 @@ class Client:
             return self._stream_transport
         with self._lock:
             if self._stream_transport is None:
-                self._stream_transport = Transport.connect_direct()
+                # Keep a dedicated handle so unary pool replacement cannot close
+                # an active stream. The SDK selects the negotiated C ABI stream
+                # carrier, including the raw-payload v8 extension when present.
+                self._stream_transport = Transport.connect()
             return self._stream_transport
 
     def _invocation_trace(self, request_id: str) -> easynet_sdk.InvocationTraceGraph:
