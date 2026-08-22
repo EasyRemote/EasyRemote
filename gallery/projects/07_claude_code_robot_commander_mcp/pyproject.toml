@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "easyremote",
-    "easynet-sdk>=0.91.31,<0.92",
+    "easynet-sdk>=0.142.22,<0.143",
 ]
 
 [tool.uv.sources]

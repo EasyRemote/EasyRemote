@@ -61,7 +61,7 @@ def _pyproject(destination: Path, workspace_sources: bool) -> str:
         sdk = repository.parent / "EasyNet-Cli" / "sdk" / "python"
         easyremote_path = Path(os.path.relpath(repository, destination)).as_posix()
         sdk_path = Path(os.path.relpath(sdk, destination)).as_posix()
-        dependencies += '    "easynet-sdk>=0.91.31,<0.92",\n'
+        dependencies += '    "easynet-sdk>=0.142.22,<0.143",\n'
         sources = (
             "\n[tool.uv.sources]\n"
             f'easyremote = {{ path = "{easyremote_path}", editable = true }}\n'

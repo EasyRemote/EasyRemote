@@ -177,7 +177,7 @@ wheels = [
 
 [[package]]
 name = "easynet-sdk"
-version = "0.91.31"
+version = "0.142.22"
 source = { editable = "../../../../EasyNet-Cli/sdk/python" }
 dependencies = [
     { name = "axon-runtime-sdk" },
