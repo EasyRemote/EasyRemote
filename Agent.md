@@ -40,6 +40,110 @@ current behavior with a focused test before changing documentation.
 | `docs/design/` | Current architectural rationale; not a substitute for tests |
 | `pr/` | Ignored task notes, invariants, verification, and decisions |
 
+## Operational SOP
+
+### Entering the repository
+
+1. Read this file and `AGENTS.md` completely.
+2. Run `git status --short` in EasyRemote and both sibling repositories before
+   editing. Existing changes belong to their current owner; never reset, format,
+   or stage them incidentally.
+3. Inspect `easyremote/__init__.py` for the actual public surface and the closest
+   tests for the behavior being changed.
+4. For runtime, identity, authority, signer, routing, descriptor, receipt, or
+   C ABI work, move the implementation to the owning EasyNet-Cli or Axon layer.
+5. Create or update `pr/<date>-<task>/` with intent, invariants, a checklist,
+   verification, and decisions before changing architecture or runtime-facing
+   behavior.
+
+### Development and runtime startup
+
+Repository development and product runtime startup are separate operations:
+
+```bash
+# EasyRemote development environment
+uv sync
+uv run pytest -q
+
+# One-time/operational EasyNet setup; run with the installed easynet CLI
+easynet login
+easynet device join <pairing-token>   # starts the daemon unless --boot no
+easynet runtime start                 # explicit, idempotent start/attach
+easynet status
+```
+
+There is no `easynet dev init` prerequisite. `uv run python node.py` starts the
+EasyRemote provider process only; it does not install, pair, or start
+`easynet-daemon`. A provider must fail with one actionable recovery instruction
+when credentials or the daemon are unavailable.
+
+Run a Gallery case from its own uv project, with provider and caller in separate
+terminals:
+
+```bash
+cd gallery/projects/00_basic_remote_math
+uv sync
+uv run python node.py
+# second terminal, same directory
+uv run python client.py
+```
+
+### Version and release SOP
+
+- EasyRemote version truth is `easyremote/_version.py`.
+- The accepted EasyNet SDK line is declared once in the root `pyproject.toml`;
+  Gallery manifests, scaffold output, policy documentation, tests, and locks
+  must converge with it.
+- Never derive the EasyRemote version from the EasyNet Runtime, SDK, or Axon
+  version. These are separate distributions.
+- Never hand-edit `uv.lock`; change the owning manifest and run `uv lock` in the
+  root and in every affected independent Gallery project.
+- `.github/workflows/publish-easyremote.yml` publishes only from an exact
+  `v<easyremote-version>` tag. Manual dispatch is validation-only.
+- Release order is dependency-first: publish the required Axon SDK, then
+  `easynet-sdk`, then EasyRemote. Registry-only resolution must pass before the
+  downstream tag is pushed.
+
+Release preparation:
+
+```bash
+uv lock --check
+for project in gallery/projects/*; do uv lock --project "$project" --check; done
+uv run ruff check easyremote tests benchmarks gallery
+uv run mypy easyremote
+uv run pytest -q
+uv build --out-dir dist/easyremote
+uvx --from twine twine check dist/easyremote/*
+```
+
+Do not tag, push, upload, or dispatch a publishing workflow unless the user
+explicitly requests that external state change.
+
+### Script development standard
+
+Scripts under `skills/**/scripts`, tests, or future root tooling must:
+
+- be deterministic, non-interactive by default, and safe from any working
+  directory;
+- resolve repository paths from the script location rather than `$PWD`;
+- validate all inputs before writes and keep target sets explicit;
+- provide a read-only check/dry-run mode for release or migration operations;
+- update related files transactionally and restore the original state on a
+  failed generation step;
+- use bounded waits, queues, payloads, and retries; never hide an unbounded loop
+  behind a convenience command;
+- fail non-zero with a specific recovery message; never swallow a failed lock,
+  build, or conformance command;
+- avoid developer-only tools in installation/release mutation paths when
+  portable `find`, `awk`, `sed`, or language-standard tooling is sufficient;
+- have a focused failure-path test, including rollback or no-write assertions
+  where the script mutates files;
+- avoid printing credentials, tokens, private keys, raw authority headers, or
+  credential files.
+
+For a skill script, run the structural validator and its repository contract
+test listed in the Verification Commands section.
+
 ## Project Scope
 
 EasyRemote lets Python developers publish local Python functions as governed
