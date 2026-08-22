@@ -25,6 +25,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -66,6 +68,11 @@ jobs:
 
       - name: Prove registry-only dependency resolution
         run: uv lock --no-sources --dry-run
+
+      - name: Verify synchronized version projections
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.package_version }}
+        run: ./scripts/update-project-version.sh --check "${PACKAGE_VERSION}"
 
       - name: Require a forward PyPI version
         if: github.ref_type == 'tag'

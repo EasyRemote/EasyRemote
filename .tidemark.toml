@@ -1,0 +1,20 @@
+# EasyRemote TideMark configuration
+
+[release]
+tag_prefix = "v"
+require_annotated_tags = true
+
+[time]
+timezone = "+08:00"
+
+[remote]
+strategy = "ls-remote"
+name = "origin"
+fallback_to_local = true
+
+[cache]
+enabled = true
+
+[output]
+metadata_suffix = ""
+follow_renames = true
