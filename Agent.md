@@ -104,6 +104,23 @@ uv run python client.py
   `easynet-sdk`, then EasyRemote. Registry-only resolution must pass before the
   downstream tag is pushed.
 
+“Current local version”, “latest published version”, and “next release version”
+are different facts. Resolve them explicitly:
+
+```bash
+# Current version in this checkout (the candidate metadata source)
+python3 -c 'exec(open("easyremote/_version.py").read()); print(__version__)'
+
+# Latest immutable version already published on PyPI
+curl --fail --silent --show-error https://pypi.org/pypi/easyremote/json \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])'
+```
+
+EasyRemote does not use Tide. The next version is an explicit release decision:
+it must be written to `easyremote/_version.py`, be strictly newer than the PyPI
+value, and match the exact `v<VERSION>` tag. The publish workflow repeats the
+PyPI comparison and rejects a stale or equal candidate.
+
 Release preparation:
 
 ```bash
