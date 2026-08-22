@@ -5,7 +5,18 @@ import socket
 
 import pytest
 
+from easyremote import StreamFrame
 from easyremote._host import HostServer
+from easyremote._host.protocol import (
+    HEADER,
+    MAGIC,
+    MAX_PAYLOAD_BYTES,
+    FrameKind,
+    HostFrame,
+    decode_item,
+    receive_frame,
+    request_frame,
+)
 from easyremote._host.server import HostedFunction
 from easyremote.errors import InvalidArgument
 from easyremote.schema import derive
@@ -28,24 +39,52 @@ def hosted(fn, name=None):
     )
 
 
-def stream_request(host, fn, args, *, caller="", call_id="t"):
-    request = {
-        "request": {"fn": fn, "args": args, "caller": caller, "call_id": call_id}
-    }
-    return _socket_frames(host, json.dumps(request))
+def stream_request(
+    host,
+    fn,
+    args,
+    *,
+    caller="easynet:///r/acme/user/test-caller",
+    call_id="t",
+    parent_receipt=None,
+):
+    body = {"fn": fn, "args": args, "caller": caller, "call_id": call_id}
+    if parent_receipt is not None:
+        body["parent_receipt"] = parent_receipt
+    request = {"request": body}
+    return _socket_frames(host, request)
 
 
-def _socket_frames(host, line):
+def _socket_frames(host, request):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         connection.connect(str(host.socket_path))
-        connection.sendall((line + "\n").encode())
+        if not isinstance(request, dict):
+            connection.sendall(request)
+        else:
+            connection.sendall(request_frame(request).to_bytes())
         frames = []
-        for raw in connection.makefile("r"):
-            raw = raw.strip()
-            if not raw:
-                continue
-            frames.append(json.loads(raw))
-            if "terminal" in frames[-1] or "error" in frames[-1]:
+        while True:
+            frame = receive_frame(connection)
+            if frame.kind is FrameKind.ITEM:
+                frames.append(
+                    {
+                        "stream_item": decode_item(frame),
+                        "seq": frame.sequence,
+                        "content_type": frame.content_type,
+                    }
+                )
+            elif frame.kind is FrameKind.TERMINAL:
+                frames.append(
+                    {
+                        "terminal": {
+                            "output_hash": "sha256:" + frame.payload.hex(),
+                            "frames": frame.sequence,
+                        }
+                    }
+                )
+                break
+            elif frame.kind is FrameKind.ERROR:
+                frames.append({"error": json.loads(frame.payload)})
                 break
         return frames
 
@@ -190,14 +229,75 @@ def test_non_finite_output_is_rejected_before_wire_json(host):
 
 
 def test_invalid_json_is_bad_request(host):
-    frames = _socket_frames(host, "{not json")
+    frames = _socket_frames(
+        host,
+        HostFrame(
+            FrameKind.REQUEST,
+            0,
+            content_type="application/json",
+            payload=b"{not json",
+        ).to_bytes(),
+    )
 
     assert frames[0]["error"]["kind"] == InvalidArgument.KIND
     assert frames[0]["error"]["reason"] == "bad_request"
 
 
+def test_binary_request_accepts_partial_socket_writes(host):
+    def ping() -> str:
+        return "pong"
+
+    host.add(hosted(ping))
+    raw = request_frame(
+        {
+            "request": {
+                "fn": "er.ping",
+                "args": {},
+                "caller": "easynet:///r/acme/user/alice",
+                "call_id": "partial",
+            }
+        }
+    ).to_bytes()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.connect(str(host.socket_path))
+        for offset in range(0, len(raw), 3):
+            connection.sendall(raw[offset : offset + 3])
+        item = receive_frame(connection)
+        terminal = receive_frame(connection)
+
+    assert decode_item(item) == "pong"
+    assert terminal.kind is FrameKind.TERMINAL
+
+
+def test_binary_request_rejects_unknown_version(host):
+    raw = bytearray(request_frame({"request": {}}).to_bytes())
+    raw[4] = 99
+
+    frames = _socket_frames(host, bytes(raw))
+
+    assert frames[0]["error"]["kind"] == InvalidArgument.KIND
+    assert "version 99" in frames[0]["error"]["message"]
+
+
+def test_binary_request_rejects_oversized_payload_before_read(host):
+    raw = HEADER.pack(
+        MAGIC,
+        1,
+        int(FrameKind.REQUEST),
+        0,
+        0,
+        0,
+        MAX_PAYLOAD_BYTES + 1,
+    )
+
+    frames = _socket_frames(host, raw)
+
+    assert frames[0]["error"]["kind"] == InvalidArgument.KIND
+    assert "payload exceeds protocol limit" in frames[0]["error"]["message"]
+
+
 def test_malformed_envelope_is_bad_request(host):
-    frames = _socket_frames(host, json.dumps({"fn": "er.ping", "args": {}}))
+    frames = _socket_frames(host, {"fn": "er.ping", "args": {}})
 
     assert frames[0]["error"]["kind"] == InvalidArgument.KIND
     assert frames[0]["error"]["reason"] == "bad_request"
@@ -248,6 +348,59 @@ def test_generator_streams_frames_then_terminal(host):
     assert frames[-1]["terminal"]["output_hash"].startswith("sha256:")
 
 
+def test_ordinary_function_returning_iterator_streams(host):
+    from collections.abc import Iterator
+
+    def generate(n: int) -> Iterator[int]:
+        return iter(range(n))
+
+    host.add(hosted(generate))
+
+    assert stream_items(stream_request(host, "er.generate", {"n": 3})) == [0, 1, 2]
+
+
+def test_positional_only_parameters_are_rehydrated_positionally(host):
+    def add(left: int, /, right: int = 1) -> int:
+        return left + right
+
+    host.add(hosted(add))
+
+    assert stream_items(stream_request(host, "er.add", {"left": 4, "right": 3})) == [7]
+
+
+def test_multimodal_frames_preserve_raw_bytes_and_media_types(host):
+    def media():
+        yield StreamFrame(b"\xff\xd8jpeg", "image/jpeg")
+        yield StreamFrame(b"opus", "audio/opus")
+        yield b"opaque"
+
+    host.add(hosted(media))
+    frames = stream_request(host, "er.media", {})
+
+    items = [frame for frame in frames if "stream_item" in frame]
+    assert [item["content_type"] for item in items] == [
+        "image/jpeg",
+        "audio/opus",
+        "application/octet-stream",
+    ]
+    assert [item["stream_item"].payload for item in items] == [
+        b"\xff\xd8jpeg",
+        b"opus",
+        b"opaque",
+    ]
+
+
+def test_async_generator_preserves_typed_media_frames(host):
+    async def audio():
+        yield StreamFrame(b"opus-1", "audio/opus")
+        yield StreamFrame(b"opus-2", "audio/opus")
+
+    host.add(hosted(audio))
+    frames = stream_request(host, "er.audio", {})
+
+    assert [item.payload for item in stream_items(frames)] == [b"opus-1", b"opus-2"]
+
+
 def test_unary_context_function_gets_injected_caller(host):
     from easyremote import Context
 
@@ -281,13 +434,96 @@ def test_stream_context_function_reads_caller_each_frame(host):
         host,
         "er.tagged",
         {"prompt": "p"},
-        caller="easynet:///r/acme/device/bob",
+        caller="easynet:///r/acme/user/bob",
         call_id="inv-2",
     )
 
     assert stream_items(frames) == [
-        {"i": i, "by": "easynet:///r/acme/device/bob"} for i in range(3)
+        {"i": i, "by": "easynet:///r/acme/user/bob"} for i in range(3)
     ]
+
+
+def test_context_child_call_uses_parent_receipt_dispatcher(short_tmp, runtime_receipt):
+    from easyremote import (
+        Context,
+        FreshContextChild,
+        ResolvedTargetSubject,
+    )
+    from easyremote._host.server import HostServer
+
+    seen = {}
+
+    class FakeDispatcher:
+        def __init__(self, receipt):
+            self.receipt = receipt
+            self.closed = False
+
+        def call(self, target, /, *args, **kwargs):
+            seen["receipt_ura"] = self.receipt.raw["receipt_ura"]
+            seen["function"] = target.function
+            seen["args"] = args
+            seen["kwargs"] = kwargs
+            return {
+                "child": target.function,
+                "receipt": self.receipt.raw["receipt_ura"],
+            }
+
+        def invoke(self, function, /, *args, **kwargs):
+            raise AssertionError("unexpected invoke")
+
+        def stream(self, function, /, *args, **kwargs):
+            raise AssertionError("unexpected stream")
+
+        def close(self):
+            seen["closed"] = True
+            self.closed = True
+
+    def factory(receipt):
+        assert receipt is not None
+        return FakeDispatcher(receipt)
+
+    def parent(ctx: Context, q: str):
+        return ctx.call(
+            Context.target(
+                "er.child",
+                invocation_policy=FreshContextChild(ResolvedTargetSubject()),
+            ),
+            q=q,
+        )
+
+    parent_receipt = runtime_receipt(
+        invocation_id="inv-parent-1",
+        receipt_type="completed",
+        state="Completed",
+        receipt_ura="easynet:///r/example/resource/agent.easyremote.test/invocation/parent-1/receipt",
+        cleanup_complete=True,
+    )
+
+    with HostServer(
+        short_tmp / "host.sock", context_dispatcher_factory=factory
+    ) as server:
+        server.add(hosted(parent))
+        frames = stream_request(
+            server,
+            "er.parent",
+            {"q": "hi"},
+            call_id="inv-parent-1",
+            parent_receipt=parent_receipt,
+        )
+
+    assert stream_items(frames) == [
+        {
+            "child": "er.child",
+            "receipt": "easynet:///r/example/resource/agent.easyremote.test/invocation/parent-1/receipt",
+        }
+    ]
+    assert seen == {
+        "receipt_ura": "easynet:///r/example/resource/agent.easyremote.test/invocation/parent-1/receipt",
+        "function": "er.child",
+        "args": (),
+        "kwargs": {"q": "hi"},
+        "closed": True,
+    }
 
 
 def test_rolling_hash_matches_daemon_golden_vector():
@@ -298,12 +534,12 @@ def test_rolling_hash_matches_daemon_golden_vector():
     # reject otherwise-valid streams as STREAM_TRUNCATED. Verified
     # byte-identical against a standalone Rust replica using the same
     # sha2 / serde_json versions.
-    from easyremote._host.server import _RollingHash
+    from easyremote._host.protocol import FrameWriter
 
-    h = _RollingHash()
-    for seq, frame in enumerate(["a:hi", "b:hi", "c:hi"]):
-        h.fold(seq, frame)
+    writer = FrameWriter()
+    for frame in ["a:hi", "b:hi", "c:hi"]:
+        writer.write_item(frame)
     assert (
-        h.finish()
-        == "sha256:653e1bed022d2aa75fba7d09f92bb1d1db86c3caffb89cf54e6f7556ff3e3183"
+        writer.output_hash
+        == "sha256:4b454f7a5008aa83decbe76c9da3f3b3ea891371448dccde2de908fbf48e9f93"
     )

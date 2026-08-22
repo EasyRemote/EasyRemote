@@ -5,7 +5,7 @@ registers or mutates daemon state — the register→invoke loop is part
 of the (manual, cleaned-up) P0 probe, not CI.
 
 Activation requires all of:
-- EASYNET_CLI_LIB pointing at a v3 libeasynet_cli, and
+- EASYNET_CLI_LIB pointing at a compatible EasyNet-Cli SDK native library, and
 - a running daemon (~/.easynet/control.json + live pid).
 
 Otherwise every test here skips with the reason shown.
@@ -15,9 +15,9 @@ import json
 import os
 from pathlib import Path
 
+import easynet_sdk
 import pytest
-
-from easyremote.receipts import InvocationState
+from easynet_sdk import InvocationLifecycleState as InvocationState
 
 
 def _live_daemon_available() -> str | None:
@@ -41,41 +41,59 @@ pytestmark = [
 ]
 
 
-def _an_agent_name() -> str:
-    agents = json.loads((Path.home() / ".easynet" / "agents.json").read_text())
-    names = sorted(agents.get("agents", {}))
-    if not names:
-        pytest.skip("no agents registered on this daemon")
-    return names[0]
+def _an_agent_ura() -> str:
+    registry = Path.home() / ".easynet" / "local-agents.json"
+    if not registry.exists():
+        pytest.skip(
+            "no daemon-owned hosted-agent registry at ~/.easynet/local-agents.json"
+        )
+    hosted = json.loads(registry.read_text()).get("hosted_agents", [])
+    agent_uras = sorted(
+        row.get("agent_ura", "") for row in hosted if row.get("profile") == "llm"
+    )
+    if not agent_uras:
+        pytest.skip("no hosted LLM agents registered on this daemon")
+    return agent_uras[0]
+
+
+def _agent_ability_ura(agent_ura: str, ability: str) -> str:
+    try:
+        ability_ura = easynet_sdk.owner_ability_ura(agent_ura, ability)
+    except easynet_sdk.SDKError:
+        pytest.skip(f"cannot build Ability URA for {agent_ura}#{ability}")
+    return ability_ura
 
 
 @pytest.fixture(scope="module")
 def client():
     from easyremote.client import Client
+    from easyremote.invocation_policy import FreshRoot, ResolvedTargetSubject
 
-    with Client(timeout=20.0) as live:
+    with Client(
+        timeout=20.0,
+        invocation_policy=FreshRoot(ResolvedTargetSubject()),
+    ) as live:
         yield live
 
 
-def test_abi_handshake():
-    from easyremote._transport import ABI_VERSION, abi
+def test_sdk_transport_connects_to_live_daemon():
+    from easyremote._sdk_transport import Transport
+    from easyremote.config import sdk_environment
 
-    abi.library()  # raises on version mismatch
-    assert ABI_VERSION == 3
-
-
-def test_transport_connects_to_live_daemon():
-    from easyremote._transport import Transport
-
+    feature_set = sdk_environment().feature_set()
+    assert feature_set.abi_version >= 4
     with Transport.connect():
         pass
 
 
 def test_discover_round_trip_and_receipt_shape(client):
-    agent = _an_agent_name()
-    invocation = client.invoke(f"{agent}.discover", scope="self", query="")
+    invocation = client.invoke(
+        _agent_ability_ura(_an_agent_ura(), "discover"),
+        scope="self",
+        query="",
+    )
 
-    assert invocation.state in (InvocationState.COMPLETED, InvocationState.UNSPECIFIED)
+    assert invocation.state is InvocationState.COMPLETED
     result = invocation.result()
     assert isinstance(result, dict)
     assert "candidates" in result, f"discover shape drifted: {sorted(result)}"
@@ -83,19 +101,24 @@ def test_discover_round_trip_and_receipt_shape(client):
     # P0 pin: does the daemon return an admission receipt summary on
     # the unary path, and does it parse through our wrapper?
     receipt = invocation.receipt
-    if receipt is not None:
-        assert receipt.invocation_id
-        assert len(receipt.self_hash) == 32
+    assert isinstance(receipt, easynet_sdk.RuntimeReceipt)
+    assert receipt.invocation_id
+    assert len(receipt.self_receipt_hash()) == 32
 
 
 def test_functions_facade_parses_live_candidates():
-    # functions() routes through `<namespace>.discover` — point the
-    # namespace at an agent this daemon actually registers (P0 pin:
-    # unregistered namespaces are ROUTE_NEGATIVE, not empty results).
+    # Bind the namespace to a canonical owner URA. The fixture may read
+    # daemon state to select a sample, but the SDK runtime must not guess
+    # `caesura -> easynet:///.../agent/dev.caesura` itself.
     from easyremote.client import Client
+    from easyremote.invocation_policy import FreshRoot, ResolvedTargetSubject
 
-    with Client(timeout=20.0, namespace=_an_agent_name()) as scoped:
+    with Client(
+        timeout=20.0,
+        namespace=_an_agent_ura(),
+        invocation_policy=FreshRoot(ResolvedTargetSubject()),
+    ) as scoped:
         infos = scoped.functions(scope="self")
     assert isinstance(infos, list)
     for info in infos:
-        assert info.qualified_name.startswith("easynet:///r/")
+        assert info.ability_ura.startswith("easynet:///r/")

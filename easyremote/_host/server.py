@@ -1,25 +1,10 @@
-"""The warm host: a Unix-socket server keeping registered functions resident.
-
-Wire protocol (one JSON line in, many JSON lines out, UTF-8):
-
-    -> {"request": {"fn": "<qualified>", "args": {...}, "caller": "..."}}
-    <- {"stream_item": <json>, "seq": 0}
-    <- {"terminal": {"output_hash": "sha256:<hex>", "frames": 1}}
-    <- {"error": {"kind": "...", "reason": "...", "message": "..."}}
-
-``args`` is the host_stream stdin payload verbatim — real JSON types,
-so functions receive their keyword arguments without shell-template
-re-typing. ``bytes`` parameters are the one schema-driven exception:
-they travel as base64 strings (contentEncoding) and are decoded here.
-"""
+"""Warm Unix-socket host for versioned typed binary server streams."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import inspect
-import json
 import socket
 import threading
 import typing
@@ -28,11 +13,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import easynet_sdk
+
 from .. import _codec
-from .._json import dumps_wire
-from ..context import Context
+from .._context_dispatch import dispatcher_from_parent_receipt
+from ..context import Context, ContextChildDispatcher
 from ..errors import InternalError, InvalidArgument, RemoteError
 from ..schema import PARAMETER_ORDER_KEY, VAR_POSITIONAL_KEY, DerivedSignature
+from .protocol import HostFrame, HostRequest, HostSession, error_frame
 
 __all__ = ["HostServer", "HostedFunction"]
 
@@ -49,9 +37,7 @@ class HostedFunction:
     fn: Callable[..., Any]
     signature: DerivedSignature
     _hints: dict[str, Any] = field(init=False, repr=False, compare=False)
-    _inspect_signature: inspect.Signature = field(
-        init=False, repr=False, compare=False
-    )
+    _inspect_signature: inspect.Signature = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         try:
@@ -62,14 +48,23 @@ class HostedFunction:
         object.__setattr__(self, "_inspect_signature", inspect.signature(self.fn))
 
     def call(self, args: dict[str, Any], context: Any = None) -> Any:
+        return _codec.to_jsonable(self.call_frame(args, context))
+
+    def call_frame(self, args: dict[str, Any], context: Any = None) -> Any:
+        """Execute once without erasing typed media frame information."""
+
         pos, kwargs = self._call_args(args, context)
         result = self.fn(*pos, **kwargs)
         if inspect.iscoroutine(result):
             result = asyncio.run(result)
-        return _codec.to_jsonable(result)
+        return result
 
     def stream(self, args: dict[str, Any], context: Any = None) -> Iterator[Any]:
-        """Yield each frame of a generator ability, JSON-encoded.
+        for frame in self.stream_frames(args, context):
+            yield _codec.to_jsonable(frame)
+
+    def stream_frames(self, args: dict[str, Any], context: Any = None) -> Iterator[Any]:
+        """Yield each frame of a generator ability.
 
         Sync and async generators are both supported; an async generator
         is drained on a private event loop so the per-frame contract is
@@ -79,11 +74,12 @@ class HostedFunction:
         """
         pos, kwargs = self._call_args(args, context)
         gen = self.fn(*pos, **kwargs)
-        if inspect.isasyncgen(gen):
+        if inspect.iscoroutine(gen):
+            gen = asyncio.run(gen)
+        if inspect.isasyncgen(gen) or hasattr(gen, "__aiter__"):
             yield from _drain_async_gen(gen)
         else:
-            for frame in gen:
-                yield _codec.to_jsonable(frame)
+            yield from gen
 
     def _call_args(
         self, args: dict[str, Any], context: Any
@@ -115,7 +111,24 @@ class HostedFunction:
         `*args`, everything stays keyword."""
         var_positional = self.signature.input_schema.get(VAR_POSITIONAL_KEY)
         if var_positional is None or var_positional not in kwargs:
-            return (), kwargs
+            rest = dict(kwargs)
+            positional: list[Any] = []
+            for parameter in self._inspect_signature.parameters.values():
+                if parameter.kind is not inspect.Parameter.POSITIONAL_ONLY:
+                    continue
+                if self.signature.takes_context and parameter.name not in rest:
+                    continue
+                if parameter.name in rest:
+                    positional.append(rest.pop(parameter.name))
+                elif parameter.default is not inspect.Parameter.empty:
+                    positional.append(parameter.default)
+                else:
+                    raise InvalidArgument(
+                        f"'{self.name}' missing required positional-only argument"
+                        f" '{parameter.name}'",
+                        reason="argument_mismatch",
+                    )
+            return tuple(positional), rest
         rest = dict(kwargs)
         tail = rest.pop(var_positional)
         if not isinstance(tail, (list, tuple)):
@@ -133,12 +146,12 @@ class HostedFunction:
             if name in rest:
                 pos.append(rest.pop(name))
                 continue
-            parameter = self._inspect_signature.parameters.get(name)
+            leading_parameter = self._inspect_signature.parameters.get(name)
             if (
-                parameter is not None
-                and parameter.default is not inspect.Parameter.empty
+                leading_parameter is not None
+                and leading_parameter.default is not inspect.Parameter.empty
             ):
-                pos.append(parameter.default)
+                pos.append(leading_parameter.default)
                 continue
             raise InvalidArgument(
                 f"'{self.name}' missing required positional argument '{name}'"
@@ -183,12 +196,23 @@ class HostServer:
     incoming request and emits its stream frames.
     """
 
-    def __init__(self, socket_path: Path) -> None:
+    def __init__(
+        self,
+        socket_path: Path,
+        *,
+        context_dispatcher_factory: Callable[
+            [easynet_sdk.RuntimeReceipt | None], ContextChildDispatcher | None
+        ]
+        | None = None,
+    ) -> None:
         self._socket_path = socket_path
         self._functions: dict[str, HostedFunction] = {}
         self._listener: socket.socket | None = None
         self._accept_thread: threading.Thread | None = None
         self._stopping = threading.Event()
+        self._context_dispatcher_factory = (
+            context_dispatcher_factory or dispatcher_from_parent_receipt
+        )
 
     @property
     def socket_path(self) -> Path:
@@ -263,58 +287,36 @@ class HostServer:
 
     def _serve_connection(self, connection: socket.socket) -> None:
         with connection:
-            reader = connection.makefile("r", encoding="utf-8")
-            line = reader.readline()
-            if not line:
-                return
             try:
-                envelope = json.loads(line)
-            except json.JSONDecodeError as exc:
-                self._send_line(
+                session = HostSession.receive(connection)
+            except InvalidArgument as exc:
+                self._send_error(
                     connection,
-                    _stream_error(
-                        InvalidArgument.KIND,
-                        "bad_request",
-                        f"{type(exc).__name__}: {exc}",
-                    ),
+                    InvalidArgument.KIND,
+                    "bad_request",
+                    str(exc),
                 )
                 return
-            if not isinstance(envelope, dict) or not isinstance(
-                envelope.get("request"), dict
-            ):
-                self._send_line(
-                    connection,
-                    _stream_error(
-                        InvalidArgument.KIND,
-                        "bad_request",
-                        "host_stream envelope must be a JSON object with a"
-                        " request object",
-                    ),
-                )
-                return
-            self._serve_stream(connection, envelope["request"])
+            self._serve_stream(connection, session)
 
-    def _send_line(self, connection: socket.socket, frame: dict[str, Any]) -> None:
-        connection.sendall(
-            (dumps_wire(frame, what="host_stream frame") + "\n").encode("utf-8")
-        )
+    def _send_frame(self, connection: socket.socket, frame: HostFrame) -> None:
+        connection.sendall(frame.to_bytes())
 
-    def _serve_stream(self, connection: socket.socket, request: dict[str, Any]) -> None:
-        """Stream a generator ability's frames per the host_stream wire.
+    def _send_error(
+        self, connection: socket.socket, kind: str, reason: str, message: str
+    ) -> None:
+        self._send_frame(connection, error_frame(kind, reason, message))
 
-        Emits `{"stream_item", "seq"}` per frame with a rolling hash
-        folded in `seq` order, then a single `{"terminal"}` carrying the
-        final `output_hash` and frame count — or a single `{"error"}` if
-        the ability is missing, mis-typed, or raises. terminal and error
-        are mutually exclusive and each sent at most once.
-        """
-        name = request.get("fn")
-        args = request.get("args", {})
+    def _serve_stream(self, connection: socket.socket, session: HostSession) -> None:
+        """Run one function and emit typed frames to exactly one terminal."""
+        request = session.request
+        name = request.function
+        args = request.args
         hosted = self._functions.get(name) if isinstance(name, str) else None
         if hosted is None:
-            self._send_line(
+            self._send_frame(
                 connection,
-                _stream_error(
+                session.fail(
                     InvalidArgument.KIND,
                     "not_found",
                     f"no function '{name}' on this node",
@@ -328,9 +330,9 @@ class HostServer:
         # carry arbitrary JSON args or the caller identity.
         sig = hosted.signature
         if not isinstance(args, dict):
-            self._send_line(
+            self._send_frame(
                 connection,
-                _stream_error(
+                session.fail(
                     InvalidArgument.KIND,
                     "bad_request",
                     "args must be a JSON object",
@@ -341,93 +343,54 @@ class HostServer:
         # Build the injected Context from the envelope the daemon relays.
         context = None
         if sig.takes_context:
-            context = Context(
-                invocation_id=str(request.get("call_id") or ""),
-                caller=str(request.get("caller") or ""),
-            )
+            context = self._context_for_request(request)
 
-        rolling = _RollingHash()
-        seq = 0
         try:
             frames = (
-                hosted.stream(args, context=context)
+                hosted.stream_frames(args, context=context)
                 if sig.is_stream
-                else iter([hosted.call(args, context=context)])
+                else iter([hosted.call_frame(args, context=context)])
             )
             for frame in frames:
-                self._send_line(connection, {"stream_item": frame, "seq": seq})
-                rolling.fold(seq, frame)
-                seq += 1
+                self._send_frame(connection, session.emit(frame))
         except RemoteError as exc:
-            self._send_line(connection, _stream_error(exc.kind, exc.reason, str(exc)))
+            self._send_frame(connection, session.fail(exc.kind, exc.reason, str(exc)))
             return
         except Exception as exc:
-            self._send_line(
+            error = exc
+            if isinstance(exc, InvalidArgument):
+                kind = exc.kind
+                reason = exc.reason
+            else:
+                kind = InternalError.KIND
+                reason = "function_raised"
+            self._send_frame(
                 connection,
-                _stream_error(
-                    InternalError.KIND,
-                    "function_raised",
-                    f"{type(exc).__name__}: {exc}",
-                ),
+                session.fail(kind, reason, f"{type(error).__name__}: {error}"),
             )
             return
-        self._send_line(
-            connection,
-            {"terminal": {"output_hash": rolling.finish(), "frames": seq}},
+        finally:
+            if context is not None:
+                context.close()
+        self._send_frame(connection, session.finish())
+
+    def _context_for_request(self, request: HostRequest) -> Context:
+        parent = (
+            easynet_sdk.RuntimeReceipt.from_required_mapping(
+                dict(request.parent_receipt)
+            )
+            if request.parent_receipt is not None
+            else None
+        )
+        return Context(
+            invocation_id=request.call_id,
+            caller=request.caller,
+            _child_dispatcher=self._context_dispatcher_factory(parent),
         )
 
 
-def _stream_error(kind: str, reason: str, message: str) -> dict[str, Any]:
-    """A single terminal `error` frame for the host_stream wire.
-
-    Mutually exclusive with `terminal` and sent at most once — the
-    daemon's host_stream executor maps this to an in-band terminal error
-    (`STREAM_TRUNCATED` / `function_raised` / `not_found` …), never a
-    clean end-of-stream.
-    """
-    return {"error": {"kind": kind, "reason": reason, "message": message}}
-
-
-class _RollingHash:
-    """Rolling output hash over emitted stream frames.
-
-    Folds each frame in `seq` order:
-        output_hash = H(prev_hash || seq || canonical_json(frame))
-    seeded from the empty-string hash. The terminal frame carries the
-    final digest as `sha256:<hex>`; the daemon recomputes it the same
-    way and a mismatch is a truncation failure. The canonical form MUST
-    match the daemon's: compact, sorted keys
-    (`json.dumps(value, sort_keys=True, separators=(",", ":"))`).
-    """
-
-    def __init__(self) -> None:
-        self._prev = hashlib.sha256(b"").digest()
-
-    def fold(self, seq: int, frame: Any) -> None:
-        hasher = hashlib.sha256()
-        hasher.update(self._prev)
-        hasher.update(seq.to_bytes(8, "big"))
-        hasher.update(_canonical_json(frame).encode("utf-8"))
-        self._prev = hasher.digest()
-
-    def finish(self) -> str:
-        return "sha256:" + self._prev.hex()
-
-
-def _canonical_json(value: Any) -> str:
-    """Deterministic byte image of `value` shared with the daemon.
-
-    `ensure_ascii=False` so non-ASCII characters stay as UTF-8 bytes —
-    matching `serde_json`'s output. With the default (`\\uXXXX` escapes)
-    a frame containing any non-ASCII text would hash differently on the
-    two sides and the daemon would wrongly flag `STREAM_TRUNCATED`.
-    """
-    return dumps_wire(value, what="host_stream hash frame", sort_keys=True)
-
-
 def _drain_async_gen(gen: Any) -> Iterator[Any]:
-    """Drain an async generator on a private event loop, yielding each
-    frame JSON-encoded — identical per-frame contract to the sync path."""
+    """Drain an async generator on a private event loop."""
     loop = asyncio.new_event_loop()
     try:
         iterator = gen.__aiter__()
@@ -436,7 +399,7 @@ def _drain_async_gen(gen: Any) -> Iterator[Any]:
                 frame = loop.run_until_complete(iterator.__anext__())
             except StopAsyncIteration:
                 break
-            yield _codec.to_jsonable(frame)
+            yield frame
     finally:
         loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()

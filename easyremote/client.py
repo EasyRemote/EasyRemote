@@ -1,54 +1,63 @@
 """Client: call capabilities (SPEC §5.6).
 
-Three layers, two daemon carriers:
+Three layers over descriptor-selected public carriers:
 
 - L0 ``execute`` — v2 hello-world surface, keyword-or-discovered args.
-- L1 ``call`` / ``stream`` / ``session`` — hosted abilities on
-  ``host_stream``; unary functions are single-frame streams.
-- L2 ``invoke`` / ``prepare`` — daemon unary/system abilities, with
+- L1 ``call`` / ``stream`` / ``session`` — public RPC, Stream, or Bidi mode
+  selected by the committed ability descriptor.
+- L2 ``invoke`` / ``prepare`` — explicit receipt-oriented invocation, with
   the seven-tuple inspectable before dispatch.
 
-Addressing: the caller is this device (pairing identity); the callee
-defaults to the local daemon's device URA, which owns routing — one
-``_address()`` seam encodes that assumption so the P0 link
-verification adjusts exactly one place if the dispatch contract says
-otherwise. Ability URAs from `discover` are used verbatim, never
-reconstructed.
+Addressing: the caller is the paired User. Product target
+selection is projected to an Ability URA through the SDK Addressing provider,
+and the SDK Invocation provider derives the complete canonical draft. Daemon
+route policy remains behind easynet-daemon.
 
-Per-call timeouts are client-side only (the C ABI unary invoke is a
-blocking call with no wire-level timeout field): the caller's wait is
-bounded, while server-side execution remains governed by the manifest's
-``timeout_seconds``. Timed-out unary calls may still finish in the
-daemon; the client stops waiting.
+Per-call timeouts are client-side only: the caller's wait is bounded,
+while server-side execution remains governed by the manifest's
+``timeout_seconds``. Timed-out unary calls may still finish in the daemon;
+the client stops waiting.
 """
 
 from __future__ import annotations
 
-import base64
-import contextlib
 import functools
 import inspect
-import queue
-import random
+import math
 import threading
+import weakref
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
-from typing import Any, Literal, cast
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, Literal, cast
+
+import easynet_sdk
 
 from . import _codec
-from ._transport import BidiChannel, FrameStream, Transport
-from .errors import DeadlineExceeded, InvalidArgument, Unavailable, error_from_wire
-from .identity import LocalIdentity, device_ura
+from ._addressing import (
+    PICK_POLICIES,
+    AbilityAddressResolver,
+    ResolvedAbility,
+    canonical_addressing_client,
+)
+from ._product_abilities import SystemAgentId
+from ._sdk_transport import FrameStream, Transport, UnaryDispatchPool
+from .errors import (
+    InvalidArgument,
+    RemoteError,
+    Unavailable,
+    error_from_sdk,
+)
+from .frame import StreamFrame
+from .identity import LocalIdentity, agent_ura, device_ura, hub_ura
 from .invocation import (
-    JSON_CONTENT_TYPE,
-    Arguments,
-    Causal,
     Invocation,
-    InvocationTuple,
     PreparedInvocation,
     StreamSpec,
-    encode_invocation,
-    fresh_nonce,
+)
+from .invocation_policy import (
+    InvocationDerivationPolicy,
+    require_invocation_policy,
+    runtime_root_context,
 )
 from .schema import PARAMETER_ORDER_KEY, VAR_POSITIONAL_KEY
 
@@ -57,17 +66,27 @@ __all__ = [
     "CallTarget",
     "Client",
     "FunctionInfo",
+    "RemoteAbility",
+    "RemoteDevice",
     "RemoteFunction",
+    "RemoteOwner",
     "Stream",
     "remote",
 ]
 
-_PICK_POLICIES = frozenset({"round_robin", "random"})
+if TYPE_CHECKING:
+    from .agent import RemoteAgent
+    from .control import AbilityControl, AgentControl
+    from .mission import MissionControl
 
 
 @dataclass(frozen=True)
 class FunctionInfo:
-    """One discoverable capability (a `discover` candidate, verbatim)."""
+    """One discoverable capability.
+
+    ``qualified_name`` remains the public EasyRemote field while
+    ``ability_ura`` is the canonical name used by runtime collaborators.
+    """
 
     name: str  # verb, e.g. "ai_inference"
     qualified_name: str  # full ability URA, daemon-issued
@@ -76,35 +95,70 @@ class FunctionInfo:
     input_schema: dict[str, Any]
     visibility: str
     score: float
+    descriptor_ref: str = ""
+    call_mode: str = ""
+
+    @property
+    def owner_ura(self) -> str:
+        return self.owner
+
+    @property
+    def ability_ura(self) -> str:
+        return self.qualified_name
 
     @classmethod
     def from_candidate(cls, candidate: dict[str, Any]) -> FunctionInfo:
         return cls(
             name=str(candidate.get("ability", "")),
-            qualified_name=str(candidate.get("qualified_name", "")),
+            qualified_name=str(
+                candidate.get("ability_ura") or candidate.get("qualified_name") or ""
+            ),
             owner=str(candidate.get("owner", "")),
             description=str(candidate.get("description", "")),
             input_schema=dict(candidate.get("input_schema") or {}),
             visibility=str(candidate.get("visibility", "")),
             score=float(candidate.get("score", 0.0)),
+            descriptor_ref=str(candidate.get("descriptor_ref") or ""),
+            call_mode=str(candidate.get("call_mode") or ""),
         )
 
+    @classmethod
+    def from_catalog_row(
+        cls,
+        row: Mapping[str, Any],
+        *,
+        namespace: str,
+    ) -> FunctionInfo:
+        """Project one daemon catalogue row into EasyRemote's public shape.
 
-@dataclass(frozen=True)
-class _ResolvedAbility:
-    """One concrete invocation target plus the schema that belongs to it.
+        The daemon catalogue is the canonical discovery source. EasyRemote only
+        adapts field names for its historical API; it does not own discovery,
+        descriptor binding, admission, or receipt interpretation.
+        """
 
-    Schemas are only safe to apply after owner selection. Two devices can
-    expose the same verb with different parameter order/defaults, so a
-    bare verb cache is only used when discovery proved it unambiguous.
-    """
-
-    callee: str
-    ability: str
-    input_schema: dict[str, Any] | None = None
-    ability_ura: str | None = None
-    subject: str | None = None
-    argument_label: str | None = None
+        raw_name = str(row.get("name") or row.get("ability") or "")
+        product_name = _product_function_name(raw_name, namespace)
+        schema = row.get("input_schema")
+        if not isinstance(schema, Mapping):
+            summary = row.get("schema_summary")
+            if isinstance(summary, Mapping):
+                schema = summary.get("input")
+        return cls(
+            name=product_name,
+            qualified_name=str(
+                row.get("ability_ura")
+                or row.get("qualified_name")
+                or row.get("descriptor_ref")
+                or ""
+            ),
+            owner=str(row.get("owner_ura") or row.get("owner") or ""),
+            description=str(row.get("description") or ""),
+            input_schema=dict(schema) if isinstance(schema, Mapping) else {},
+            visibility=str(row.get("visibility") or ""),
+            score=float(row.get("score", 1.0)),
+            descriptor_ref=str(row.get("descriptor_ref") or ""),
+            call_mode=str(row.get("call_mode") or ""),
+        )
 
 
 @dataclass(frozen=True)
@@ -112,20 +166,24 @@ class CallTarget:
     """An invocation target plus client-side dispatch options.
 
     Ability arguments live only in ``Client.call/stream/invoke`` kwargs.
-    Targeting, selection, timeout, metadata, and tuple adjustments live
-    here so user functions may legitimately expose parameters named
-    ``node``, ``pick``, ``timeout``, ``subject``, or ``metadata`` without
-    colliding with the client control plane.
+    Targeting, selection, timeout, metadata, and a per-target product policy live
+    here so user functions may legitimately expose parameters named ``node``,
+    ``pick``, ``timeout``, ``subject``, or ``metadata`` without colliding with
+    the client control plane.
+
+    The former target-field migration notice ended with
+    ``in EasyRemote 3.0.0; use invocation_policy``. No target-field adapter
+    remains: invocation derivation must now be selected explicitly.
     """
 
     function: str
     node: str | None = None
     pick: Literal["round_robin", "random"] | None = None
     timeout: float | None = None
-    subject: str | None = None
-    causal: Causal = None
     sign: bool | None = None
     metadata: Mapping[str, str] | None = None
+    owner_ura: str | None = None
+    invocation_policy: InvocationDerivationPolicy | None = None
 
     def __post_init__(self) -> None:
         if not self.function.strip():
@@ -137,110 +195,64 @@ class CallTarget:
                 "target cannot specify both node and pick",
                 reason="ambiguous_target_selection",
             )
-        if self.pick is not None and self.pick not in _PICK_POLICIES:
+        if self.owner_ura is not None and (
+            self.node is not None or self.pick is not None
+        ):
             raise InvalidArgument(
-                f"pick must be one of {sorted(_PICK_POLICIES)}, got {self.pick!r}"
-                " (resource_aware needs daemon-side load metrics — Cli PR-3)",
+                "target cannot combine an explicit owner with node or pick"
+                " — an owner handle already names the callee",
+                reason="ambiguous_target_selection",
+            )
+        if self.pick is not None and self.pick not in PICK_POLICIES:
+            raise InvalidArgument(
+                f"pick must be one of {sorted(PICK_POLICIES)}, got {self.pick!r}"
+                " (resource_aware selection is not supported)",
                 reason="invalid_pick_policy",
+            )
+        if self.timeout is not None and (
+            not math.isfinite(self.timeout) or self.timeout <= 0
+        ):
+            raise InvalidArgument(
+                f"timeout must be a positive finite number of seconds,"
+                f" got {self.timeout!r}",
+                reason="invalid_timeout",
             )
         if self.metadata is not None:
             object.__setattr__(self, "metadata", dict(self.metadata))
+        if self.invocation_policy is not None:
+            require_invocation_policy(
+                self.invocation_policy,
+                field="target invocation_policy",
+            )
 
 
 class Stream:
     """Frames from a server-stream invocation.
 
-    Yields each ability frame's decoded result value until the terminal
-    frame arrives, then closes the underlying transport stream and stops
-    iteration. Recognising the terminal frame is the stream consumer's
-    job (the daemon keeps the carrier open after the last chunk), so this
-    layer — not the raw frame queue — owns end-of-stream detection.
-
-    A terminal frame with an error surfaces as :class:`RemoteError`; a
-    clean terminal frame (the daemon's end-of-stream marker) simply ends
-    iteration. Empty-payload terminal frames are not yielded.
+    The SDK Runtime Core transport adapter owns daemon frame projection,
+    timeout, terminal, and wire-error semantics. This product facade exposes
+    Python iteration and maps SDK errors into EasyRemote's public taxonomy.
     """
 
     def __init__(self, frames: FrameStream, *, timeout: float | None = None) -> None:
         self._frames = frames
-        self._timeout = timeout
+        self._adapter = easynet_sdk.StreamValueAdapter(
+            cast(easynet_sdk.FrameStream, frames),
+            timeout=timeout,
+        )
 
     def __iter__(self) -> Iterator[Any]:
         try:
-            for frame in self._raw_frames():
-                # Transport-level error on the chunk envelope.
-                error = frame.get("error")
-                if error:
-                    raise error_from_wire(error)
-                value = self._frame_value(frame)
-                # Ability-level stream error: a generator that raised is
-                # propagated by the warm host as a single `{"error": {...}}`
-                # payload frame (host_stream wire), which the daemon relays
-                # as the chunk's value rather than on the envelope. Detect
-                # that exact shape and raise instead of yielding it as data.
-                stream_err = _stream_error_payload(value)
-                if stream_err is not None:
-                    raise error_from_wire(stream_err)
-                if value is not _NO_VALUE:
-                    yield value
-                if frame.get("terminal"):
-                    return
-        finally:
-            self.close()
-
-    def _raw_frames(self) -> Iterator[dict[str, Any]]:
-        """Yield daemon chunk frames with an optional per-frame idle bound.
-
-        A stream may be long-lived; the client timeout therefore limits
-        how long the consumer waits for the next frame, not total stream
-        lifetime. ``FrameStream`` provides ``recv(timeout=...)`` while
-        simple tests may only implement iteration.
-        """
-        recv = getattr(self._frames, "recv", None)
-        if not callable(recv):
-            yield from self._frames
-            return
-
-        while True:
-            try:
-                frame = recv(timeout=self._timeout)
-            except TimeoutError:
-                raise DeadlineExceeded(
-                    f"no stream frame within {self._timeout}s — the server-side"
-                    " execution is still governed by the ability's timeout_seconds",
-                    reason="client_wait_timeout",
-                ) from None
-            if frame is None:
-                return
-            yield frame
-
-    @staticmethod
-    def _frame_value(frame: dict[str, Any]) -> Any:
-        """The ability's emitted value for one chunk frame.
-
-        Prefers the daemon's decoded ``payload_json``; falls back to
-        base64 payload bytes. A terminal frame that carries no payload
-        (the bare end-of-stream marker) yields the sentinel so the
-        consumer does not see a spurious ``None`` frame.
-        """
-        if (
-            frame.get("terminal")
-            and frame.get("payload_json") is None
-            and not frame.get("payload_base64")
-        ):
-            return _NO_VALUE
-        if (
-            "payload_json" in frame
-            and (
-                frame.get("payload_json") is not None
-                or frame.get("content_type") == JSON_CONTENT_TYPE
-            )
-        ):
-            return frame["payload_json"]
-        encoded = frame.get("payload_base64")
-        if encoded:
-            return base64.b64decode(encoded)
-        return _NO_VALUE
+            for item in self._adapter:
+                if "json" in item.content_type.lower():
+                    yield item.value
+                    continue
+                payload = item.payload
+                if not payload and isinstance(item.value, bytes):
+                    payload = item.value
+                yield StreamFrame(payload, item.content_type)
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
 
     def close(self) -> None:
         self._frames.close()
@@ -252,57 +264,43 @@ class Stream:
         self.close()
 
 
-_NO_VALUE = object()  # sentinel: a frame carried no payload value
+_NO_VALUE = object()  # descriptor sentinel for "no bound instance"
 _DEFAULT_TIMEOUT = object()  # sentinel: use Client._timeout
 
 
-def _stream_error_payload(value: Any) -> dict[str, Any] | None:
-    """Return the wire error dict iff `value` is a host stream-error frame.
-
-    The warm host emits a raised generator's failure as exactly
-    ``{"error": {"kind", "reason", "message"}}`` (see
-    ``_host.server._stream_error``). Matching that precise shape — a
-    single ``error`` key whose value is a dict carrying a ``kind`` — keeps
-    ordinary ability output that merely *contains* an ``error`` field from
-    being mistaken for a stream failure.
-    """
-    if (
-        isinstance(value, dict)
-        and set(value) == {"error"}
-        and isinstance(value["error"], dict)
-        and "kind" in value["error"]
-    ):
-        return value["error"]
-    return None
-
-
-def _is_ability_ura(value: str) -> bool:
-    """True when `value` should be handed to the daemon as an Ability URA.
-
-    This deliberately only recognises the scheme. Python must not parse
-    owner/callee/ability facts out of the URA; the CLI/Axon
-    AbilitySelector boundary is the canonical parser.
-    """
-    return value.strip().startswith("easynet://")
-
-
 class BidiSession:
-    """A bidirectional invocation session (context manager)."""
+    """A bidirectional invocation session (context manager).
 
-    def __init__(self, channel: BidiChannel) -> None:
-        self._channel = channel
+    The SDK owns daemon bidi lifecycle semantics. This class keeps EasyRemote's
+    public method names and maps SDK errors into EasyRemote's taxonomy.
+    """
+
+    def __init__(self, session: easynet_sdk.BidiSessionAdapter) -> None:
+        self._session = session
 
     def send(self, frame: dict[str, Any]) -> None:
-        self._channel.send(frame)
+        try:
+            self._session.send(frame)
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
 
     def recv(self, timeout: float | None = None) -> dict[str, Any] | None:
-        return self._channel.recv(timeout=timeout)
+        try:
+            return cast("dict[str, Any] | None", self._session.recv(timeout=timeout))
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
 
     def close(self) -> None:
-        self._channel.close()
+        try:
+            self._session.close()
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
 
-    def cancel(self) -> None:
-        self._channel.cancel()
+    def cancel(self, reason: str = "client cancel") -> None:
+        try:
+            self._session.cancel(reason)
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
 
     def __enter__(self) -> BidiSession:
         return self
@@ -326,28 +324,45 @@ class Client:
         namespace: str = "er",
         transport: Transport | None = None,
         identity: LocalIdentity | None = None,
+        signer: easynet_sdk.Signer | None = None,
+        invocation_policy: InvocationDerivationPolicy | None = None,
     ) -> None:
         self._gateway = gateway
         self._gateway_checked = False
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise InvalidArgument(
+                f"timeout must be a positive finite number of seconds, got {timeout!r}",
+                reason="invalid_timeout",
+            )
+        self._invocation_policy = (
+            require_invocation_policy(
+                invocation_policy,
+                field="client invocation_policy",
+            )
+            if invocation_policy is not None
+            else None
+        )
         self._timeout = timeout
         self._namespace = namespace
-        self._transport_override = transport
+        self._addressing = AbilityAddressResolver(
+            namespace,
+            canonical_addressing_client(),
+        )
         self._identity_override = identity
+        self._signer = signer
         self._lock = threading.Lock()
-        self._invoke_lock = threading.Lock()
-        self._transport: Transport | None = None
-        self._retired_transports: set[Transport] = set()
+        self._unary_pool = (
+            UnaryDispatchPool.from_transport(transport)
+            if transport is not None
+            else UnaryDispatchPool.connect()
+        )
+        self._stream_transport = transport
+        self._owns_stream_transport = transport is None
         self._identity: LocalIdentity | None = None
-        self._schemas: dict[str, dict[str, Any]] = {}  # unambiguous verb → schema
-        self._schemas_by_ura: dict[str, dict[str, Any]] = {}
-        self._candidates: dict[str, list[FunctionInfo]] = {}  # verb → discover hits
-        self._round_robin: dict[str, int] = {}
 
     # -- L0 ------------------------------------------------------------------
 
-    def execute(
-        self, function: str | CallTarget, /, *args: Any, **kwargs: Any
-    ) -> Any:
+    def execute(self, function: str | CallTarget, /, *args: Any, **kwargs: Any) -> Any:
         return self.call(function, *args, **kwargs)
 
     # -- L1 ------------------------------------------------------------------
@@ -360,14 +375,24 @@ class Client:
         **kwargs: Any,
     ) -> Any:
         target = self._target(function)
-        prepared = self.prepare(target, *args, **kwargs)
-        if self._uses_ability_ura_dispatch(prepared):
+        resolved = self._address(
+            target.function,
+            target.node,
+            target.pick,
+            target.owner_ura,
+        )
+        prepared = self._prepare_resolved(
+            target,
+            resolved,
+            args,
+            kwargs,
+            call_mode=_sdk_call_mode(resolved.call_carrier),
+        )
+        if prepared.call_carrier == "unary":
             return prepared.send().result()
-        # EasyRemote abilities register stream-mode (host_stream), so a
-        # result-first call drains the frame stream. A unary function
-        # emits exactly one frame → return it; a generator drained via
-        # `call` returns its frames as a list (use `stream()` for live
-        # iteration). Empty stream → None.
+        # Public call geometry comes from the committed descriptor. The
+        # host_stream executor is an implementation transport and must not
+        # force every ability onto the public Stream carrier.
         frames = list(self._open_stream(prepared, timeout=target.timeout))
         if not frames:
             return None
@@ -377,30 +402,18 @@ class Client:
         self, function: str | CallTarget, /, *args: Any, **kwargs: Any
     ) -> Stream:
         target = self._target(function)
-        prepared = self.prepare(target, *args, **kwargs)
-        if self._uses_ability_ura_dispatch(prepared):
-            raise Unavailable(
-                "streaming by canonical Ability URA needs a CLI/Axon"
-                " ability_ura stream surface; Python facade will not parse"
-                " the URA or synthesize callee/ability",
-                reason="ability_ura_stream_surface_missing",
-            )
+        prepared = self._prepare(target, args, kwargs, call_mode="stream")
         return self._open_stream(prepared, timeout=target.timeout)
 
     def _open_stream(
         self, prepared: PreparedInvocation, *, timeout: float | None
     ) -> Stream:
         wait_budget = self._timeout if timeout is None else timeout
-        wire = encode_invocation(prepared.tuple, metadata=prepared.metadata)
-        return Stream(self._connected().stream(wire), timeout=wait_budget)
-
-    @staticmethod
-    def _uses_ability_ura_dispatch(prepared: PreparedInvocation) -> bool:
-        args = prepared.tuple.arguments.json_value
-        return (
-            prepared.tuple.ability.endswith(".invoke")
-            and isinstance(args, dict)
-            and isinstance(args.get("ability_ura"), str)
+        transport = self._streaming()
+        frames = transport.stream(prepared.draft, signer=self._signer)
+        return Stream(
+            frames,
+            timeout=wait_budget,
         )
 
     def session(
@@ -412,21 +425,20 @@ class Client:
         **kwargs: Any,
     ) -> BidiSession:
         target = self._target(function)
-        if _is_ability_ura(target.function):
-            raise Unavailable(
-                "bidi sessions by canonical Ability URA need a CLI/Axon"
-                " ability_ura bidi surface; Python facade will not parse"
-                " the URA or synthesize callee/ability",
-                reason="ability_ura_bidi_surface_missing",
+        if target.sign:
+            raise InvalidArgument(
+                "signed bidi sessions are not supported by the current SDK transport",
+                reason="signed_bidi_unsupported",
             )
-        prepared = self.prepare(target, **kwargs)
-        wire = encode_invocation(
-            prepared.tuple,
-            metadata=prepared.metadata,
-            bidi_streams=streams
-            or [StreamSpec(stream_id=0, content_type="application/json")],
+        prepared = self._prepare(target, (), kwargs, call_mode="bidi")
+        descriptors = streams or [
+            StreamSpec(stream_id=1, content_type="application/json")
+        ]
+        return BidiSession(
+            easynet_sdk.BidiSessionAdapter(
+                self._connected().bidi(prepared.draft, descriptors)
+            )
         )
-        return BidiSession(self._connected().bidi(wire))
 
     # -- L2 ------------------------------------------------------------------
 
@@ -446,35 +458,85 @@ class Client:
         *args: Any,
         **kwargs: Any,
     ) -> PreparedInvocation:
-        target = self._target(function)
-        if target.sign:
-            raise Unavailable(
-                "caller signing needs the pairing key material contract, which"
-                " is verified in P0 — local-fast admission (unsigned) is the"
-                " only path wired today",
-                reason="signing_path_pending",
-            )
-        resolved = self._address(target.function, target.node, target.pick)
-        payload = self._named_arguments(resolved, args, kwargs)
-        tuple_ = InvocationTuple(
-            caller=self._who().device_ura,
-            callee=resolved.callee,
-            ability=resolved.ability,
-            subject=target.subject
-            if target.subject is not None
-            else (resolved.subject or resolved.callee),
-            nonce=fresh_nonce(),
-            causal=target.causal,
-            arguments=Arguments.from_json(payload),
+        return self._prepare(self._target(function), args, kwargs, call_mode="rpc")
+
+    def _prepare(
+        self,
+        target: CallTarget,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        *,
+        call_mode: str,
+    ) -> PreparedInvocation:
+        resolved = self._address(
+            target.function,
+            target.node,
+            target.pick,
+            target.owner_ura,
+        )
+        return self._prepare_resolved(
+            target,
+            resolved,
+            args,
+            kwargs,
+            call_mode=call_mode,
         )
 
+    def _prepare_resolved(
+        self,
+        target: CallTarget,
+        resolved: ResolvedAbility,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        *,
+        call_mode: str,
+    ) -> PreparedInvocation:
+        payload = self._named_arguments(resolved, args, kwargs)
+        policy = (
+            target.invocation_policy
+            if target.invocation_policy is not None
+            else self._invocation_policy
+        )
+        if policy is None:
+            raise InvalidArgument(
+                "public invocation requires an explicit derivation policy on"
+                " Client or CallTarget",
+                reason="missing_invocation_derivation_policy",
+            )
+        request = policy.derive(
+            caller_ura=self._who().user_ura,
+            ability_ura=resolved.ability_ura,
+            resolved_subject_ura=resolved.resolved_subject_ura,
+            args=payload,
+            metadata=target.metadata or {},
+        )
+        request = replace(request, call_mode=call_mode)
+        descriptor_ref = resolved.descriptor_ref or self._runtime_descriptor_ref(
+            resolved,
+            call_mode=call_mode,
+        )
+        if descriptor_ref:
+            request = replace(
+                request,
+                descriptor_ref=descriptor_ref,
+                ability_ura="",
+            )
+        if not request.descriptor_ref:
+            raise Unavailable(
+                f"ability descriptor is unavailable for {resolved.ability_ura}",
+                reason="ability_descriptor_unavailable",
+            )
+        draft = self._connected().build_invocation(resolved.to_call_request(request))
+
         def dispatch(prepared: PreparedInvocation) -> Invocation:
+            if prepared.sign:
+                return self._dispatch_signed(prepared, timeout=target.timeout)
             return self._dispatch(prepared, timeout=target.timeout)
 
         return PreparedInvocation(
-            tuple=tuple_,
-            metadata=target.metadata,
+            draft=draft,
             sign=target.sign,
+            call_carrier=resolved.call_carrier,
             dispatcher=dispatch,
         )
 
@@ -486,48 +548,189 @@ class Client:
         node: str | None = None,
         pick: Literal["round_robin", "random"] | None = None,
         timeout: float | None = None,
-        subject: str | None = None,
-        causal: Causal = None,
         sign: bool | None = None,
         metadata: Mapping[str, str] | None = None,
+        owner_ura: str | None = None,
+        invocation_policy: InvocationDerivationPolicy | None = None,
     ) -> CallTarget:
-        """Build a collision-free target for one client call."""
+        """Build a collision-free target for one client call.
+
+        Prefer the ``client.device/agent/hub`` handles over a raw
+        ``owner_ura`` — they build and validate the owner URA for you.
+        """
         return CallTarget(
             function=function,
             node=node,
             pick=pick,
             timeout=timeout,
-            subject=subject,
-            causal=causal,
             sign=sign,
             metadata=metadata,
+            owner_ura=owner_ura,
+            invocation_policy=invocation_policy,
         )
+
+    # -- owner handles ---------------------------------------------------------
+
+    def device(self, device_id: str) -> RemoteDevice:
+        """Select a Device execution host for EasyRemote abilities.
+
+        ``device_id`` is a node id in this client's realm, or a full device
+        owner URA (a cross-realm URA only routes where federation is
+        configured). Symmetric to ``ComputeNode`` on the serving side.
+        """
+        execution_host_ura = self._owner_ura(device_id, "device")
+        projection = easynet_sdk.parse_ura(execution_host_ura)
+        realm = str(projection.realm)
+        target_device_id = str(projection.components.get("device_id") or "")
+        owner_ura = easynet_sdk.device_agent_ura(
+            realm,
+            target_device_id,
+            str(SystemAgentId.ABILITY_MANAGEMENT),
+        )
+        return RemoteDevice(self, execution_host_ura, owner_ura)
+
+    def agent(self, spec: str) -> RemoteAgent:
+        """A handle to an agent's abilities.
+
+        ``spec`` is an agent id local to the paired user, a
+        ``<user-id>.<agent-id>`` owner token, or a full agent owner URA.
+        """
+        from .agent import RemoteAgent
+
+        normalized = str(spec).strip()
+        if not normalized:
+            raise InvalidArgument(
+                "agent spec must not be empty",
+                reason="invalid_agent_spec",
+            )
+        owner_spec = normalized
+        resolve_owner = (
+            not self._addressing.is_owner_ura(normalized) and "." not in normalized
+        )
+        if resolve_owner:
+            try:
+                user_id = self._who().paired_user_id
+            except Unavailable as exc:
+                raise InvalidArgument(
+                    "a bare agent id requires a paired user identity",
+                    reason="missing_agent_owner",
+                ) from exc
+            owner_spec = f"{user_id}.{normalized}"
+        owner_ura = self._owner_ura(owner_spec, "agent")
+        projection = easynet_sdk.parse_ura(owner_ura)
+        agent_name = str(projection.components.get("agent_id") or "").strip()
+        if not agent_name:
+            raise InvalidArgument(
+                f"agent owner URA has no agent id: {owner_ura}",
+                reason="invalid_agent_spec",
+            )
+        return RemoteAgent(self, owner_ura, agent_name, resolve_owner=resolve_owner)
+
+    def _agent_call_owner_ura(self, agent_id: str) -> str:
+        """Resolve a bare agent id to the daemon catalogue's canonical owner."""
+        owner_ura = self._cached_agent_owner_ura(agent_id)
+        if owner_ura:
+            return owner_ura
+        self._preflight_agent_catalogue()
+        owner_ura = self._cached_agent_owner_ura(agent_id)
+        if not owner_ura:
+            raise Unavailable(
+                f"agent {agent_id!r} is absent from the canonical catalogue",
+                reason="agent_owner_unresolved",
+            )
+        return owner_ura
+
+    def _cached_agent_owner_ura(self, agent_id: str) -> str:
+        owners = self._addressing.cache.agent_owner_uras(agent_id)
+        if not owners:
+            return ""
+        if len(owners) == 1:
+            return owners[0]
+        try:
+            user_id = self._who().paired_user_id
+        except Unavailable:
+            user_id = ""
+        preferred = [
+            owner_ura
+            for owner_ura in owners
+            if _agent_owner_user_id(owner_ura) == user_id
+        ]
+        if len(preferred) == 1:
+            return preferred[0]
+        raise InvalidArgument(
+            f"agent id {agent_id!r} is ambiguous in the daemon catalogue; use"
+            " a <user-id>.<agent-id> token or a full agent owner URA",
+            reason="ambiguous_agent_owner",
+        )
+
+    def _preflight_agent_catalogue(self) -> None:
+        identity = self._who()
+        rows = self._connected().list_ability_descriptors(
+            runtime_root_context(
+                caller_ura=identity.user_ura,
+                callee_ura=identity.system_agent_ura(
+                    str(SystemAgentId.RUNTIME_INTROSPECTION)
+                ),
+                subject_ura=identity.runtime_state_read_subject_ura,
+            ),
+            scope="realm",
+        )
+        if not isinstance(rows, list) or not all(
+            isinstance(row, Mapping) for row in rows
+        ):
+            raise InvalidArgument(
+                "agent catalogue response must be an object array",
+                reason="invalid_daemon_response",
+            )
+        self._addressing.cache.remember_catalog_rows(
+            row for row in rows if isinstance(row, Mapping)
+        )
+
+    def hub(self) -> RemoteOwner:
+        """A handle to the realm hub's abilities."""
+        return RemoteOwner(self, hub_ura(self._who().realm))
+
+    def _owner_ura(self, spec: str, kind: Literal["device", "agent"]) -> str:
+        if self._addressing.is_owner_ura(spec):
+            actual = self._addressing.owner_kind(spec)
+            if actual != kind:
+                raise InvalidArgument(
+                    f"expected a {kind} owner URA, got {actual}: {spec}",
+                    reason="invalid_owner_kind",
+                )
+            return spec
+        realm = self._who().realm
+        return device_ura(realm, spec) if kind == "device" else agent_ura(realm, spec)
 
     # -- discovery -------------------------------------------------------------
 
     def functions(self, query: str = "", scope: str = "device") -> list[FunctionInfo]:
-        """Discoverable capabilities, via the daemon's `discover` ability."""
-        response = self.invoke(
-            f"{self._namespace}.discover", scope=scope, query=query
-        ).result()
-        candidates = (response or {}).get("candidates", [])
-        infos = [FunctionInfo.from_candidate(c) for c in candidates]
-        self._candidates.clear()
-        self._schemas.clear()
-        self._schemas_by_ura.clear()
-        for info in infos:
-            if info.name:
-                self._candidates.setdefault(info.name, []).append(info)
-            if info.qualified_name and info.input_schema:
-                self._schemas_by_ura[info.qualified_name] = info.input_schema
-        for verb, group in self._candidates.items():
-            schemas = [info.input_schema for info in group]
-            if (
-                schemas
-                and all(schema for schema in schemas)
-                and all(schema == schemas[0] for schema in schemas)
-            ):
-                self._schemas[verb] = schemas[0]
+        """Discoverable capabilities from the canonical daemon catalogue."""
+        catalogue_scope = _catalogue_scope(scope)
+        identity = self._who()
+        rows = self._connected().list_ability_descriptors(
+            runtime_root_context(
+                caller_ura=identity.user_ura,
+                callee_ura=identity.system_agent_ura(
+                    str(SystemAgentId.RUNTIME_INTROSPECTION)
+                ),
+                subject_ura=identity.runtime_state_read_subject_ura,
+            ),
+            scope=catalogue_scope if catalogue_scope == "realm" else "",
+        )
+        if not isinstance(rows, list) or not all(
+            isinstance(row, Mapping) for row in rows
+        ):
+            raise InvalidArgument(
+                "meta.list_abilities response field 'abilities' is not an object array",
+                reason="invalid_daemon_response",
+            )
+        infos = [
+            FunctionInfo.from_catalog_row(row, namespace=self._namespace)
+            for row in rows
+            if _catalogue_row_matches(row, query)
+        ]
+        self._addressing.cache.replace(infos)
         return infos
 
     # -- async mirror -------------------------------------------------------------
@@ -536,33 +739,51 @@ class Client:
     def aio(self) -> AsyncClient:
         return AsyncClient(self)
 
+    @property
+    def invocation_policy(self) -> InvocationDerivationPolicy | None:
+        """The explicitly configured client policy, if one was supplied."""
+        return self._invocation_policy
+
+    @property
+    def abilities(self) -> AbilityControl:
+        """Daemon ability install/catalogue operations for this client."""
+        from .control import AbilityControl
+
+        return AbilityControl(self)
+
+    @property
+    def agents(self) -> AgentControl:
+        """Daemon-owned agent lifecycle operations for this client."""
+        from .control import AgentControl
+
+        return AgentControl(self)
+
+    @property
+    def missions(self) -> MissionControl:
+        """Daemon Mission/EAL execution operations for this client."""
+        from .mission import MissionControl
+
+        return MissionControl(self)
+
     def close(self) -> None:
-        # Do not shutdown a libeasynet_cli handle while a timed-out unary
-        # invoke is still running on its C stack. If a call is active, close
-        # retires the handle from reuse and lets the worker close it after
-        # the C call returns; the caller's close remains bounded.
-        if self._transport_override is not None:
-            return
-        if self._invoke_lock.acquire(blocking=False):
+        first_error: BaseException | None = None
+        try:
+            self._unary_pool.close()
+        except BaseException as exc:
+            first_error = exc
+        if self._owns_stream_transport and self._stream_transport is not None:
             try:
-                self._close_idle_transport()
-            finally:
-                self._invoke_lock.release()
-            return
-        self._retire_active_transport_for_close()
-
-    def _close_idle_transport(self) -> None:
-        with self._lock:
-            transport = self._transport
-            self._transport = None
-        if transport is not None:
-            transport.close()
-
-    def _retire_active_transport_for_close(self) -> None:
-        with self._lock:
-            if self._transport is not None:
-                self._retired_transports.add(self._transport)
-                self._transport = None
+                self._stream_transport.close()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        try:
+            self._addressing.close()
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
+        if first_error is not None:
+            raise first_error
 
     def __enter__(self) -> Client:
         return self
@@ -575,161 +796,45 @@ class Client:
     def _dispatch(
         self, prepared: PreparedInvocation, timeout: float | None = None
     ) -> Invocation:
-        wire = encode_invocation(prepared.tuple, metadata=prepared.metadata)
         budget = timeout if timeout is not None else self._timeout
-        transport = self._connected()
-        result: queue.Queue[tuple[bool, dict[str, Any] | BaseException]] = (
-            queue.Queue(maxsize=1)
+        response = self._unary_pool.invoke(prepared.draft, timeout=budget)
+        return Invocation.from_transport_response(response)
+
+    def _dispatch_signed(
+        self, prepared: PreparedInvocation, timeout: float | None = None
+    ) -> Invocation:
+        budget = timeout if timeout is not None else self._timeout
+        response = self._unary_pool.invoke_signed(
+            prepared.draft,
+            signer=self._signer,
+            timeout=budget,
         )
-        timed_out = threading.Event()
-
-        def invoke_on_transport() -> None:
-            try:
-                with self._invoke_lock:
-                    result.put((True, transport.invoke(wire)))
-            except BaseException as exc:
-                result.put((False, exc))
-            finally:
-                retired = self._take_retired_transport(transport)
-                if self._transport_override is None and (timed_out.is_set() or retired):
-                    with contextlib.suppress(BaseException):
-                        transport.close()
-
-        threading.Thread(
-            target=invoke_on_transport,
-            name="easyremote-unary-invoke",
-            daemon=True,
-        ).start()
-        try:
-            ok, payload = result.get(timeout=budget)
-        except queue.Empty:
-            timed_out.set()
-            self._retire_timed_out_transport(transport)
-            raise DeadlineExceeded(
-                f"no response within {budget}s — the server-side execution"
-                " is still governed by the ability's timeout_seconds",
-                reason="client_wait_timeout",
-            ) from None
-        if not ok:
-            assert isinstance(payload, BaseException)
-            raise payload
-        response = cast("dict[str, Any]", payload)
-        return Invocation(prepared.tuple, response)
-
-    def _retire_timed_out_transport(self, transport: Transport) -> None:
-        """Remove a timed-out handle from the reuse pool without closing it.
-
-        C ABI unary invoke has no cancellation hook. Closing the handle
-        while the background thread is still inside ``invoke`` risks
-        invalid-handle races, so the worker closes this retired handle only
-        after the C call returns. The next invocation opens a fresh handle.
-        """
-        if self._transport_override is not None:
-            return
-        with self._lock:
-            if self._transport is transport:
-                self._transport = None
-            self._retired_transports.add(transport)
-
-    def _take_retired_transport(self, transport: Transport) -> bool:
-        with self._lock:
-            if transport not in self._retired_transports:
-                return False
-            self._retired_transports.remove(transport)
-            return True
+        return Invocation.from_transport_response(response)
 
     def _address(
-        self, function: str, node: str | None, pick: str | None = None
-    ) -> _ResolvedAbility:
-        """(callee URA, qualified ability name) for a function reference.
-
-        Short names get this client's namespace; dotted names pass
-        through. Canonical Ability URAs are never parsed here: they are
-        wrapped for the daemon's ``<self>.invoke`` ability, whose CLI
-        boundary owns AbilitySelector parsing and routing.
-        """
-        identity = self._who()
-        if _is_ability_ura(function):
-            if node is not None or pick is not None:
-                raise InvalidArgument(
-                    "a canonical Ability URA already names the callable;"
-                    " do not combine it with node or pick",
-                    reason="target_override_for_ability_ura",
-                )
-            return _ResolvedAbility(
-                callee=identity.device_ura,
-                ability=f"{self._namespace}.invoke",
-                input_schema=self._schemas_by_ura.get(function),
-                ability_ura=function,
-                subject=function,
-                argument_label=function,
-            )
-        ability = function if "." in function else f"{self._namespace}.{function}"
-        verb = ability.rsplit(".", 1)[-1]
-        if node is not None:
-            callee = device_ura(identity.realm, node)
-            return _ResolvedAbility(
-                callee=callee,
-                ability=ability,
-                input_schema=self._schemas.get(verb),
-                argument_label=ability,
-            )
-        if pick is not None:
-            selected = self._pick(verb, pick)
-            if selected is not None:
-                return selected
-        route = (identity.device_ura, ability)
-        return _ResolvedAbility(
-            callee=route[0],
-            ability=route[1],
-            input_schema=self._schemas.get(verb),
-            argument_label=ability,
+        self,
+        function: str,
+        node: str | None,
+        pick: str | None = None,
+        owner_ura: str | None = None,
+    ) -> ResolvedAbility:
+        """Resolve product target selection into one SDK-owned Ability URA."""
+        return self._addressing.resolve(
+            function,
+            identity=self._who(),
+            node=node,
+            pick=pick,
+            owner_ura=owner_ura,
         )
 
-    def _pick(self, verb: str, policy: str) -> _ResolvedAbility | None:
-        """Select among discovered Ability URA candidates for ``verb``.
-
-        The client chooses only a discovered Ability URA. It never
-        derives callee/ability from that URA; ``<self>.invoke`` hands
-        it to the daemon/CLI AbilitySelector boundary. With no usable
-        candidates the default local addressing applies; call
-        functions() first to populate the candidate cache.
-        """
-        if policy not in _PICK_POLICIES:
-            raise InvalidArgument(
-                f"pick must be one of {sorted(_PICK_POLICIES)}, got {policy!r}"
-                " (resource_aware needs daemon-side load metrics — Cli PR-3)",
-                reason="invalid_pick_policy",
-            )
-        candidates = [
-            _ResolvedAbility(
-                callee=self._who().device_ura,
-                ability=f"{self._namespace}.invoke",
-                input_schema=info.input_schema
-                or self._schemas_by_ura.get(info.qualified_name),
-                ability_ura=info.qualified_name,
-                subject=info.qualified_name,
-                argument_label=info.qualified_name,
-            )
-            for info in self._candidates.get(verb, [])
-            if info.qualified_name
-        ]
-        if not candidates:
-            return None
-        if policy == "random":
-            return random.choice(candidates)
-        index = self._round_robin.get(verb, 0)
-        self._round_robin[verb] = index + 1
-        return candidates[index % len(candidates)]
-
     def _named_arguments(
-        self, target: _ResolvedAbility, args: tuple[Any, ...], kwargs: dict[str, Any]
+        self, target: ResolvedAbility, args: tuple[Any, ...], kwargs: dict[str, Any]
     ) -> dict[str, Any]:
         """Map positionals onto names and fill advertised defaults."""
         schema = target.input_schema
         order: list[str] | None = schema.get(PARAMETER_ORDER_KEY) if schema else None
         payload = dict(kwargs)
-        argument_label = target.argument_label or target.ability
+        argument_label = target.argument_label or target.ability_ura
         if args:
             if order is None:
                 raise InvalidArgument(
@@ -778,8 +883,6 @@ class Client:
             for name, prop in schema.get("properties", {}).items():
                 if name not in payload and "default" in prop:
                     payload[name] = prop["default"]
-        if target.ability_ura is not None:
-            payload = {"ability_ura": target.ability_ura, "args": payload}
         return cast("dict[str, Any]", _codec.to_jsonable(payload))
 
     @staticmethod
@@ -816,12 +919,117 @@ class Client:
             )
 
     def _connected(self) -> Transport:
-        if self._transport_override is not None:
-            return self._transport_override
+        return self._unary_pool.connected_transport()
+
+    def _streaming(self) -> Transport:
+        if self._stream_transport is not None:
+            return self._stream_transport
         with self._lock:
-            if self._transport is None:
-                self._transport = Transport.connect()
-            return self._transport
+            if self._stream_transport is None:
+                self._stream_transport = Transport.connect_direct()
+            return self._stream_transport
+
+    def _invocation_trace(self, request_id: str) -> easynet_sdk.InvocationTraceGraph:
+        identity = self._who()
+        return self._connected().invocation_trace(
+            runtime_root_context(
+                caller_ura=identity.user_ura,
+                callee_ura=identity.system_agent_ura(
+                    str(SystemAgentId.RUNTIME_GOVERNANCE)
+                ),
+                subject_ura=identity.runtime_state_read_subject_ura,
+            ),
+            request_id=request_id,
+        )
+
+    def _runtime_descriptor_ref(
+        self,
+        resolved: ResolvedAbility,
+        *,
+        call_mode: str,
+    ) -> str:
+        """Resolve one catalog descriptor_ref for an uncached ability."""
+
+        identity = self._who()
+        try:
+            row = self._connected().get_ability_descriptor(
+                runtime_root_context(
+                    caller_ura=identity.user_ura,
+                    callee_ura=identity.system_agent_ura(
+                        str(SystemAgentId.RUNTIME_INTROSPECTION)
+                    ),
+                    subject_ura=identity.runtime_state_read_subject_ura,
+                ),
+                ability_ura=resolved.ability_ura,
+                call_mode=call_mode,
+            )
+        except RemoteError:
+            return ""
+        descriptor_ref = str(row.get("descriptor_ref") or "")
+        if not descriptor_ref:
+            return ""
+        schema = row.get("input_schema")
+        self._addressing.cache.remember_descriptor(
+            resolved.ability_ura,
+            descriptor_ref,
+            dict(schema) if isinstance(schema, Mapping) else None,
+        )
+        return descriptor_ref
+
+    @property
+    def _transport(self) -> Transport | None:
+        return self._unary_pool.current_transport
+
+
+def _sdk_call_mode(carrier: str) -> str:
+    if carrier == "stream":
+        return "stream"
+    if carrier == "unary":
+        return "rpc"
+    raise InvalidArgument(
+        f"unsupported dispatch carrier {carrier!r}",
+        reason="invalid_dispatch_carrier",
+    )
+
+
+def _catalogue_scope(scope: str) -> str:
+    normalized = scope.strip().lower()
+    if normalized in {"device", "self", "local"}:
+        return "local"
+    if normalized in {"user", "realm"}:
+        return "realm"
+    raise InvalidArgument(
+        "functions scope must be one of 'device', 'self', 'local', 'user', or 'realm'",
+        reason="invalid_discovery_scope",
+    )
+
+
+def _catalogue_row_matches(row: Mapping[str, Any], query: str) -> bool:
+    needle = query.strip().lower()
+    if not needle:
+        return True
+    haystack = " ".join(
+        str(row.get(field) or "")
+        for field in ("name", "ability", "ability_ura", "description", "owner_ura")
+    ).lower()
+    return needle in haystack
+
+
+def _product_function_name(name: str, namespace: str) -> str:
+    prefix = f"{namespace}."
+    if namespace and name.startswith(prefix):
+        return name[len(prefix) :]
+    return name.rsplit(".", 1)[-1] if "." in name else name
+
+
+def _agent_owner_user_id(owner_ura: str) -> str:
+    try:
+        projection = easynet_sdk.parse_ura(owner_ura)
+    except easynet_sdk.SDKError:
+        return ""
+    if projection.kind != "agent":
+        return ""
+    return str((projection.components or {}).get("user_id") or "")
 
 
 class AsyncClient:
@@ -859,7 +1067,10 @@ class AsyncClient:
         **kwargs: Any,
     ) -> BidiSession:
         result = await self._to_thread(
-            self._client.session, function, streams=streams, **kwargs
+            self._client.session,
+            function,
+            streams=streams,
+            **kwargs,
         )
         return cast(BidiSession, result)
 
@@ -896,6 +1107,14 @@ class RemoteFunction:
     round-trip needed. Stubs represent EasyRemote-hosted host_stream
     abilities, so they expose result-first calls and live streams, not
     daemon unary ``invoke``.
+
+    It is also a *descriptor* (the ``property`` playbook): declared on a
+    class body, ``__set_name__`` adopts the attribute name as the ability
+    name (no second naming), and ``__get__`` binds to the host instance —
+    stripping ``self`` from the wire arguments and resolving the client
+    from ``client=`` > ``instance.client`` > ``instance._client`` > a
+    fresh ``Client()``. Used at module level (the original form),
+    ``__get__`` never fires and behaviour is unchanged.
     """
 
     def __init__(
@@ -906,42 +1125,93 @@ class RemoteFunction:
         node: str | None = None,
         timeout: float | None = None,
         client: Client | None = None,
+        owner_ura: str | None = None,
+        invocation_policy: InvocationDerivationPolicy | None = None,
     ) -> None:
         functools.update_wrapper(self, fn)
         self._signature = inspect.signature(fn)
+        self._explicit_name = name
         self._name = name or fn.__name__
-        self._target = CallTarget(self._name, node=node, timeout=timeout)
+        self._node = node
+        self._timeout = timeout
+        self._target = CallTarget(
+            self._name,
+            node=node,
+            timeout=timeout,
+            owner_ura=owner_ura,
+            invocation_policy=invocation_policy,
+        )
         self._client = client
+        self._bound: weakref.WeakKeyDictionary[Any, _BoundRemote] = (
+            weakref.WeakKeyDictionary()
+        )
+        self._implicit_clients: weakref.WeakKeyDictionary[Any, Client] = (
+            weakref.WeakKeyDictionary()
+        )
+
+    # -- descriptor protocol -----------------------------------------------------
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        """Adopt the class-body attribute name when none was given.
+
+        Only fires for a stub declared on a class; module-level stubs keep
+        ``fn.__name__``. An explicit ``name=`` always wins.
+        """
+        if self._explicit_name is None:
+            self._name = name
+            self._target = replace(self._target, function=name)
+
+    def __get__(self, obj: Any, objtype: type | None = None) -> Any:
+        """Class access yields the descriptor; instance access binds it."""
+        if obj is None:
+            return self
+        bound = self._bound.get(obj)
+        if bound is None:
+            bound = _BoundRemote(self, obj)
+            self._bound[obj] = bound
+        return bound
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        # EasyRemote abilities register stream-mode (host_stream), so the
-        # result-first call drains the frame stream for a single value —
-        # same as `Client.call`. (Use `.stream(...)` for live iteration of
-        # a generator ability.)
+        # Client.call follows the committed descriptor's public call mode.
         return self._bound_client().call(
             self._target,
             **self._bind(args, kwargs),
         )
 
     def invoke(self, *args: Any, **kwargs: Any) -> Invocation:
-        raise Unavailable(
-            "@remote stubs represent EasyRemote-hosted host_stream abilities;"
-            " use the stub call for result-first dispatch or .stream(...) for"
-            " live frames. Client.invoke remains reserved for daemon unary/system"
-            " abilities.",
-            reason="host_stream_invoke_not_supported",
+        return self._bound_client().invoke(
+            self._target,
+            **self._bind(args, kwargs),
         )
 
     def stream(self, *args: Any, **kwargs: Any) -> Stream:
-        return self._bound_client().stream(self._target, **self._bind(args, kwargs))
+        return self._bound_client().stream(
+            self._target,
+            **self._bind(args, kwargs),
+        )
 
     async def aio(self, *args: Any, **kwargs: Any) -> Any:
         import asyncio
 
         return await asyncio.to_thread(self.__call__, *args, **kwargs)
 
-    def _bind(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
-        bound = self._signature.bind(*args, **kwargs)
+    def _bind(
+        self,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        *,
+        instance: Any = _NO_VALUE,
+    ) -> dict[str, Any]:
+        # Bound (descriptor) calls pass the host instance so it binds to the
+        # method's first parameter (`self`) and is then dropped — the wire
+        # carries only business arguments, never the host object.
+        skip: str | None = None
+        if instance is not _NO_VALUE:
+            params = iter(self._signature.parameters)
+            skip = next(params, None)
+            bound = self._signature.bind(instance, *args, **kwargs)
+        else:
+            bound = self._signature.bind(*args, **kwargs)
         bound.apply_defaults()
         # `signature.bind` nests a **kwargs param under its own name and a
         # *args param as a tuple. The wire shape is flat: **kwargs keys go
@@ -950,7 +1220,7 @@ class RemoteFunction:
         # @remote stub sends the same args as a direct client.call.
         out: dict[str, Any] = {}
         for name, param in self._signature.parameters.items():
-            if name not in bound.arguments:
+            if name == skip or name not in bound.arguments:
                 continue
             value = bound.arguments[name]
             if param.kind is inspect.Parameter.VAR_KEYWORD:
@@ -961,10 +1231,65 @@ class RemoteFunction:
                 out[name] = value
         return out
 
-    def _bound_client(self) -> Client:
-        if self._client is None:
-            self._client = Client()
+    def _bound_client(self, instance: Any = None) -> Client:
+        # Precedence: explicit client= > instance.client > instance._client
+        # > a fresh Client(). The descriptor passes the host instance.
+        if self._client is not None:
+            return self._client
+        if instance is not None:
+            host = getattr(instance, "client", None) or getattr(
+                instance, "_client", None
+            )
+            if isinstance(host, Client):
+                return host
+            # A descriptor with no client= and a host that exposes none gets a
+            # Each client-less host receives one implicit client; never cache
+            # it on the shared descriptor, or
+            # one client-less host would poison every other host's dispatch.
+            return self._implicit_client(instance)
+        self._client = Client()
         return self._client
+
+    def _implicit_client(self, instance: Any) -> Client:
+        client = self._implicit_clients.get(instance)
+        if client is None:
+            client = Client()
+            self._implicit_clients[instance] = client
+        return client
+
+
+class _BoundRemote:
+    """A :class:`RemoteFunction` bound to its host instance.
+
+    The descriptor's ``__get__`` returns this when the stub is accessed
+    through an instance. It forwards ``__call__``/``stream``/``aio`` to the
+    descriptor, threading the host instance so ``self`` is stripped from
+    the wire arguments and the host's client is reused.
+    """
+
+    def __init__(self, fn: RemoteFunction, instance: Any) -> None:
+        self._fn = fn
+        self._instance = instance
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self._fn._bound_client(self._instance).call(
+            self._fn._target,
+            **self._fn._bind(args, kwargs, instance=self._instance),
+        )
+
+    def stream(self, *args: Any, **kwargs: Any) -> Stream:
+        return self._fn._bound_client(self._instance).stream(
+            self._fn._target,
+            **self._fn._bind(args, kwargs, instance=self._instance),
+        )
+
+    async def aio(self, *args: Any, **kwargs: Any) -> Any:
+        import asyncio
+
+        return await asyncio.to_thread(self.__call__, *args, **kwargs)
+
+    def invoke(self, *args: Any, **kwargs: Any) -> Invocation:
+        return self._fn.invoke(*args, **kwargs)
 
 
 def remote(
@@ -974,17 +1299,205 @@ def remote(
     node: str | None = None,
     timeout: float | None = None,
     client: Client | None = None,
+    owner_ura: str | None = None,
+    invocation_policy: InvocationDerivationPolicy | None = None,
 ) -> Any:
     """Declare a typed stub for a remote capability (both decorator forms).
 
-    Multi-candidate selection (``pick`` policies) is deliberately not
-    here yet: choosing among owners requires deriving a callee from a
-    candidate's ability URA, and that owner-resolution contract is
-    pinned by P0 (resource-aware additionally needs Cli PR-3 load
-    data). One policy seam will land with verified facts, not before.
+    ``owner_ura`` targets a specific ability owner (set by
+    ``RemoteOwner.remote`` / ``client.agent(...).remote`` etc.); left unset
+    the stub addresses the local device. Multi-candidate selection
+    (``pick`` policies) is deliberately not here yet: choosing among owners
+    requires deriving a callee from a candidate's ability URA, and that
+    owner-resolution contract is pinned by P0 (resource-aware additionally
+    needs Cli PR-3 load data). One policy seam will land with verified
+    facts, not before.
     """
     if fn is None:
         return functools.partial(
-            remote, name=name, node=node, timeout=timeout, client=client
+            remote,
+            name=name,
+            node=node,
+            timeout=timeout,
+            client=client,
+            owner_ura=owner_ura,
+            invocation_policy=invocation_policy,
         )
-    return RemoteFunction(fn, name=name, node=node, timeout=timeout, client=client)
+    return RemoteFunction(
+        fn,
+        name=name,
+        node=node,
+        timeout=timeout,
+        client=client,
+        owner_ura=owner_ura,
+        invocation_policy=invocation_policy,
+    )
+
+
+class RemoteAbility:
+    """Invocation-only handle to one named ability on an owner.
+
+    Lifecycle remains owned by the canonical runtime control plane. This
+    facade only makes the common cross-product call shape explicit:
+    ``client.device("node").ability("nativeer.echo").call(...)``.
+    """
+
+    def __init__(self, owner: RemoteOwner, function: str) -> None:
+        function = str(function).strip()
+        if not function:
+            raise InvalidArgument(
+                "ability name must be non-empty",
+                reason="invalid_ability_name",
+            )
+        self._owner = owner
+        self._function = function
+
+    @property
+    def name(self) -> str:
+        return self._function
+
+    @property
+    def owner_ura(self) -> str:
+        return self._owner.owner_ura
+
+    def call(self, *args: Any, **kwargs: Any) -> Any:
+        return self._owner.call(self._function, *args, **kwargs)
+
+    def stream(self, *args: Any, **kwargs: Any) -> Stream:
+        return self._owner.stream(self._function, *args, **kwargs)
+
+    def remote(
+        self,
+        fn: Callable[..., Any] | None = None,
+        *,
+        name: str | None = None,
+        timeout: float | None = None,
+        invocation_policy: InvocationDerivationPolicy | None = None,
+    ) -> Any:
+        """Declare a typed stub bound to this ability handle."""
+        return self._owner.remote(
+            fn,
+            name=name or self._function,
+            timeout=timeout,
+            invocation_policy=invocation_policy,
+        )
+
+
+class RemoteOwner:
+    """A handle to one logical ability owner.
+
+    ``client.device(id)`` / ``client.agent(spec)`` / ``client.hub()`` return
+    these. ``@handle.remote`` declares a typed stub bound to this owner (the
+    symmetric counterpart of ``@node.register`` on the serving side), and
+    ``call`` / ``stream`` dispatch ad-hoc without a stub. The owner identity
+    lives on the handle, so it never clutters the call site.
+    """
+
+    def __init__(
+        self,
+        client: Client,
+        owner_ura: str,
+    ) -> None:
+        self._client = client
+        self._owner_ura = owner_ura
+
+    @property
+    def owner_ura(self) -> str:
+        return self._owner_ura
+
+    def ability(self, function: str) -> RemoteAbility:
+        """Return an invocation-only handle to one ability on this owner.
+
+        Fully-qualified names are preserved. Bare names still flow through
+        the client's default namespace during canonical URA projection.
+        """
+        return RemoteAbility(self, function)
+
+    def remote(
+        self,
+        fn: Callable[..., Any] | None = None,
+        *,
+        name: str | None = None,
+        timeout: float | None = None,
+        invocation_policy: InvocationDerivationPolicy | None = None,
+    ) -> Any:
+        """Declare a stub bound to this owner (bare or parameterised form)."""
+        return remote(
+            fn,
+            name=name,
+            timeout=timeout,
+            client=self._client,
+            owner_ura=self._owner_ura,
+            invocation_policy=invocation_policy,
+        )
+
+    def call(self, function: str, /, *args: Any, **kwargs: Any) -> Any:
+        return self._client.call(
+            self._target(function),
+            *args,
+            **kwargs,
+        )
+
+    def stream(self, function: str, /, *args: Any, **kwargs: Any) -> Stream:
+        return self._client.stream(
+            self._target(function),
+            *args,
+            **kwargs,
+        )
+
+    def _target(self, function: str) -> CallTarget:
+        return CallTarget(
+            function=function,
+            owner_ura=self._owner_ura,
+        )
+
+
+class RemoteDevice:
+    """Device execution-host selector composed with its ability endpoint."""
+
+    def __init__(
+        self,
+        client: Client,
+        execution_host_ura: str,
+        ability_owner_ura: str,
+    ) -> None:
+        self._execution_host_ura = execution_host_ura
+        self._abilities = RemoteOwner(client, ability_owner_ura)
+
+    @property
+    def execution_host_ura(self) -> str:
+        return self._execution_host_ura
+
+    @property
+    def device_ura(self) -> str:
+        """Canonical execution-host URA; not an ability owner or callee."""
+        return self._execution_host_ura
+
+    @property
+    def ability_owner_ura(self) -> str:
+        """The ability-management SystemAgent that owns hosted abilities."""
+        return self._abilities.owner_ura
+
+    def ability(self, function: str) -> RemoteAbility:
+        return self._abilities.ability(function)
+
+    def remote(
+        self,
+        fn: Callable[..., Any] | None = None,
+        *,
+        name: str | None = None,
+        timeout: float | None = None,
+        invocation_policy: InvocationDerivationPolicy | None = None,
+    ) -> Any:
+        return self._abilities.remote(
+            fn,
+            name=name,
+            timeout=timeout,
+            invocation_policy=invocation_policy,
+        )
+
+    def call(self, function: str, /, *args: Any, **kwargs: Any) -> Any:
+        return self._abilities.call(function, *args, **kwargs)
+
+    def stream(self, function: str, /, *args: Any, **kwargs: Any) -> Stream:
+        return self._abilities.stream(function, *args, **kwargs)

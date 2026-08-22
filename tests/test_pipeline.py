@@ -1,11 +1,22 @@
 """Pipeline: EAL compilation (grammar-pinned), validation, mission calls."""
 
+import easynet_sdk
 import pytest
+from conftest import expected_descriptor_ref
 from test_client import IDENTITY, FakeTransport, ok_response  # shared fakes
 
 from easyremote.client import Client
-from easyremote.errors import InvalidArgument
+from easyremote.errors import InternalError, InvalidArgument
+from easyremote.mission import MissionStatus
 from easyremote.pipeline import MissionRun, Pipeline, StepOutput
+
+AUTOMATION_SYSTEM_AGENT_URA = "easynet:///r/acme/agent/device.dev-a.automation"
+RUNTIME_INTROSPECTION_SYSTEM_AGENT_URA = (
+    "easynet:///r/acme/agent/device.dev-a.runtime-introspection"
+)
+RUNTIME_HEALTH_SUBJECT_URA = (
+    "easynet:///r/acme/resource/device.dev-a/runtime-health"
+)
 
 
 def make_client(responses=None):
@@ -102,11 +113,189 @@ def test_step_output_render():
     assert StepOutput("fetch").render() == "fetch.output"
 
 
+def test_child_invocation_intents_are_easyremote_owned():
+    pipe = Pipeline("p")
+    first = pipe.step("observe.health")
+    pipe.step("notify.user", msg=first.output, on_failure="continue", optional=True)
+
+    intents = pipe.child_invocation_intents()
+
+    assert [(intent.step_id, intent.ability) for intent in intents] == [
+        ("health", "observe.health"),
+        ("user", "notify.user"),
+    ]
+    assert intents[1].optional is True
+
+
+def test_pipeline_validates_daemon_child_invocation_facts():
+    pipe = Pipeline("p")
+    pipe.step("observe.health")
+    status = MissionStatus.from_json(
+        b"""{
+          "profile": "mission",
+          "kind": "mission_status",
+          "mission_id": "run-1",
+          "state": "completed",
+          "terminal": true,
+          "partial_failures": 0,
+          "cancelled": false,
+          "parent_invocation_id": "invoke-run-1",
+          "parent_receipt_ura": null,
+          "parent_invocation": null,
+          "child_invocations": [
+            {
+              "step_id": "health",
+              "request_id": "req-1",
+              "trace_id": "run-1",
+              "ability": "observe.health",
+              "invocation_ura": "easynet:///r/acme/invocation/req-1",
+              "caller_ura": "easynet:///r/acme/agent/device.dev-a.automation",
+              "callee_ura": "easynet:///r/acme/agent/device.dev-a.runtime-introspection",
+              "subject_ura": "easynet:///r/acme/resource/device.dev-a/runtime-health",
+              "metadata_state": "receipt_backed",
+              "ledger_state": "completed",
+              "receipt": {
+                "receipt_ura": "easynet:///r/acme/resource/agent.easyremote.test/invocation/r-1/receipt",
+                "receipt_hash": """
+        b'"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"'
+        b"""
+              }
+            }
+          ],
+          "child_receipts": [],
+          "output_refs": [],
+          "metadata": {"profile": "mission"}
+        }"""
+    )
+
+    conformance = pipe.validate_child_invocations(status)
+
+    assert conformance.passed is True
+    assert conformance.receipt_backed_steps == ("health",)
+
+
+def test_mission_status_projects_child_receipt_anchor_through_sdk(monkeypatch):
+    seen: list[object] = []
+    original = easynet_sdk.ReceiptReference.from_runtime_receipt
+
+    def spy(receipt: object) -> easynet_sdk.ReceiptReference:
+        seen.append(receipt)
+        return original(receipt)
+
+    monkeypatch.setattr(
+        easynet_sdk.ReceiptReference,
+        "from_runtime_receipt",
+        staticmethod(spy),
+    )
+
+    MissionStatus.from_json(
+        {
+            "profile": "mission",
+            "kind": "mission_status",
+            "mission_id": "run-1",
+            "state": "completed",
+            "terminal": True,
+            "child_invocations": [
+                {
+                    "step_id": "health",
+                    "request_id": "req-1",
+                    "trace_id": "run-1",
+                    "ability": "observe.health",
+                    "invocation_ura": "easynet:///r/acme/invocation/req-1",
+                    "caller_ura": AUTOMATION_SYSTEM_AGENT_URA,
+                    "callee_ura": RUNTIME_INTROSPECTION_SYSTEM_AGENT_URA,
+                    "subject_ura": RUNTIME_HEALTH_SUBJECT_URA,
+                    "metadata_state": "receipt_backed",
+                    "ledger_state": "completed",
+                    "receipt": {
+                        "receipt_ura": (
+                            "easynet:///r/acme/resource/agent.easyremote.test"
+                            "/invocation/r-1/receipt"
+                        ),
+                        "receipt_hash": "aa" * 32,
+                    },
+                }
+            ],
+        }
+    )
+
+    assert seen == [
+        {
+            "receipt_ura": (
+                "easynet:///r/acme/resource/agent.easyremote.test"
+                "/invocation/r-1/receipt"
+            ),
+            "self_hash_hex": "aa" * 32,
+        }
+    ]
+
+
+def test_mission_status_rejects_invalid_child_receipt_anchor():
+    with pytest.raises(InternalError) as exc_info:
+        MissionStatus.from_json(
+            {
+                "profile": "mission",
+                "kind": "mission_status",
+                "mission_id": "run-1",
+                "state": "completed",
+                "terminal": True,
+                "child_invocations": [
+                    {
+                        "step_id": "health",
+                        "request_id": "req-1",
+                        "trace_id": "run-1",
+                        "ability": "observe.health",
+                        "invocation_ura": "easynet:///r/acme/invocation/req-1",
+                        "caller_ura": AUTOMATION_SYSTEM_AGENT_URA,
+                        "callee_ura": RUNTIME_INTROSPECTION_SYSTEM_AGENT_URA,
+                        "subject_ura": RUNTIME_HEALTH_SUBJECT_URA,
+                        "metadata_state": "receipt_backed",
+                        "ledger_state": "completed",
+                        "receipt": {
+                            "receipt_ura": "receipt-1",
+                            "receipt_hash": "aa",
+                        },
+                    }
+                ],
+            }
+        )
+    assert exc_info.value.reason == "invalid_mission_status"
+
+
+def test_mission_status_rejects_duplicate_child_step_facts():
+    child = {
+        "step_id": "health",
+        "request_id": "req-1",
+        "trace_id": "run-1",
+        "ability": "observe.health",
+        "invocation_ura": "easynet:///r/acme/invocation/req-1",
+        "caller_ura": AUTOMATION_SYSTEM_AGENT_URA,
+        "callee_ura": RUNTIME_INTROSPECTION_SYSTEM_AGENT_URA,
+        "subject_ura": RUNTIME_HEALTH_SUBJECT_URA,
+        "metadata_state": "running",
+        "ledger_state": "running",
+        "receipt": None,
+    }
+
+    with pytest.raises(InternalError) as exc_info:
+        MissionStatus.from_json(
+            {
+                "profile": "mission",
+                "kind": "mission_status",
+                "mission_id": "run-1",
+                "state": "running",
+                "terminal": False,
+                "child_invocations": [child, dict(child, request_id="req-2")],
+            }
+        )
+    assert exc_info.value.reason == "invalid_mission_status"
+
+
 def test_created_by_header_uses_identity():
     client, _ = make_client()
     pipe = Pipeline("p", client=client)
     pipe.step("er.fn", a=1)
-    assert "// created_by: easynet:///r/acme/device/dev-a" in pipe.to_eal()
+    assert "// created_by: easynet:///r/acme/user/silan" in pipe.to_eal()
 
 
 def test_run_submits_source_to_mission_run():
@@ -122,7 +311,10 @@ def test_run_submits_source_to_mission_run():
 
     run = pipe.run()
     wire = transport.invocations[0]
-    assert wire["ability"] == "mission.run"
+    assert transport.carriers == ["runtime"]
+    assert wire["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/system-agent.dev-a.automation.mission.run"
+    )
     assert wire["args"]["label"] == "nightly"
     assert 'mission "nightly"' in wire["args"]["source"]
     assert run.run_id == "run-1"
@@ -142,13 +334,124 @@ def test_track_and_cancel_use_run_id():
 
     assert run.track() == {"state": "running"}
     run.cancel()
-    assert transport.invocations[1]["ability"] == "mission.track"
+    assert transport.carriers == ["runtime", "runtime", "runtime"]
+    assert transport.invocations[1]["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/system-agent.dev-a.automation.mission.track"
+    )
     assert transport.invocations[1]["args"] == {"run_id": "run-9"}
-    assert transport.invocations[2]["ability"] == "mission.cancel"
+    assert transport.invocations[2]["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/system-agent.dev-a.automation.mission.cancel"
+    )
+
+
+def test_pipeline_run_handle_fetches_events():
+    client, transport = make_client(
+        responses=[
+            ok_response({"ok": True, "run_id": "run-9"}),
+            ok_response(
+                {
+                    "cursor_sequence": 0,
+                    "next_cursor_sequence": 1,
+                    "has_more": False,
+                    "dropped_count": 0,
+                    "events": [
+                        {
+                            "sequence": 0,
+                            "event_type": "completed",
+                            "occurred_unix_ms": 1_700_000_000_000,
+                            "terminal": True,
+                            "payload": {"reply": "done"},
+                        }
+                    ],
+                }
+            ),
+        ]
+    )
+    pipe = Pipeline("p", client=client)
+    pipe.step("er.fn")
+    run = pipe.run()
+
+    page = run.events()
+
+    assert page["events"][0]["payload"] == {"reply": "done"}
+    assert transport.carriers == ["runtime", "runtime"]
+    assert transport.invocations[1]["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/system-agent.dev-a.automation.mission.events"
+    )
+
+
+def test_pipeline_run_handle_tails_events_until_terminal():
+    client, transport = make_client(
+        responses=[
+            ok_response({"ok": True, "run_id": "run-9"}),
+            ok_response(
+                {
+                    "cursor_sequence": 0,
+                    "next_cursor_sequence": 1,
+                    "has_more": True,
+                    "dropped_count": 0,
+                    "events": [
+                        {
+                            "sequence": 0,
+                            "event_type": "progress",
+                            "occurred_unix_ms": 1_700_000_000_000,
+                            "terminal": False,
+                            "payload": {"step": "fetch"},
+                            "receipt": {},
+                            "metadata": {"step_id": "fetch"},
+                        }
+                    ],
+                }
+            ),
+            ok_response(
+                {
+                    "cursor_sequence": 1,
+                    "next_cursor_sequence": 2,
+                    "has_more": False,
+                    "dropped_count": 0,
+                    "events": [
+                        {
+                            "sequence": 1,
+                            "event_type": "completed",
+                            "occurred_unix_ms": 1_700_000_000_001,
+                            "terminal": True,
+                            "payload": {"reply": "done"},
+                            "receipt": {
+                                "receipt_ura": "easynet:///r/acme/resource/agent.easyremote.test/invocation/r-1/receipt"
+                            },
+                            "metadata": {},
+                        }
+                    ],
+                }
+            ),
+        ]
+    )
+    pipe = Pipeline("p", client=client)
+    pipe.step("er.fn")
+    run = pipe.run()
+
+    events = list(run.tail_events(limit=1))
+
+    assert [event["event_type"] for event in events] == ["progress", "completed"]
+    assert events[1]["payload"] == {"reply": "done"}
+    assert transport.carriers == ["runtime", "runtime", "runtime"]
+    assert transport.invocations[1]["args"] == {
+        "run_id": "run-9",
+        "cursor_sequence": 0,
+        "limit": 1,
+    }
+    assert transport.invocations[2]["args"] == {
+        "run_id": "run-9",
+        "cursor_sequence": 1,
+        "limit": 1,
+    }
 
 
 def test_mission_run_exposes_response_fields():
     client, _ = make_client()
-    run = MissionRun(client, {"run_id": "r", "run_dir": "/d", "outputs": {"x": 1}})
+    run = MissionRun(
+        client.missions,
+        {"run_id": "r", "run_dir": "/d", "outputs": {"x": 1}},
+    )
     assert run.run_dir == "/d"
     assert run.outputs == {"x": 1}

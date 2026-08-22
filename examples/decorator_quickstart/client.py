@@ -12,11 +12,14 @@ import os
 import statistics
 import time
 
-from easyremote import Client, remote
+from easyremote import Client, FreshRoot, ResolvedTargetSubject, remote
 
 GATEWAY_ADDRESS = os.getenv("EASYREMOTE_GATEWAY_ADDRESS")  # optional, classic shape
 
-client = Client(GATEWAY_ADDRESS)
+client = Client(
+    GATEWAY_ADDRESS,
+    invocation_policy=FreshRoot(ResolvedTargetSubject()),
+)
 
 
 @remote(client=client)

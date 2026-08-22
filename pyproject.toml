@@ -21,7 +21,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -29,11 +28,14 @@ classifiers = [
     "Topic :: System :: Distributed Computing",
     "Typing :: Typed",
 ]
-requires-python = ">=3.10"
-# 协议真相归 Axon：URA builder/parser、签名、回执验证都来自 easynet_axon
-# （发布名 easynet-run-axon）。传输走 libeasynet_cli C ABI；当前
-# 纯 Python wheel 要求用户安装 EasyNet CLI 或显式配置 EASYNET_CLI_LIB。
-dependencies = ["easynet-run-axon>=0.108"]
+requires-python = ">=3.11"
+# Protocol truth enters through the generic EasyNet-Cli SDK runtime boundary.
+# EasyRemote owns product profiles such as Mission and Agent lifecycle; the CLI
+# SDK owns Invocation/addressing/transport/error primitives and its lower-layer
+# protocol implementation.
+dependencies = [
+    "easynet-sdk>=0.91.31,<0.92",
+]
 
 [project.scripts]
 easyremote = "easyremote._cli:main"
@@ -45,7 +47,6 @@ Repository = "https://github.com/Qingbolan/EasyRemote.git"
 
 [project.optional-dependencies]
 pydantic = ["pydantic>=2.0"]
-gateway = ["cryptography>=42"]
 
 [dependency-groups]
 dev = [
@@ -59,9 +60,9 @@ dev = [
 default-groups = ["dev"]
 
 [tool.uv.sources]
-# Dev installs resolve the Axon SDK from the sibling checkout; release
-# builds need it published (tracked with the PyPI naming open question).
-easynet-run-axon = { path = "../EasyNet-Axon/sdk/python", editable = true }
+# Dev installs resolve the Daemon SDK from the sibling EasyNet-Cli checkout;
+# release builds need the same package published under the easynet-sdk name.
+easynet-sdk = { path = "../EasyNet-Cli/sdk/python", editable = true }
 
 [tool.setuptools.dynamic]
 version = { attr = "easyremote._version.__version__" }
@@ -71,18 +72,22 @@ where = ["."]
 include = ["easyremote*"]
 
 [tool.setuptools.package-data]
-easyremote = ["py.typed"]
+easyremote = ["edge-adapter-policy.v1.json", "py.typed"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 strict = true
+follow_imports = "silent"
+mypy_path = [
+    "../EasyNet-Cli/sdk/python",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -92,9 +97,6 @@ markers = [
 ]
 
 [[tool.mypy.overrides]]
-module = "cryptography.*"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "easynet_axon.*"
-ignore_missing_imports = true
+module = "easynet_sdk._axon_pb.*"
+follow_imports = "skip"
+ignore_errors = true

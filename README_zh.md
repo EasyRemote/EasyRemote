@@ -40,11 +40,12 @@ node.serve()
 
 ```python
 # 同事：像调本地函数
-from easyremote import Client
-Client().execute("ai_inference", prompt="hello")
+from easyremote import Client, FreshRoot, ResolvedTargetSubject
+client = Client(invocation_policy=FreshRoot(ResolvedTargetSubject()))
+client.execute("ai_inference", prompt="hello")
 
 # Agent runtime：通过 EasyRemote client 调同一个能力
-#   Client().call("ai_inference", prompt="hello")
+#   client.call("ai_inference", prompt="hello")
 
 # 系统：作为 Pipeline 的一步，和别人的函数编排成任务链
 from easyremote import Pipeline
@@ -74,31 +75,128 @@ Ray、Modal、RunPod 把远程执行做**易**，工具协议让 agent 变得**�
 ```bash
 pip install easyremote
 
-# 一次性前置（类比 ssh-keygen 的一次性成本，换来签名调用与回执链）
-easynet pair                                  # 设备配对，签发身份
-easyremote doctor                            # 逐项体检：库 / daemon / 身份 / transport
+# 一次性身份配置（为签名调用与回执链建立身份）。
+# 使用 EasyNet-Cli 运维入口启动 device 或 Hub runtime。
+# `node.serve()` 只连接该 operator-managed runtime。
+easynet pair
+easyremote doctor                            # 可选：逐项体检运行时
+
+# ability / agent 控制面也走同一个 daemon Invocation facade：
+easyremote ability install ./my_ability
+easyremote ability list --scope realm --json
+easyremote agent add caesura --type claude-code --model sonnet
+easyremote mission run ./nightly.eal --label nightly
 ```
 
-之后就是上面的 12 行。`examples/` 有可直接运行的节点、客户端、编排三个示例。
+之后就是上面的 12 行。首次运行若未配对，`node.serve()` 不会伪造身份；它会清楚
+打印唯一需要的操作 `easynet pair` 后退出。配对完成且 EasyNet-Cli 已启动 runtime
+后，同一脚本会连接 runtime、启动 warm host，并发布全部已注册 capability。
 
 ### 三层调用面（渐进暴露）
 
 ```python
-client = Client()
+from easyremote import Client, FreshRoot, ResolvedTargetSubject
+
+client = Client(invocation_policy=FreshRoot(ResolvedTargetSubject()))
 
 # L0 —— 结果优先
 client.execute("ai_inference", prompt="hi")
 
 # L1 —— 选点 / 流 / 超时，不占用能力参数名
-client.call(Client.target("ai_inference", node="gpu-1", timeout=10), prompt="hi")
+client.call(
+    Client.target("ai_inference", node="gpu-1", timeout=10),
+    prompt="hi",
+)
 
 # L2 —— 发出前检视七元组
 prepared = client.prepare("ai_inference", prompt="inspect me")
-prepared.tuple.subject
+prepared.tuple.subject_ura
 
 # send()/invoke() 保留给 daemon unary/system ability；
 # EasyRemote-hosted ability 是 host_stream，消费面用 call()/stream()。
 ```
+
+`Client.invocation_policy` 只公开调用方显式提供的只读产品派生策略。
+`Client()` 没有 invocation 派生默认值：client 或
+`Client.target(...)` 未声明 `InvocationDerivationPolicy` 时，会在 SDK request
+构造前 fail closed。示例中的 `FreshRoot(ResolvedTargetSubject())` 明确要求
+SDK nonce、root causal context，以及 target resolution 产生的 subject
+候选；已有完整 tuple facts 时使用 `CompleteExplicit(...)`。ability 自身名为
+`policy` 的普通参数仍原样传递。
+
+旧的 `Client.target(..., subject=..., causal=...)` 适配器已删除。tuple 派生
+只有一个 authority：调用方显式选择的 policy。
+
+已发布的 `InvocationTuple`、`Receipt`、`ReceiptChain` 和
+`PreparedInvocation.with_causal` 形状同样是有边界的产品边缘适配器。它们保留
+公开构造器和字段，但 Invocation 投影、receipt 解析与 causal 投影全部委托给
+`easynet_sdk`。`easyremote/edge-adapter-policy.v1.json` 是机器可读白名单，
+并禁止新增内部调用者。
+
+### `@remote` 作为类属性
+
+`@remote` stub 是一个描述符——和 `property` 一样。写在类体里时，它把属性名当作
+ability 名；通过实例访问会绑定到该宿主：`self` 会从 wire 参数里剥离，并复用宿主
+自己的 client。模块级 `@remote` 用法保持不变。
+
+```python
+class GPUCluster:
+    def __init__(self, client):
+        self.client = client          # 宿主持有 client
+
+    @remote                            # ability 名 = "ai_inference"
+    def ai_inference(self, prompt: str, max_tokens: int = 64) -> str: ...
+
+policy = FreshRoot(ResolvedTargetSubject())
+GPUCluster(Client(invocation_policy=policy)).ai_inference("hi")
+```
+
+client 解析优先级：`@remote(client=...)` > `self.client` > `self._client`。
+见 [`examples/05_remote_on_class.py`](examples/05_remote_on_class.py)。
+
+### owner 句柄 —— `@node.register` 的镜像
+
+服务端把函数聚在 `ComputeNode` 上、用 `@node.register` 发布。客户端是对称的：
+一个指向 ability owner 的句柄持有目标身份，`@handle.remote` 声明绑定到它的 stub。
+
+```python
+# 服务端                          # 客户端（对称）
+node = ComputeNode()              gpu   = client.device("gpu-2")
+@node.register                    @gpu.remote
+def chat(...): ...                def chat(...): ...
+```
+
+```python
+gpu   = client.device("gpu-2")              # 本 realm 的一台设备
+alice = client.agent("u-alice.chatbot")     # 一个 agent：<user-id>.<agent-id>
+hub   = client.hub()                        # realm hub
+
+@alice.remote
+def chat(prompt: str) -> str: ...
+
+chat("hi")                                  # 路由到 alice
+hub.call("route", target="gpu-2")           # 临时调用，无需 stub
+```
+
+`device` / `agent` / `hub` owner 都是 daemon 一等路由。完整的跨 realm owner URA
+会被接受并编码，但仅在 federation peers 配置下才路由。
+见 [`examples/06_owner_handles.py`](examples/06_owner_handles.py)。
+
+### 按 use case 选择 facade
+
+| Use case | 最小 facade |
+|---|---|
+| 发布本地函数 | `node = ComputeNode(); @node.register; node.serve()` |
+| 结果优先调用 | `Client(invocation_policy=policy).execute("ai_inference", prompt="hi")` |
+| 指定 device / agent / hub | `Client(invocation_policy=policy).device("gpu-2").call(...)`，以及对应的 `agent(...)` / `hub()` 句柄 |
+| 发出前检视七元组 | `prepared = Client(invocation_policy=policy).prepare(...); prepared.tuple; prepared.send()` |
+| 在 Python 中编排 mission | `Pipeline("nightly").step(...); pipe.run()` |
+| 运行已有 EAL | `Client().missions.run_eal(source, label="nightly")` 或 `Client().missions.run_file("nightly.eal")` |
+| 管理 daemon 目录 | `Client().abilities.list(scope="realm")`、`Client().agents.add(...)` |
+
+Mission plan、step/output 引用、子调用事实校验、结果投影与有界事件
+tailer 属于 EasyRemote 产品语义；执行统一通过通用 `Client.invoke`。
+easynet-sdk 只提供通用 Invocation、寻址、传输和类型化运行时错误。
 
 ---
 
@@ -121,11 +219,14 @@ v2 是基于 EasyNet 栈（[EasyNet-Axon](https://github.com/EasyRemote/EasyNet-
 | 能力 | 状态 |
 |---|---|
 | 注册 → 部署包生成（device ability，warm 宿主） | ✅ facade 已实现，并用 host_stream 契约单测固定 |
-| 运行时 ability 部署 / hot-load | ✅ facade 会调用 `easynet ability deploy --node local`；真实 daemon hot-load 属于 EasyNet-Cli 契约 |
+| 运行时 ability 部署 / hot-load | ✅ facade 通过完整 Invocation 调 daemon `ability.deploy`；真实 daemon hot-load 属于 EasyNet-Cli 契约 |
+| ability 目录 / 安装控制面 | ✅ `Client().abilities` 与 `easyremote ability install/list/show`；`--scope realm` 读取 hub-published 网络目录 |
+| agent 生命周期控制面 | ✅ `Client().agents` 与 `easyremote agent add/list/refresh` |
 | live daemon 调用闭环 | 🧪 仅集成/手工路径；CI 在没有 `EASYNET_CLI_LIB` + 运行中 daemon 时跳过 |
 | 三层客户端 / `@remote` stub / async 镜像 | ✅ |
-| Pipeline → EAL → mission.run | ✅ |
-| Server（hub + 自签 TLS 引导） | ✅ |
+| Pipeline → EAL → mission.run | ✅ EasyRemote 自有 plan/projection/event-tail 语义，`Pipeline.run()` 通过通用 `Client.invoke` 发起调用 |
+| 直接 Mission/EAL 运行 facade | ✅ `Client().missions.run_eal/run_file/track/cancel` 与 `easyremote mission run/track/cancel` |
+| Runtime 连接 | ✅ `ComputeNode` 获取 SDK `RuntimeConnection`；device/Hub 配置与进程生命周期由 EasyNet-Cli 持有 |
 | `easyremote doctor` | ✅ |
 | 流式 producer/consumer | ✅ host_stream 路径已实现；见 `examples/04_streaming_*.py` |
 | 服务端 Context 只读身份注入 | ✅ 从 host_stream envelope 注入 `ctx.caller` / `ctx.invocation_id` |

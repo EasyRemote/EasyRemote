@@ -1,26 +1,25 @@
 """Configuration and daemon discovery (SPEC §5.10).
 
-The zero-config chain: ``Client()`` → ``control.json`` → ``daemon.sock``;
-identity → ``credentials.json``. This module owns only path resolution
-and raw JSON loading with actionable errors — the *meaning* of those
-files (which fields exist, what they imply) belongs to the consumers
-that the P0 link verification has validated against a live daemon.
+The zero-config chain is ``Client()`` → SDK environment → daemon runtime.
+This module owns product path overrides and public error projection; the SDK
+owns discovery and interpretation of daemon state, including paired identity.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from .errors import Unavailable
+import easynet_sdk
 
-__all__ = ["Settings", "agents_root", "configure", "settings"]
+from .errors import Unavailable, is_runtime_offline_error
 
-_EASYNET_DIR = Path.home() / ".easynet"
+__all__ = ["Settings", "agents_root", "configure", "sdk_environment", "settings"]
+
+_DESKTOP_EASYNET_DIR = Path.home() / ".easynet"
 
 
 def agents_root() -> Path:
@@ -29,7 +28,7 @@ def agents_root() -> Path:
     Mirrors EasyNet-Cli ``config::agents_root()`` (new convention);
     the legacy ``workspaces/`` location is deliberately not supported.
     """
-    return _EASYNET_DIR / "agents"
+    return settings().control_path.parent / "agents"
 
 
 _ENV_CREDENTIALS = "EASYNET_CREDENTIALS"
@@ -48,11 +47,15 @@ class Settings:
 
 def _from_environment() -> Settings:
     library = os.environ.get(_ENV_LIBRARY)
+    control = os.environ.get(_ENV_CONTROL)
+    credentials = os.environ.get(_ENV_CREDENTIALS)
+    root = _default_runtime_state_root()
+    control_path = Path(control) if control else root / "control.json"
     return Settings(
-        credentials_path=Path(
-            os.environ.get(_ENV_CREDENTIALS, _EASYNET_DIR / "credentials.json")
-        ),
-        control_path=Path(os.environ.get(_ENV_CONTROL, _EASYNET_DIR / "control.json")),
+        credentials_path=Path(credentials)
+        if credentials
+        else control_path.parent / "credentials.json",
+        control_path=control_path,
         library_path=Path(library) if library else None,
     )
 
@@ -94,6 +97,28 @@ def settings() -> Settings:
         return _settings
 
 
+def sdk_environment(
+    *,
+    control_path: str | Path | None = None,
+) -> easynet_sdk.SdkEnvironment:
+    """Create the SDK runtime environment from the EasyRemote process root.
+
+    EasyRemote owns product path overrides; the SDK owns daemon runtime
+    discovery, feature negotiation and transport construction. All consumers
+    that need an SDK process root should use this entrypoint so control-path
+    and library-path projection stays single-sourced.
+    """
+
+    current = settings()
+    library_path = (
+        str(current.library_path) if current.library_path is not None else None
+    )
+    return easynet_sdk.SdkEnvironment(
+        library_path=library_path,
+        control_path=str(control_path or current.control_path),
+    )
+
+
 def read_control() -> dict[str, Any]:
     """Load the daemon discovery file written at daemon boot.
 
@@ -102,42 +127,104 @@ def read_control() -> dict[str, Any]:
             absent — the daemon writes it on startup, so absence means
             there is no daemon to talk to.
     """
-    return _read_json(
-        settings().control_path,
-        reason="daemon_not_running",
-        hint="no easynet-daemon discovery file — start the daemon with `easynet start`",
-    )
+    path = settings().control_path
+    try:
+        discovery = easynet_sdk.read_runtime_control_discovery(path)
+    except easynet_sdk.SDKError as exc:
+        raise _control_discovery_error(path, exc) from exc
+    return _control_discovery_dict(discovery)
 
 
 def read_credentials() -> dict[str, Any]:
-    """Load the pairing-issued identity file.
+    """Return the SDK-projected public paired identity metadata.
 
     Raises:
         Unavailable: with reason ``not_paired`` when the file is absent —
             identity only exists after a one-time `easynet pair`.
     """
-    return _read_json(
-        settings().credentials_path,
-        reason="not_paired",
-        hint="no EasyNet identity on this machine — pair it once with `easynet pair`",
+    projection = runtime_identity_projection()
+    user_id: object = None
+    if projection.principal:
+        principal = easynet_sdk.parse_ura(projection.principal)
+        user_id = principal.components.get("user_id")
+    return {
+        "realm": projection.realm,
+        "node_id": projection.runtime_instance_id,
+        "username": projection.principal_display_name or None,
+        "user_id": str(user_id) if isinstance(user_id, str) else None,
+        "hub_endpoint": projection.control_plane_endpoint,
+    }
+
+
+def runtime_identity_projection() -> easynet_sdk.RuntimeIdentityProjection:
+    current = settings()
+    try:
+        return sdk_environment().paired_runtime_identity_projection(
+            current.credentials_path
+        )
+    except easynet_sdk.SDKError as exc:
+        raise _runtime_identity_projection_error(
+            current.credentials_path,
+            exc,
+        ) from exc
+
+
+def _default_runtime_state_root() -> Path:
+    sdk_root = Path(easynet_sdk.runtime_state_root())
+    if _runtime_state_root_is_populated(_DESKTOP_EASYNET_DIR):
+        return _DESKTOP_EASYNET_DIR
+    return sdk_root
+
+
+def _runtime_state_root_is_populated(path: Path) -> bool:
+    return (path / "control.json").exists() or (path / "credentials.json").exists()
+
+
+def _control_discovery_dict(
+    discovery: easynet_sdk.RuntimeControlDiscovery,
+) -> dict[str, Any]:
+    return {
+        "socket_path": discovery.socket_path,
+        "pipe_name": discovery.pipe_name,
+        "invocation_endpoint": discovery.invocation_endpoint,
+        "pid": discovery.pid,
+        "daemon_version": discovery.runtime_host_version,
+        "supported_ipc_versions": {
+            "min": discovery.supported_ipc_versions.min,
+            "max": discovery.supported_ipc_versions.max,
+        },
+        "capability_flags": list(discovery.capability_flags),
+    }
+
+
+def _control_discovery_error(path: Path, error: easynet_sdk.SDKError) -> Unavailable:
+    if is_runtime_offline_error(error):
+        return Unavailable(
+            f"no easynet-daemon discovery file — start the daemon with `easynet start`"
+            f" (looked at {path})",
+            reason="daemon_not_running",
+        )
+    return Unavailable(
+        f"{path} is not a valid daemon control discovery file ({error.message})"
+        " — re-run `easynet start`",
+        reason="daemon_not_running_corrupt",
     )
 
 
-def _read_json(path: Path, *, reason: str, hint: str) -> dict[str, Any]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        raise Unavailable(f"{hint} (looked at {path})", reason=reason) from None
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise Unavailable(
-            f"{path} is not valid JSON ({exc}) — re-run `easynet start`/`easynet pair`",
-            reason=f"{reason}_corrupt",
-        ) from exc
-    if not isinstance(data, dict):
-        raise Unavailable(
-            f"{path} must contain a JSON object, found {type(data).__name__}",
-            reason=f"{reason}_corrupt",
+def _runtime_identity_projection_error(
+    path: Path,
+    error: easynet_sdk.SDKError,
+) -> Unavailable:
+    if is_runtime_offline_error(error) or (
+        error.code == easynet_sdk.ErrorCode.CALLER_IDENTITY_UNAVAILABLE
+    ):
+        return Unavailable(
+            "no EasyNet identity on this machine — pair it once with "
+            f"`easynet pair` (looked at {path})",
+            reason="not_paired",
         )
-    return data
+    return Unavailable(
+        f"{path} is not a valid runtime identity projection ({error.message})"
+        " — re-run `easynet pair`",
+        reason="not_paired_corrupt",
+    )

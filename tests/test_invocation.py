@@ -1,277 +1,217 @@
-"""Invocation tuple, wire codec, and response decoding.
-
-The golden wire fixture mirrors `valid_invocation_json()` in
-EasyNet-Cli/src/ffi/invocation.rs tests — if these diverge, the codec
-is wrong, not the test.
-"""
+"""EasyRemote presentation over canonical SDK Invocation objects."""
 
 import base64
 import json
 
+import easynet_sdk
 import pytest
-
-from easyremote.errors import InternalError, InvalidArgument
-from easyremote.invocation import (
-    Arguments,
-    CallerSignature,
-    CausalRef,
-    Invocation,
-    InvocationTuple,
-    MerkleAnchor,
-    PreparedInvocation,
-    StreamSpec,
-    encode_invocation,
-    fresh_nonce,
+from conftest import (
+    TEST_DESCRIPTOR_ACTION,
+    TEST_DESCRIPTOR_HASH,
+    expected_descriptor_ref,
 )
-from easyremote.receipts import InvocationState
 
-NONCE = bytes(range(1, 17))  # base64: AQIDBAUGBwgJCgsMDQ4PEA==
+from easyremote.errors import InternalError
+from easyremote.invocation import Invocation
+
+CALLER = "easynet:///r/test/user/alice"
+CALLEE = "easynet:///r/test/agent/device.callee.runtime-introspection"
+ABILITY = (
+    "easynet:///r/test/ability/"
+    "system-agent.callee.runtime-introspection.observe.health"
+)
+SUBJECT = "easynet:///r/test/device/callee"
+NONCE = "AQIDBAUGBwgJCgsMDQ4PEA=="
 
 
-def make_tuple(**overrides):
-    defaults = dict(
-        caller="ura://device/test/caller",
-        callee="ura://device/test/callee",
-        ability="observe.health",
-        subject="ura://device/test/callee",
-        nonce=NONCE,
-        causal=None,
-        arguments=Arguments.from_json({"ping": True}),
+def canonical_draft() -> easynet_sdk.InvocationDraft:
+    addressing = easynet_sdk.AddressingClient(easynet_sdk.AxonAddressingTransport())
+    invoker = easynet_sdk.AbilityInvocationClient(
+        easynet_sdk.RuntimeClient(_DescriptorRuntime(addressing)),
+        addressing,
     )
-    defaults.update(overrides)
-    return InvocationTuple(**defaults)
+    try:
+        return invoker.build_target_invocation(
+            easynet_sdk.AbilityTargetRequest(
+                caller_ura=CALLER,
+                ability_ura=ABILITY,
+                subject_ura=SUBJECT,
+                nonce_base64=NONCE,
+                causal_context={"form": "none"},
+                args={"ping": True},
+            )
+        )
+    finally:
+        addressing.close()
 
 
-# -- wire encoding -------------------------------------------------------------
+class _DescriptorRuntime:
+    def __init__(self, addressing: easynet_sdk.AddressingClient) -> None:
+        self._addressing = addressing
+
+    def resolve_descriptor_ref(self, request_json: bytes) -> bytes:
+        request = json.loads(request_json.decode("utf-8"))
+        callee_ura = str(request["callee_ura"])
+        ability = str(request["ability"])
+        ability_ura = (
+            ability
+            if ability.startswith("easynet:///")
+            else self._addressing.owner_ability_ura(callee_ura, ability)
+        )
+        descriptor_ref = self._addressing.canonical_ability_descriptor_ref(
+            ability_ura,
+            "1.0.0",
+            descriptor_hash=TEST_DESCRIPTOR_HASH,
+            action=TEST_DESCRIPTOR_ACTION,
+        )
+        return json.dumps({"descriptor_ref": descriptor_ref}).encode()
 
 
-def test_encode_matches_ffi_golden_fixture():
-    wire = encode_invocation(make_tuple())
-    assert wire == {
-        "caller_ura": "ura://device/test/caller",
-        "callee_ura": "ura://device/test/callee",
-        "ability": "observe.health",
-        "subject_ura": "ura://device/test/callee",
-        "nonce_base64": "AQIDBAUGBwgJCgsMDQ4PEA==",
-        "causal_context": {"form": "none"},
-        "descriptor_version": "1.0.0",
-        "args": {"ping": True},
-    }
-
-
-def test_descriptor_version_defaults_and_overrides():
-    assert encode_invocation(make_tuple())["descriptor_version"] == "1.0.0"
-    custom = encode_invocation(make_tuple(), descriptor_version="2.3.4")
-    assert custom["descriptor_version"] == "2.3.4"
-
-
-def test_binary_arguments_use_base64_and_content_type():
-    tup = make_tuple(arguments=Arguments.from_bytes(b"\x00\x01", "audio/pcm"))
-    wire = encode_invocation(tup)
-    assert "args" not in wire
-    assert wire["arguments_base64"] == base64.b64encode(b"\x00\x01").decode()
-    assert wire["content_type"] == "audio/pcm"
-
-
-def test_causal_scalar_list_merkle_forms():
-    ref = CausalRef(receipt_hash=b"\xab" * 32, receipt_ura="easynet:///r/x")
-    scalar = encode_invocation(make_tuple(causal=ref))["causal_context"]
-    assert scalar == {
-        "form": "scalar",
-        "receipt_hash_hex": "ab" * 32,
-        "receipt_ura": "easynet:///r/x",
-    }
-
-    listed = encode_invocation(make_tuple(causal=[ref, ref]))["causal_context"]
-    assert listed["form"] == "list"
-    assert len(listed["prior"]) == 2
-
-    merkle = encode_invocation(
-        make_tuple(causal=MerkleAnchor(root=b"\xcd" * 32, proof_ura="easynet:///r/p"))
-    )["causal_context"]
-    assert merkle == {
-        "form": "merkle",
-        "root_hex": "cd" * 32,
-        "proof_ura": "easynet:///r/p",
-    }
-
-
-def test_metadata_signature_and_streams_are_optional_extras():
-    wire = encode_invocation(
-        make_tuple(),
-        metadata={"x-easynet-delegation": "producer"},
-        caller_signature=CallerSignature("ed25519", b"\x07" * 64, "caller-key"),
-        bidi_streams=[StreamSpec(stream_id=1, content_type="text/pty")],
-    )
-    assert wire["metadata"] == {"x-easynet-delegation": "producer"}
-    assert wire["caller_signature"]["algorithm"] == "ed25519"
-    assert (
-        wire["caller_signature"]["signature_base64"]
-        == base64.b64encode(b"\x07" * 64).decode()
-    )
-    assert wire["bidi_streams"] == [
-        {
-            "stream_id": 1,
-            "content_type": "text/pty",
-            "ordering": "STRICT",
-            "codec_params": "",
-        }
-    ]
-
-
-def test_minimal_wire_has_no_optional_keys():
-    wire = encode_invocation(make_tuple())
-    for key in ("metadata", "caller_signature", "bidi_streams", "content_type"):
-        assert key not in wire
-
-
-# -- validation -----------------------------------------------------------------
-
-
-def test_nonce_contract():
-    assert len(fresh_nonce()) == 16
-    with pytest.raises(InvalidArgument, match="16 bytes"):
-        make_tuple(nonce=b"short")
-    with pytest.raises(InvalidArgument, match="all-zero"):
-        make_tuple(nonce=bytes(16))
-
-
-def test_empty_tuple_fields_rejected():
-    with pytest.raises(InvalidArgument):
-        make_tuple(ability="  ")
-
-
-def test_empty_causal_list_rejected():
-    with pytest.raises(InvalidArgument, match="root invocation"):
-        encode_invocation(make_tuple(causal=[]))
-
-
-def test_causal_ref_validates_hash_length():
-    with pytest.raises(InvalidArgument, match="32 bytes"):
-        CausalRef(receipt_hash=b"\x01", receipt_ura="easynet:///r/x")
-
-
-def test_binary_arguments_need_content_type():
-    with pytest.raises(InvalidArgument):
-        Arguments.from_bytes(b"x", "  ")
-
-
-def test_args_digest_is_stable_sha256():
-    a = Arguments.from_json({"b": 1, "a": 2})
-    b = Arguments.from_json({"b": 1, "a": 2})
-    assert a.digest() == b.digest()
-    assert len(a.digest()) == 32
-
-
-def test_json_arguments_reject_non_finite_numbers():
-    with pytest.raises(InvalidArgument) as exc_info:
-        Arguments.from_json({"bad": float("nan")}).digest()
-    assert exc_info.value.reason == "invalid_json_payload"
-
-
-# -- response decoding ------------------------------------------------------------
-
-
-def ok_response(**overrides):
-    payload = {"answer": 42}
-    response = {
+def runtime_response(
+    draft: easynet_sdk.InvocationDraft,
+    runtime_receipt,
+    *,
+    output_json=None,
+    output_content_type: str = "application/json",
+    output_base64: str = "",
+    admission_receipt=None,
+    terminal_receipt=None,
+    state: easynet_sdk.InvocationLifecycleState = (
+        easynet_sdk.InvocationLifecycleState.COMPLETED
+    ),
+):
+    if admission_receipt is None and terminal_receipt is None:
+        admission_receipt = runtime_receipt(
+            index=0,
+            receipt_type="admitted",
+            state="Admitted",
+            cleanup_complete=False,
+        )
+        terminal_receipt = runtime_receipt(
+            index=1,
+            prev_hex=admission_receipt["self_hash_hex"],
+            receipt_type="completed",
+            state="Completed",
+            cleanup_complete=True,
+        )
+    runtime_result = {
         "ok": True,
-        "state": int(InvocationState.COMPLETED),
-        "selected_node_id": "node-1",
-        "scheduling_reason": "direct",
+        "tuple": draft.to_json_dict(),
+        "invocation_id": "inv-1",
+        "terminal_state": "Completed",
+        "output_content_type": output_content_type,
+        "output_base64": output_base64,
+        "output_json": output_json,
         "elapsed_ms": 7,
-        "result_content_type": "application/json",
-        "result_base64": base64.b64encode(json.dumps(payload).encode()).decode(),
-        "result_json": payload,
-        "admission_receipt": None,
+        "admission_receipt": admission_receipt,
+        "terminal_receipt": terminal_receipt,
+        "error": None,
     }
-    response.update(overrides)
-    return response
-
-
-def test_result_prefers_result_json():
-    inv = Invocation(make_tuple(), ok_response())
-    assert inv.result() == {"answer": 42}
-    assert inv.state is InvocationState.COMPLETED
-    assert inv.state.is_terminal
-    assert inv.selected_node_id == "node-1"
-    assert inv.elapsed_ms == 7
-
-
-def test_result_falls_back_to_base64_json():
-    inv = Invocation(make_tuple(), ok_response(result_json=None))
-    assert inv.result() == {"answer": 42}
-
-
-def test_binary_result_returns_bytes():
-    inv = Invocation(
-        make_tuple(),
-        ok_response(
-            result_content_type="audio/pcm",
-            result_base64=base64.b64encode(b"\x01\x02").decode(),
-            result_json=None,
-        ),
-    )
-    assert inv.result() == b"\x01\x02"
-
-
-def test_non_ok_response_is_a_protocol_error():
-    with pytest.raises(InternalError, match="non-ok"):
-        Invocation(make_tuple(), {"ok": False})
-
-
-def test_receipt_absent_means_empty_chain():
-    inv = Invocation(make_tuple(), ok_response())
-    assert inv.receipt is None
-    assert len(inv.receipts()) == 0
-    assert inv.id == ""
-
-
-def test_shell_executor_envelope_is_unwrapped():
-    # Fixture captured live from daemon v0.64.8 (P0 closed-loop probe).
-    envelope = {
-        "elapsed_ms": 60,
-        "exit_code": 0,
-        "fulfilled_by": "shell",
-        "result": '{"hello":"easynet","excited":true}',
-        "sandboxed": "none",
+    return {
+        "ok": True,
+        "state": int(state),
+        "sdk_runtime_result": runtime_result,
     }
-    inv = Invocation(make_tuple(), ok_response(result_json=envelope))
-    assert inv.result() == {"hello": "easynet", "excited": True}
-    assert inv.raw_response["result_json"] == envelope  # envelope preserved
 
 
-def test_plain_text_stdout_envelope_unwraps_to_string():
-    envelope = {"fulfilled_by": "shell", "exit_code": 0, "result": "plain text"}
-    inv = Invocation(make_tuple(), ok_response(result_json=envelope))
-    assert inv.result() == "plain text"
+def test_sdk_provider_owns_complete_invocation_draft() -> None:
+    draft = canonical_draft()
+
+    assert draft.caller_ura == CALLER
+    assert draft.callee_ura == CALLEE
+    assert draft.descriptor_ref == expected_descriptor_ref(ABILITY)
+    assert draft.subject_ura == SUBJECT
+    assert draft.nonce_base64 == NONCE
+    assert draft.causal_context == {"form": "none"}
+    assert draft.args == {"ping": True}
 
 
-def test_non_envelope_dicts_pass_through():
-    response = {"candidates": [], "scope": "self", "query": ""}
-    inv = Invocation(make_tuple(), ok_response(result_json=response))
-    assert inv.result() == response
-
-
-# -- prepared invocation -----------------------------------------------------------
-
-
-def test_prepared_invocation_inspect_then_send():
-    sent = []
-
-    def dispatcher(prepared):
-        sent.append(prepared)
-        return Invocation(prepared.tuple, ok_response())
-
-    prepared = PreparedInvocation(tuple=make_tuple(), dispatcher=dispatcher)
-    adjusted = prepared.with_subject("ura://device/test/other").with_causal(
-        CausalRef(receipt_hash=b"\xee" * 32, receipt_ura="easynet:///r/r")
+def test_product_result_unwraps_executor_envelope(runtime_receipt) -> None:
+    draft = canonical_draft()
+    invocation = Invocation.from_transport_response(
+        runtime_response(
+            draft,
+            runtime_receipt,
+            output_json={
+                "fulfilled_by": "shell",
+                "exit_code": 0,
+                "result": '{"answer":42}',
+            },
+        )
     )
 
-    assert prepared.tuple.subject == "ura://device/test/callee"  # original untouched
-    assert adjusted.tuple.subject == "ura://device/test/other"
-    assert isinstance(adjusted.tuple.causal, CausalRef)
-
-    invocation = adjusted.send()
-    assert sent[0] is adjusted
     assert invocation.result() == {"answer": 42}
+    assert invocation.tuple is not draft
+    assert invocation.tuple.to_json_dict() == draft.to_json_dict()
+    assert invocation.state is easynet_sdk.InvocationLifecycleState.COMPLETED
+
+
+def test_product_result_decodes_binary_output(runtime_receipt) -> None:
+    draft = canonical_draft()
+    invocation = Invocation.from_transport_response(
+        runtime_response(
+            draft,
+            runtime_receipt,
+            output_content_type="audio/pcm",
+            output_base64=base64.b64encode(b"\x01\x02").decode("ascii"),
+        )
+    )
+
+    assert invocation.result() == b"\x01\x02"
+
+
+def test_accepts_top_level_sdk_runtime_result(runtime_receipt) -> None:
+    draft = canonical_draft()
+    response = runtime_response(
+        draft,
+        runtime_receipt,
+        output_json={"answer": 42},
+    )
+    runtime_result = response["sdk_runtime_result"]
+    assert isinstance(runtime_result, dict)
+
+    invocation = Invocation.from_transport_response(runtime_result)
+
+    assert invocation.result() == {"answer": 42}
+    assert invocation.id == "inv-1"
+
+
+def test_transport_response_rejects_malformed_sdk_runtime_result() -> None:
+    with pytest.raises(InternalError, match="malformed"):
+        Invocation.from_transport_response({"ok": True})
+
+
+def test_transport_response_uses_only_sdk_owned_terminal_state(
+    runtime_receipt,
+) -> None:
+    draft = canonical_draft()
+
+    invocation = Invocation.from_transport_response(
+        runtime_response(
+            draft,
+            runtime_receipt,
+            state=easynet_sdk.InvocationLifecycleState.UNSPECIFIED,
+        )
+    )
+    assert invocation.state is easynet_sdk.InvocationLifecycleState.COMPLETED
+
+    response = runtime_response(draft, runtime_receipt)
+    runtime_result = response["sdk_runtime_result"]
+    assert isinstance(runtime_result, dict)
+    runtime_result["terminal_state"] = "Running"
+    with pytest.raises(InternalError, match="terminal_receipt state does not match"):
+        Invocation.from_transport_response(response)
+
+
+def test_transport_response_rejects_incomplete_receipt_proof(
+    runtime_receipt,
+) -> None:
+    response = runtime_response(canonical_draft(), runtime_receipt)
+    runtime_result = response["sdk_runtime_result"]
+    assert isinstance(runtime_result, dict)
+    terminal = runtime_result["terminal_receipt"]
+    assert isinstance(terminal, dict)
+    terminal.pop("authority_proof")
+
+    with pytest.raises(InternalError, match="authority_proof"):
+        Invocation.from_transport_response(response)

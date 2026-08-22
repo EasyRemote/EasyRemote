@@ -9,9 +9,29 @@ implemented and tested.
 """
 
 from ._version import __version__
-from .client import BidiSession, CallTarget, Client, RemoteFunction, Stream, remote
+from .agent import AgentChatResult, RemoteAgent, agent
+from .client import (
+    BidiSession,
+    CallTarget,
+    Client,
+    RemoteAbility,
+    RemoteDevice,
+    RemoteFunction,
+    RemoteOwner,
+    Stream,
+    remote,
+)
 from .config import configure
-from .context import Context
+from .context import Context, ContextTarget
+from .control import (
+    AbilityControl,
+    AbilityInstallResult,
+    AbilityRecord,
+    AgentControl,
+    AgentRecord,
+    AgentStartResult,
+    AgentStopResult,
+)
 from .errors import (
     Cancelled,
     DeadlineExceeded,
@@ -23,41 +43,70 @@ from .errors import (
     SchemaError,
     Unavailable,
 )
-from .gateway import Gateway, Server, TLSConfig
-from .invocation import Invocation, InvocationTuple, PreparedInvocation
+from .frame import StreamFrame
+from .invocation import Invocation, PreparedInvocation
+from .invocation_policy import (
+    ChildCausal,
+    CompleteExplicit,
+    ExplicitSubject,
+    FreshCausal,
+    FreshContextChild,
+    FreshRoot,
+    InvocationDerivationPolicy,
+    InvocationSubjectPolicy,
+    ResolvedTargetSubject,
+)
+from .mission import MissionControl
 from .node import ComputeNode
 from .pipeline import MissionRun, Pipeline
-from .receipts import InvocationState, Receipt, ReceiptChain
 
 __all__ = [
+    "AbilityControl",
+    "AbilityInstallResult",
+    "AbilityRecord",
+    "AgentChatResult",
+    "AgentControl",
+    "AgentRecord",
+    "AgentStartResult",
+    "AgentStopResult",
     "BidiSession",
     "CallTarget",
     "Cancelled",
+    "ChildCausal",
     "Client",
+    "CompleteExplicit",
     "ComputeNode",
     "Context",
+    "ContextTarget",
     "DeadlineExceeded",
-    "Gateway",
+    "ExplicitSubject",
+    "FreshCausal",
+    "FreshContextChild",
+    "FreshRoot",
     "InternalError",
     "InvalidArgument",
     "Invocation",
-    "InvocationState",
-    "InvocationTuple",
+    "InvocationDerivationPolicy",
+    "InvocationSubjectPolicy",
+    "MissionControl",
     "MissionRun",
     "PermissionDenied",
     "Pipeline",
     "PreparedInvocation",
-    "Receipt",
-    "ReceiptChain",
+    "RemoteAbility",
+    "RemoteAgent",
+    "RemoteDevice",
     "RemoteError",
     "RemoteFunction",
+    "RemoteOwner",
+    "ResolvedTargetSubject",
     "ResourceExhausted",
     "SchemaError",
-    "Server",
     "Stream",
-    "TLSConfig",
+    "StreamFrame",
     "Unavailable",
     "__version__",
+    "agent",
     "configure",
     "remote",
 ]

@@ -1,79 +1,183 @@
 """Local identity: who this process is on the EasyNet.
 
-Source of truth is the pairing-issued ``~/.easynet/credentials.json``
-(``EasyNet-Cli/src/persistence/config.rs::Credentials``: ``node_id``,
-``realm``, ``hub_endpoint``, optional ``username``).
+Source of truth is the EasyNet-Cli SDK runtime identity projection. EasyRemote
+does not parse daemon credentials directly.
 
-URA policy (ura-discipline): **Axon owns URA truth.** Ability URAs are
-built by ``easynet_axon.ura.build_device_ability_ura``; the device and
-hub shapes — which the Python SDK has no builder for yet — are rendered
-here and then **round-tripped through ``easynet_axon.ura.parse_ura``**
-before they ever leave this module, so nothing this package emits can
-disagree with the canonical parser. No other module renders URAs.
+URA policy: **the EasyNet-Cli SDK owns URA truth**. Product helpers below
+delegate directly to the SDK and never parse or encode URA grammar.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from easynet_axon import ura as axon_ura
+import easynet_sdk
 
-from .config import read_credentials
+from .config import runtime_identity_projection
 from .errors import InternalError, Unavailable
 
 __all__ = [
     "LocalIdentity",
-    "device_ability_ura",
+    "agent_ura",
     "device_ura",
     "hub_ura",
+    "resource_ura",
+    "system_agent_ability_ura",
+    "system_agent_ura",
+    "user_ura",
 ]
 
 
 def device_ura(realm: str, node_id: str) -> str:
-    """RFC-001 device shape, validated by the canonical parser."""
-    return _validated(f"{axon_ura.URA_SCHEME}{realm}/device/{node_id}")
+    """Build a device URA through the canonical SDK provider."""
+    return _validated_build(lambda: easynet_sdk.device_ura(realm, node_id))
+
+
+def agent_ura(realm: str, owner_token: str) -> str:
+    """Build an agent URA through the canonical SDK provider.
+
+    ``owner_token`` is EasyRemote's product input ``<user-id>.<agent-id>``.
+    """
+    user_id, separator, agent_id = owner_token.strip().partition(".")
+    if not user_id or not separator or not agent_id:
+        raise _identity_internal_error("agent owner token must be user-id.agent-id")
+    return _validated_build(lambda: easynet_sdk.agent_ura(realm, user_id, agent_id))
 
 
 def hub_ura(realm: str) -> str:
-    """RFC-001 hub singleton shape, validated by the canonical parser."""
-    return _validated(f"{axon_ura.URA_SCHEME}{realm}/hub")
+    """Build the realm authority URA through the canonical SDK provider."""
+    return _validated_build(lambda: easynet_sdk.authority_ura(realm))
 
 
-def device_ability_ura(
-    realm: str, node_id: str, namespace: str, local_name: str
-) -> str:
-    """Device-owned ability URA — straight from the Axon builder."""
-    return _validated(
-        axon_ura.build_device_ability_ura(realm, node_id, namespace, local_name)
+def resource_ura(realm: str, owner_id: str, path: str) -> str:
+    """Build a device-owned resource URA through the canonical SDK provider."""
+    clean_path = path.strip().strip("/")
+    if not clean_path:
+        raise InternalError(
+            "resource path must not be empty",
+            reason="empty_resource_path",
+        )
+    if not owner_id.startswith("device."):
+        raise InternalError(
+            f"unsupported resource owner id {owner_id!r}",
+            reason="invalid_resource_owner",
+        )
+    owner = device_ura(realm, owner_id.removeprefix("device."))
+    return _validated_build(lambda: easynet_sdk.resource_ura(owner, clean_path))
+
+
+def user_ura(realm: str, user_id: str) -> str:
+    """Build an accountable User URA through the canonical SDK provider."""
+    return _validated_build(lambda: easynet_sdk.user_ura(realm, user_id))
+
+
+def system_agent_ura(realm: str, node_id: str, agent_id: str) -> str:
+    """Build a Device-sponsored SystemAgent URA through the SDK provider."""
+    return _validated_build(
+        lambda: easynet_sdk.device_agent_ura(realm, node_id, agent_id)
     )
 
 
-def _validated(candidate: str) -> str:
-    """AXIOM 22.2: every URA must round-trip through the canonical parser."""
+def system_agent_ability_ura(
+    realm: str,
+    node_id: str,
+    agent_id: str,
+    ability_name: str,
+) -> str:
+    """Build an Ability URA owned by one Device-sponsored SystemAgent."""
+    owner = system_agent_ura(realm, node_id, agent_id)
+    return _validated_build(
+        lambda: easynet_sdk.owner_ability_ura(owner, ability_name)
+    )
+
+
+def _validated_build(build: Callable[[], str]) -> str:
     try:
-        axon_ura.parse_ura(candidate)
-    except axon_ura.ParseError as exc:
-        raise InternalError(
-            f"constructed URA {candidate!r} is rejected by the canonical parser"
-            f" ({exc}) — likely corrupt credentials; re-pair with `easynet pair`",
-            reason="ura_round_trip_failed",
+        return _validated(build())
+    except easynet_sdk.SDKError as exc:
+        raise _identity_internal_error(
+            f"SDK Addressing provider rejected constructed URA ({exc}) — likely"
+            " corrupt credentials; re-pair with `easynet pair`"
+        ) from exc
+
+
+def _validated(candidate: str) -> str:
+    """Every emitted URA must round-trip through the SDK provider."""
+    try:
+        easynet_sdk.parse_ura(candidate)
+    except easynet_sdk.SDKError as exc:
+        raise _identity_internal_error(
+            f"constructed URA {candidate!r} is rejected by the SDK Addressing"
+            f" provider ({exc}) — likely corrupt credentials; re-pair with"
+            " `easynet pair`",
         ) from exc
     return candidate
 
 
+def _identity_internal_error(message: str) -> InternalError:
+    return InternalError(message, reason="ura_round_trip_failed")
+
+
 @dataclass(frozen=True)
 class LocalIdentity:
-    """The paired device this process runs on."""
+    """Paired runtime identity with distinct User and Device roles."""
 
     realm: str
     node_id: str
     username: str | None
     hub_endpoint: str
+    user_id: str | None = None
 
     @classmethod
     def load(cls) -> LocalIdentity:
-        return cls.from_credentials(read_credentials())
+        return cls.from_runtime_projection(runtime_identity_projection())
+
+    @classmethod
+    def from_runtime_projection(
+        cls,
+        projection: easynet_sdk.RuntimeIdentityProjection,
+    ) -> LocalIdentity:
+        try:
+            realm = str(projection.realm)
+            node_id = str(projection.runtime_instance_id)
+        except AttributeError as exc:
+            raise Unavailable(
+                "runtime identity projection is incomplete — re-pair with "
+                "`easynet pair`",
+                reason="credentials_incomplete",
+            ) from exc
+        principal = str(getattr(projection, "principal", "") or "").strip()
+        user_id: str | None = None
+        if principal:
+            try:
+                parsed = easynet_sdk.parse_ura(principal)
+            except easynet_sdk.SDKError as exc:
+                raise Unavailable(
+                    "paired principal projection is invalid — re-pair with "
+                    "`easynet pair`",
+                    reason="paired_user_invalid",
+                ) from exc
+            if parsed.kind != "user" or parsed.realm != realm:
+                raise Unavailable(
+                    "paired principal must be a User in the runtime realm — "
+                    "re-pair with `easynet pair`",
+                    reason="paired_user_invalid",
+                )
+            component = parsed.components.get("user_id")
+            if isinstance(component, str) and component.strip():
+                user_id = component.strip()
+        return cls(
+            realm=realm,
+            node_id=node_id,
+            username=(
+                str(getattr(projection, "principal_display_name", "") or "")
+                or None
+            ),
+            hub_endpoint=str(getattr(projection, "control_plane_endpoint", "")),
+            user_id=user_id,
+        )
 
     @classmethod
     def from_credentials(cls, credentials: dict[str, Any]) -> LocalIdentity:
@@ -91,11 +195,46 @@ class LocalIdentity:
             node_id=node_id,
             username=str(username) if username else None,
             hub_endpoint=str(credentials.get("hub_endpoint", "")),
+            user_id=(
+                str(credentials["user_id"])
+                if credentials.get("user_id")
+                else None
+            ),
         )
 
     @property
     def device_ura(self) -> str:
         return device_ura(self.realm, self.node_id)
+
+    @property
+    def user_ura(self) -> str:
+        """The paired accountable principal; never substituted by Device."""
+        return user_ura(self.realm, self.paired_user_id)
+
+    @property
+    def paired_user_id(self) -> str:
+        """Immutable paired User id; display names are never identity input."""
+
+        principal = (self.user_id or "").strip()
+        if not principal:
+            raise Unavailable(
+                "paired user identity is required — re-pair with `easynet pair`",
+                reason="paired_user_required",
+            )
+        return principal
+
+    def system_agent_ura(self, agent_id: str) -> str:
+        return system_agent_ura(self.realm, self.node_id, agent_id)
+
+    @property
+    def runtime_state_read_subject_ura(self) -> str:
+        """User-owned subject for catalogue, descriptor, and trace reads."""
+        return _validated_build(
+            lambda: easynet_sdk.runtime_state_read_subject_ura(
+                self.realm,
+                self.paired_user_id,
+            )
+        )
 
     @property
     def hub_ura(self) -> str:

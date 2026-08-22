@@ -1,0 +1,109 @@
+"""SDK-backed child dispatch for server-injected Context objects."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
+
+import easynet_sdk
+
+from .client import CallTarget, Client, Stream
+from .context import ContextTarget
+from .errors import Unavailable
+from .invocation import Invocation
+
+
+def dispatcher_from_parent_receipt(
+    parent_receipt: easynet_sdk.RuntimeReceipt | None,
+    *,
+    client_factory: Callable[[], Client] = Client,
+) -> SDKContextChildDispatcher | None:
+    """Create a child dispatcher only when a parent receipt anchor exists."""
+
+    if parent_receipt is None:
+        return None
+    parent_reference = _parent_reference(parent_receipt)
+    return SDKContextChildDispatcher(
+        parent_reference,
+        client_factory=client_factory,
+    )
+
+
+@dataclass
+class SDKContextChildDispatcher:
+    """Context child calls over the normal EasyRemote client path.
+
+    The dispatcher owns only ergonomics and lifetime. The parent receipt is
+    projected through the EasyNet-Cli SDK RuntimeReceipt provider before this
+    object is created; all child calls still flow through `Client.prepare`,
+    preserving the complete seven-tuple before dispatch.
+    """
+
+    parent_reference: easynet_sdk.ReceiptReference
+    client_factory: Callable[[], Client] = Client
+    _client: Client | None = field(default=None, init=False, repr=False)
+
+    def call(self, target: ContextTarget, /, *args: Any, **kwargs: Any) -> Any:
+        return self._client_or_create().call(
+            self._client_target(target),
+            *args,
+            **kwargs,
+        )
+
+    def invoke(
+        self,
+        target: ContextTarget,
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Invocation:
+        return self._client_or_create().invoke(
+            self._client_target(target),
+            *args,
+            **kwargs,
+        )
+
+    def stream(
+        self,
+        target: ContextTarget,
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Stream:
+        return self._client_or_create().stream(
+            self._client_target(target),
+            *args,
+            **kwargs,
+        )
+
+    def close(self) -> None:
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+    def _client_or_create(self) -> Client:
+        if self._client is None:
+            self._client = self.client_factory()
+        return self._client
+
+    def _client_target(self, target: ContextTarget) -> CallTarget:
+        return Client.target(
+            target.function,
+            invocation_policy=target.invocation_policy.bind(
+                self.parent_reference,
+            ),
+        )
+
+
+def _parent_reference(
+    receipt: easynet_sdk.RuntimeReceipt,
+) -> easynet_sdk.ReceiptReference:
+    try:
+        return easynet_sdk.ReceiptReference.from_runtime_receipt(receipt)
+    except easynet_sdk.SDKError as exc:
+        raise Unavailable(
+            "Context child dispatch requires a parent receipt_ura and"
+            " receipt hash returned by the daemon",
+            reason="parent_receipt_anchor_unavailable",
+        ) from exc
