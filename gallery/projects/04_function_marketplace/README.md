@@ -1,21 +1,54 @@
-# 04 Function Marketplace
+# Reuse an Owned Business Function Without Copying It
 
-## Usage Scenario
+## Concrete use case
 
-An organization has many validated business functions, but they are scattered across services, scripts, and repositories. A platform team wants to turn them into a discoverable, reusable, governable capability marketplace.
+A customer-operations workflow needs three functions already maintained by
+other teams: normalize an invoice, classify an incoming ticket, and score
+customer health. The first useful marketplace is not a web storefront. It is a
+small catalog in which each function has an owner, typed inputs, bounded
+outputs, and a callable implementation that remains with its owning team.
 
-## Concrete Use Case
+The runnable MVP limits currency conversion to three known currencies, ticket
+text to 2,000 characters, and health inputs to percentages or counts with
+explicit ranges. These constraints make the functions safe to compose and make
+failure understandable to callers.
 
-The finance team owns `normalize_invoice`, the operations team owns `classify_ticket`, and the data team owns `score_customer_health`. A new project needs all three for customer risk analysis and should not copy the logic into a new codebase.
+## Requirements
 
-## Current Problem
+- Publish independently named business functions with explicit validation.
+- Keep one implementation under the original team's control.
+- Let a new workflow consume functions without copying their source.
+- Return stable JSON values suitable for later workflow composition.
+- Avoid presenting arbitrary code execution as a marketplace capability.
 
-Function reuse often stops at "I know another team wrote that." Real use still requires copying code, opening a new API, negotiating permissions, or waiting for another team's backlog. There is no shared catalog, and the function has no clear owner, version, invocation record, or quality signal.
+## Existing approach
 
-## Intent
+Internal reuse often ends at documentation or a snippet repository. A consumer
+still copies code, freezes an old rule, negotiates access to another service, or
+waits for the owning team to build a new endpoint. The organization knows a
+function exists but lacks a low-cost callable boundary, so duplicated business
+logic accumulates across repositories.
 
-This project defines a function marketplace as a marketplace of callable capabilities. It is not a snippet list. The original teams continue to own the functions, while the platform provides common discovery and governance.
+## EasyRemote approach
 
-## Target Outcome
+The owning node registers the three functions with `@node.register`. A consumer
+declares only their signatures with `@remote`; the caller cannot execute an
+embedded local fallback or mutate the provider's implementation. The broader
+catalog can add discovery and policy around the same abilities without changing
+these function contracts.
 
-New projects can search existing capabilities before building new ones. The platform can attach tags, permissions, scores, audits, and version policy to capabilities. Business functions move from team-local implementation to organization-level assets.
+## Effect
+
+The organization can test whether owned functions are actually reusable before
+building marketplace ranking, billing, or SLA machinery. Consumers integrate
+through a typed call instead of a source-code copy, and owners can improve the
+implementation in place. This is the minimum evidence that a function can
+become an organizational asset.
+
+## Run
+
+```bash
+uv sync
+uv run python node.py
+uv run python client.py
+```

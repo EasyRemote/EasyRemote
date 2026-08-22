@@ -1,21 +1,53 @@
-# 03 A2A Incident Copilot
+# Incident Evidence Without an SSH Session
 
-## Usage Scenario
+## Concrete use case
 
-SRE and platform engineering teams want an incident copilot to help process alerts: collect evidence, call diagnostic scripts, prepare remediation suggestions, and request human approval before risky actions.
+An on-call engineer receives a latency alert for one of three production
+services. Before deciding on remediation, the engineer or incident agent needs
+a bounded diagnosis and several recent evidence samples. The minimum task does
+not restart anything: it accepts an allowlisted service, restricts the lookback
+window to 1–60 minutes, returns a structured diagnosis, and streams at most ten
+ordered samples.
 
-## Concrete Use Case
+The fixture represents metrics already available on the provider machine. A
+real deployment replaces the fixture reads with local observability adapters;
+it should preserve the allowlist and bounded response contract.
 
-An API latency alert fires. The copilot calls a log node for error summaries, a metrics node for latency distribution, and a deployment node for recent changes. If the risk is low, it prepares a rollback recommendation. If the action writes state, it waits for the on-call engineer to approve.
+## Requirements
 
-## Current Problem
+- Provide read-only diagnosis before any remediation capability.
+- Reject arbitrary service names, shell commands, and unbounded time ranges.
+- Attribute diagnosis to the caller and invocation identifier.
+- Stream a finite sequence so the consumer can process evidence incrementally.
+- Produce a deterministic terminal result even when no anomaly is present.
 
-Operations knowledge is scattered across runbooks, scripts, dashboards, and personal experience. Agents can read docs and write recommendations, but calling internal scripts safely introduces permission, network, execution evidence, and multi-step state management problems.
+## Existing approach
 
-## Intent
+Incident response commonly begins with SSH access, copied shell commands, and
+manual context switching among dashboards. SSH grants a machine boundary when
+the task needs only a diagnostic boundary. General shell tools are difficult to
+authorize narrowly, and agent-generated transcripts are weak evidence of which
+operation actually ran.
 
-This project makes operations actions authorized capabilities and lets agents organize them through A2A-style task chains. Diagnosis, judgment, and remediation are no longer agent autobiography; they become executions with call boundaries and receipts.
+## EasyRemote approach
 
-## Target Outcome
+The provider publishes only `diagnose_service` and `stream_evidence` with
+`@node.register`. The caller uses typed `@remote` stubs; neither the human nor
+an agent receives a command channel. EasyRemote carries the bounded call while
+the runtime supplies identity and receipt semantics.
 
-The on-call engineer gets a copilot that can perform low-risk diagnosis, summarize evidence, and preserve human approval points. The system can trace the identity, input, output, and result of each step, so incident review does not depend on chat history and memory.
+## Effect
+
+The first incident-automation milestone becomes safe evidence collection, not
+autonomous remediation. An on-call engineer can retrieve the same normalized
+facts without machine credentials, and an agent can consume them through the
+same contract. A2A task planning, human approval, rollback, and durable incident
+state remain outside this deliberately small MVP.
+
+## Run
+
+```bash
+uv sync
+uv run python node.py
+uv run python client.py
+```

@@ -1,21 +1,56 @@
-# 05 Local Data Residency AI
+# Move the Function to Sensitive Data
 
-## Usage Scenario
+## Concrete use case
 
-Healthcare, finance, government, and industrial customers want to use AI on sensitive data, but raw data cannot leave the local data center, private network, or compliance region.
+A hospital analytics team needs a sanitized case summary and bounded risk
+labels from patient notes stored inside a protected environment. The remote
+workflow may provide a record identifier, but it must never receive the raw
+note, a database credential, or an unrestricted query interface. The provider
+must also retain the caller and invocation identifiers alongside the released
+projection.
 
-## Concrete Use Case
+This MVP contains two synthetic records. Its release contract is precise: one
+known identifier enters; a summary of at most 160 characters, an allowlisted
+set of risk labels, and audit identifiers leave. The local `sanitize` function
+is the seam where a production redaction or local-model pipeline belongs.
 
-A hospital stores raw patient notes on an internal server. An external agent may request a sanitized summary and risk labels, but must not read the raw note. The EasyRemote node executes `summarize_patient_record` inside the hospital boundary and returns only the sanitized result.
+## Requirements
 
-## Current Problem
+- Resolve records exclusively inside the provider boundary.
+- Reject unknown identifiers without revealing the record inventory.
+- Remove direct identifiers before producing the summary.
+- Release only allowlisted risk labels and bounded text.
+- Attribute every projection to the runtime-supplied caller and invocation.
 
-AI workflows often send data to a central model or cloud service by default. For strongly regulated organizations, that can violate data residency, audit, and authorization requirements. Fully local AI keeps data safe but makes remote orchestration and reuse difficult.
+## Existing approach
 
-## Intent
+Central AI pipelines typically upload source documents to a cloud model or
+copy them into a shared analytics store. That simplifies orchestration by
+weakening data residency. A fully isolated local script preserves residency but
+usually falls out of remote workflows, leading to manual exports and informal
+handoffs that are difficult to audit.
 
-This project moves computation toward the data. EasyRemote does not require data to migrate to an external service. Instead, the local node exposes compliant processing functions as remotely callable capabilities.
+## EasyRemote approach
 
-## Target Outcome
+The protected node registers `summarize_patient_record` with
+`@node.register`. The external workflow calls an `@remote` stub containing only
+the record identifier. Execution and source data stay local; the capability
+returns the explicitly released projection. EasyRemote supplies the function
+boundary, while data access and sanitization remain owned by the hospital.
 
-Sensitive data remains local, and remote callers receive only allowed results. The data owner keeps the execution environment and access boundary, while agent workflows can still include local AI processing in a unified orchestration path.
+## Effect
+
+The team can test remote orchestration without testing whether sensitive data
+may leave its boundary. The caller gets a useful structured result, and the
+data owner keeps records, processing code, and release policy local. Production
+deployment still requires clinical validation, durable audit storage, and
+organization-specific authorization; this project does not substitute for
+those controls.
+
+## Run
+
+```bash
+uv sync
+uv run python node.py
+uv run python client.py
+```
