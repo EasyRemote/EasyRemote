@@ -26,7 +26,7 @@ import threading
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -67,7 +67,7 @@ class _AbilityInstaller(Protocol):
     ) -> object: ...
 
 
-class PublicationState(str, Enum):
+class PublicationState(StrEnum):
     """Observable host/publication lifecycle without claiming early realm visibility."""
 
     STOPPED = "STOPPED"
@@ -424,6 +424,7 @@ class ComputeNode:
             exec=easynet_sdk.HostStreamExec(
                 host_socket=str(self._host.socket_path),
                 function=qualified,
+                protocol="binary_v1",
             ),
         ).to_mapping()
 

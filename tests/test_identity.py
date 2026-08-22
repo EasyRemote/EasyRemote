@@ -48,12 +48,16 @@ def test_identity_properties_are_validated():
 
 def test_identity_projects_paired_user_and_fails_closed_without_one():
     paired = LocalIdentity(
-        realm="acme", node_id="dev-a", username="u-alice", hub_endpoint=""
+        realm="acme",
+        node_id="dev-a",
+        username="Alice",
+        hub_endpoint="",
+        user_id="u-alice",
     )
     assert paired.user_ura == "easynet:///r/acme/user/u-alice"
 
     unpaired = LocalIdentity(
-        realm="acme", node_id="dev-a", username=None, hub_endpoint=""
+        realm="acme", node_id="dev-a", username="Display Name", hub_endpoint=""
     )
     with pytest.raises(Unavailable) as exc_info:
         _ = unpaired.user_ura
@@ -78,13 +82,14 @@ def test_local_identity_load_uses_sdk_runtime_projection(monkeypatch):
     )
     monkeypatch.setattr(
         environment,
-        "runtime_identity_projection",
+        "paired_runtime_identity_projection",
         lambda credentials_path="": (
             requested_paths.append(credentials_path)
             or easynet_sdk.RuntimeIdentityProjection(
                 realm="acme",
                 runtime_instance_id="dev-a",
                 principal="easynet:///r/acme/user/u-alice",
+                principal_display_name="Alice",
             )
         ),
     )
@@ -102,7 +107,8 @@ def test_local_identity_load_uses_sdk_runtime_projection(monkeypatch):
 
     assert identity.realm == "acme"
     assert identity.node_id == "dev-a"
-    assert identity.username == "easynet:///r/acme/user/u-alice"
+    assert identity.username == "Alice"
+    assert identity.user_id == "u-alice"
     assert identity.user_ura == "easynet:///r/acme/user/u-alice"
     assert identity.hub_endpoint == ""
     assert requested_paths == [Path("/tmp/credentials.json")]

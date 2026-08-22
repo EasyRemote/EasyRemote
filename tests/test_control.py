@@ -19,7 +19,11 @@ from easyremote.errors import InvalidArgument, Unavailable
 from easyremote.identity import LocalIdentity
 
 IDENTITY = LocalIdentity(
-    realm="acme", node_id="dev-a", username="u-alice", hub_endpoint="hub:443"
+    realm="acme",
+    node_id="dev-a",
+    username="Alice",
+    hub_endpoint="hub:443",
+    user_id="u-alice",
 )
 DEVICE_URA = "easynet:///r/acme/device/dev-a"
 USER_URA = "easynet:///r/acme/user/u-alice"

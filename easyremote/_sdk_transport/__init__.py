@@ -8,7 +8,7 @@ EasyRemote.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -31,16 +31,22 @@ class Transport:
         self,
         adapter: easynet_sdk.InvocationResultAdapter,
         addressing: easynet_sdk.AddressingClient,
+        authority: easynet_sdk.DraftAuthorityProvider,
+        *,
+        stream_signer_resolver: Callable[[str], easynet_sdk.Signer] | None = None,
+        environment: easynet_sdk.SdkEnvironment | None = None,
     ) -> None:
         self._adapter = adapter
         self._addressing = addressing
         self._invoker = easynet_sdk.AbilityInvocationClient(
             adapter.transport.runtime,
             addressing,
+            authority,
         )
         self._runtime_ability = easynet_sdk.RuntimeAbilityClient(
             adapter.transport.runtime,
             addressing,
+            authority,
         )
         self._descriptor_provider = easynet_sdk.RuntimeAbilityDescriptorProvider(
             self._runtime_ability,
@@ -48,6 +54,8 @@ class Transport:
         self._receipt_provider = easynet_sdk.RuntimeReceiptProvider(
             self._runtime_ability
         )
+        self._stream_signer_resolver = stream_signer_resolver
+        self._environment = environment
 
     @classmethod
     def connect(cls, control_path: str | None = None) -> Transport:
@@ -57,11 +65,33 @@ class Transport:
                 control_path=environment.resolved_control_path(),
                 library_path=environment.library_path,
             )
+            addressing = environment.addressing_client()
             return cls(
                 adapter,
-                environment.addressing_client(),
+                addressing,
+                environment.local_runtime_authority_provider(addressing),
             )
         except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
+
+    @classmethod
+    def connect_direct(cls, control_path: str | None = None) -> Transport:
+        """Connect a raw Axon stream data plane with local signing support."""
+
+        environment = sdk_environment(control_path=control_path)
+        try:
+            runtime_transport = environment.invocation_transport_direct()
+            adapter = easynet_sdk.InvocationResultAdapter(runtime_transport)
+            addressing = environment.addressing_client()
+            return cls(
+                adapter,
+                addressing,
+                environment.local_runtime_authority_provider(addressing),
+                stream_signer_resolver=(environment.local_runtime_invocation_signer),
+                environment=environment,
+            )
+        except easynet_sdk.SDKError as exc:
+            environment.close()
             raise error_from_sdk(exc) from exc
 
     def build_invocation(
@@ -81,7 +111,8 @@ class Transport:
         arguments: object,
     ) -> dict[str, Any]:
         try:
-            return dict(self._runtime_ability.invoke(call, ability_name, arguments))
+            draft = self._runtime_ability.build(call, ability_name, arguments)
+            return dict(self._runtime_ability.invoke_draft(draft))
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
@@ -166,9 +197,24 @@ class Transport:
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
-    def stream(self, invocation: easynet_sdk.InvocationDraft) -> FrameStream:
+    def stream(
+        self,
+        invocation: easynet_sdk.InvocationDraft,
+        *,
+        signer: easynet_sdk.Signer | None = None,
+    ) -> FrameStream:
         try:
-            return FrameStream(self._adapter.stream(invocation))
+            if self._stream_signer_resolver is None:
+                return FrameStream(self._adapter.stream(invocation))
+            resolved_signer = signer or self._stream_signer_resolver(
+                invocation.caller_ura
+            )
+            return FrameStream(
+                self._adapter.stream_signed(
+                    invocation,
+                    signer=resolved_signer,
+                )
+            )
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
@@ -193,6 +239,12 @@ class Transport:
         except easynet_sdk.SDKError as exc:
             if first_error is None:
                 first_error = exc
+        if self._environment is not None:
+            try:
+                self._environment.close()
+            except easynet_sdk.SDKError as exc:
+                if first_error is None:
+                    first_error = exc
         if first_error is not None:
             raise error_from_sdk(first_error) from first_error
 

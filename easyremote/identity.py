@@ -128,6 +128,7 @@ class LocalIdentity:
     node_id: str
     username: str | None
     hub_endpoint: str
+    user_id: str | None = None
 
     @classmethod
     def load(cls) -> LocalIdentity:
@@ -136,7 +137,7 @@ class LocalIdentity:
     @classmethod
     def from_runtime_projection(
         cls,
-        projection: Any,
+        projection: easynet_sdk.RuntimeIdentityProjection,
     ) -> LocalIdentity:
         try:
             realm = str(projection.realm)
@@ -147,12 +148,35 @@ class LocalIdentity:
                 "`easynet pair`",
                 reason="credentials_incomplete",
             ) from exc
-        username = getattr(projection, "principal", "")
+        principal = str(getattr(projection, "principal", "") or "").strip()
+        user_id: str | None = None
+        if principal:
+            try:
+                parsed = easynet_sdk.parse_ura(principal)
+            except easynet_sdk.SDKError as exc:
+                raise Unavailable(
+                    "paired principal projection is invalid — re-pair with "
+                    "`easynet pair`",
+                    reason="paired_user_invalid",
+                ) from exc
+            if parsed.kind != "user" or parsed.realm != realm:
+                raise Unavailable(
+                    "paired principal must be a User in the runtime realm — "
+                    "re-pair with `easynet pair`",
+                    reason="paired_user_invalid",
+                )
+            component = parsed.components.get("user_id")
+            if isinstance(component, str) and component.strip():
+                user_id = component.strip()
         return cls(
             realm=realm,
             node_id=node_id,
-            username=str(username) if username else None,
+            username=(
+                str(getattr(projection, "principal_display_name", "") or "")
+                or None
+            ),
             hub_endpoint=str(getattr(projection, "control_plane_endpoint", "")),
+            user_id=user_id,
         )
 
     @classmethod
@@ -171,6 +195,11 @@ class LocalIdentity:
             node_id=node_id,
             username=str(username) if username else None,
             hub_endpoint=str(credentials.get("hub_endpoint", "")),
+            user_id=(
+                str(credentials["user_id"])
+                if credentials.get("user_id")
+                else None
+            ),
         )
 
     @property
@@ -180,23 +209,19 @@ class LocalIdentity:
     @property
     def user_ura(self) -> str:
         """The paired accountable principal; never substituted by Device."""
-        principal = (self.username or "").strip()
+        return user_ura(self.realm, self.paired_user_id)
+
+    @property
+    def paired_user_id(self) -> str:
+        """Immutable paired User id; display names are never identity input."""
+
+        principal = (self.user_id or "").strip()
         if not principal:
             raise Unavailable(
                 "paired user identity is required — re-pair with `easynet pair`",
                 reason="paired_user_required",
             )
-        try:
-            projection = easynet_sdk.parse_ura(principal)
-        except easynet_sdk.SDKError:
-            return user_ura(self.realm, principal)
-        if projection.kind != "user":
-            raise Unavailable(
-                "paired principal must be a User, not an Agent or Device —"
-                " re-pair with `easynet pair`",
-                reason="paired_user_invalid",
-            )
-        return str(projection.ura)
+        return principal
 
     def system_agent_ura(self, agent_id: str) -> str:
         return system_agent_ura(self.realm, self.node_id, agent_id)
@@ -204,17 +229,10 @@ class LocalIdentity:
     @property
     def runtime_state_read_subject_ura(self) -> str:
         """User-owned subject for catalogue, descriptor, and trace reads."""
-        projection = easynet_sdk.parse_ura(self.user_ura)
-        user_id = str(projection.components.get("user_id") or "").strip()
-        if not user_id:
-            raise Unavailable(
-                "paired User URA has no user id — re-pair with `easynet pair`",
-                reason="paired_user_invalid",
-            )
         return _validated_build(
             lambda: easynet_sdk.runtime_state_read_subject_ura(
                 self.realm,
-                user_id,
+                self.paired_user_id,
             )
         )
 

@@ -6,8 +6,8 @@ import threading
 from collections.abc import Iterator
 from functools import partial
 
-import pytest
 import easynet_sdk
+import pytest
 
 from easyremote.context import Context
 from easyremote.errors import InvalidArgument, Unavailable
@@ -87,6 +87,13 @@ def read_manifest(info):
 
 
 def host_stream_frames(socket_path, fn, args):
+    from easyremote._host.protocol import (
+        FrameKind,
+        decode_item,
+        receive_frame,
+        request_frame,
+    )
+
     request = {
         "request": {
             "fn": fn,
@@ -97,14 +104,26 @@ def host_stream_frames(socket_path, fn, args):
     }
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         connection.connect(str(socket_path))
-        connection.sendall((json.dumps(request) + "\n").encode())
+        connection.sendall(request_frame(request).to_bytes())
         frames = []
-        for raw in connection.makefile("r"):
-            raw = raw.strip()
-            if not raw:
-                continue
-            frames.append(json.loads(raw))
-            if "terminal" in frames[-1] or "error" in frames[-1]:
+        while True:
+            frame = receive_frame(connection)
+            if frame.kind is FrameKind.ITEM:
+                frames.append(
+                    {"stream_item": decode_item(frame), "seq": frame.sequence}
+                )
+            elif frame.kind is FrameKind.TERMINAL:
+                frames.append(
+                    {
+                        "terminal": {
+                            "output_hash": "sha256:" + frame.payload.hex(),
+                            "frames": frame.sequence,
+                        }
+                    }
+                )
+                break
+            elif frame.kind is FrameKind.ERROR:
+                frames.append({"error": json.loads(frame.payload)})
                 break
         return frames
 
@@ -145,6 +164,7 @@ def test_register_writes_scaffold_shaped_ability_json(node):
     assert exec_["kind"] == "host_stream"
     assert exec_["function"] == "er.ai_inference"
     assert exec_["host_socket"].endswith("host.sock")
+    assert exec_["protocol"] == "binary_v1"
     assert "command" not in manifest  # the daemon never read `command`
 
 
@@ -178,15 +198,18 @@ def test_device_ontology_naming_paired(tmp_path, monkeypatch):
     import easyremote.config as config
 
     monkeypatch.setattr(config, "_settings", None)
-    environment = easynet_sdk.SdkEnvironment(control_path=str(tmp_path / "control.json"))
+    environment = easynet_sdk.SdkEnvironment(
+        control_path=str(tmp_path / "control.json")
+    )
     monkeypatch.setattr(config, "sdk_environment", lambda: environment)
     monkeypatch.setattr(
         environment,
-        "runtime_identity_projection",
+        "paired_runtime_identity_projection",
         lambda _credentials_path="": easynet_sdk.RuntimeIdentityProjection(
             realm="acme",
             runtime_instance_id="dev-a",
             principal="easynet:///r/acme/user/u-alice",
+            principal_display_name="Alice",
         ),
     )
     node = ComputeNode(
@@ -198,8 +221,7 @@ def test_device_ontology_naming_paired(tmp_path, monkeypatch):
         return a
 
     assert fn.info.ura == (
-        "easynet:///r/acme/ability/"
-        "system-agent.dev-a.ability-management.er.fn"
+        "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn"
     )
 
 
@@ -296,7 +318,11 @@ def test_stop_revokes_live_binding_before_host_shutdown(short_tmp):
     node.stop()
 
     assert installer.uninstalls == [
-        ("easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn", "inst-1", "local")
+        (
+            "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn",
+            "inst-1",
+            "local",
+        )
     ]
     assert node.publication_state.value == "STOPPED"
     assert not node.host_socket.exists()

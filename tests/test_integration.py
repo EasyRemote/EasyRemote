@@ -77,11 +77,10 @@ def client():
 
 
 def test_sdk_transport_connects_to_live_daemon():
-    import easynet_sdk
-
     from easyremote._sdk_transport import Transport
+    from easyremote.config import sdk_environment
 
-    feature_set = easynet_sdk.SdkEnvironment().feature_set()
+    feature_set = sdk_environment().feature_set()
     assert feature_set.abi_version >= 4
     with Transport.connect():
         pass

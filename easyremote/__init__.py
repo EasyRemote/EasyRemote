@@ -43,6 +43,7 @@ from .errors import (
     SchemaError,
     Unavailable,
 )
+from .frame import StreamFrame
 from .invocation import Invocation, PreparedInvocation
 from .invocation_policy import (
     ChildCausal,
@@ -102,6 +103,7 @@ __all__ = [
     "ResourceExhausted",
     "SchemaError",
     "Stream",
+    "StreamFrame",
     "Unavailable",
     "__version__",
     "agent",

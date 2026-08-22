@@ -47,6 +47,7 @@ from .errors import (
     Unavailable,
     error_from_sdk,
 )
+from .frame import StreamFrame
 from .identity import LocalIdentity, agent_ura, device_ura, hub_ura
 from .invocation import (
     Invocation,
@@ -243,7 +244,13 @@ class Stream:
     def __iter__(self) -> Iterator[Any]:
         try:
             for item in self._adapter:
-                yield item.value
+                if "json" in item.content_type.lower():
+                    yield item.value
+                    continue
+                payload = item.payload
+                if not payload and isinstance(item.value, bytes):
+                    payload = item.value
+                yield StreamFrame(payload, item.content_type)
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
@@ -349,6 +356,8 @@ class Client:
             if transport is not None
             else UnaryDispatchPool.connect()
         )
+        self._stream_transport = transport
+        self._owns_stream_transport = transport is None
         self._identity: LocalIdentity | None = None
 
     # -- L0 ------------------------------------------------------------------
@@ -400,8 +409,14 @@ class Client:
         self, prepared: PreparedInvocation, *, timeout: float | None
     ) -> Stream:
         wait_budget = self._timeout if timeout is None else timeout
+        transport = self._streaming()
+        frames = (
+            transport.stream(prepared.draft, signer=self._signer)
+            if self._owns_stream_transport
+            else transport.stream(prepared.draft)
+        )
         return Stream(
-            self._connected().stream(prepared.draft),
+            frames,
             timeout=wait_budget,
         )
 
@@ -510,9 +525,7 @@ class Client:
                 f"ability descriptor is unavailable for {resolved.ability_ura}",
                 reason="ability_descriptor_unavailable",
             )
-        draft = self._connected().build_invocation(
-            resolved.to_call_request(request)
-        )
+        draft = self._connected().build_invocation(resolved.to_call_request(request))
 
         def dispatch(prepared: PreparedInvocation) -> Invocation:
             if prepared.sign:
@@ -594,13 +607,14 @@ class Client:
             not self._addressing.is_owner_ura(normalized) and "." not in normalized
         )
         if resolve_owner:
-            username = (self._who().username or "").strip()
-            if not username:
+            try:
+                user_id = self._who().paired_user_id
+            except Unavailable as exc:
                 raise InvalidArgument(
                     "a bare agent id requires a paired user identity",
                     reason="missing_agent_owner",
-                )
-            owner_spec = f"{username}.{normalized}"
+                ) from exc
+            owner_spec = f"{user_id}.{normalized}"
         owner_ura = self._owner_ura(owner_spec, "agent")
         projection = easynet_sdk.parse_ura(owner_ura)
         agent_name = str(projection.components.get("agent_id") or "").strip()
@@ -631,15 +645,17 @@ class Client:
             return ""
         if len(owners) == 1:
             return owners[0]
-        username = (self._who().username or "").strip()
-        if username:
-            preferred = [
-                owner_ura
-                for owner_ura in owners
-                if _agent_owner_user_id(owner_ura) == username
-            ]
-            if len(preferred) == 1:
-                return preferred[0]
+        try:
+            user_id = self._who().paired_user_id
+        except Unavailable:
+            user_id = ""
+        preferred = [
+            owner_ura
+            for owner_ura in owners
+            if _agent_owner_user_id(owner_ura) == user_id
+        ]
+        if len(preferred) == 1:
+            return preferred[0]
         raise InvalidArgument(
             f"agent id {agent_id!r} is ambiguous in the daemon catalogue; use"
             " a <user-id>.<agent-id> token or a full agent owner URA",
@@ -749,10 +765,24 @@ class Client:
         return MissionControl(self)
 
     def close(self) -> None:
+        first_error: BaseException | None = None
         try:
             self._unary_pool.close()
-        finally:
+        except BaseException as exc:
+            first_error = exc
+        if self._owns_stream_transport and self._stream_transport is not None:
+            try:
+                self._stream_transport.close()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        try:
             self._addressing.close()
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
+        if first_error is not None:
+            raise first_error
 
     def __enter__(self) -> Client:
         return self
@@ -889,6 +919,14 @@ class Client:
 
     def _connected(self) -> Transport:
         return self._unary_pool.connected_transport()
+
+    def _streaming(self) -> Transport:
+        if self._stream_transport is not None:
+            return self._stream_transport
+        with self._lock:
+            if self._stream_transport is None:
+                self._stream_transport = Transport.connect_direct()
+            return self._stream_transport
 
     def _invocation_trace(self, request_id: str) -> easynet_sdk.InvocationTraceGraph:
         identity = self._who()

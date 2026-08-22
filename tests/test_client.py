@@ -22,6 +22,7 @@ from conftest import (
 )
 from easynet_sdk import InvocationLifecycleState as InvocationState
 
+from easyremote._sdk_transport import Transport, UnaryDispatchPool
 from easyremote.agent import RemoteAgent
 from easyremote.client import (
     BidiSession,
@@ -40,6 +41,7 @@ from easyremote.errors import (
     InvalidArgument,
     Unavailable,
 )
+from easyremote.frame import StreamFrame
 from easyremote.identity import LocalIdentity
 from easyremote.invocation_policy import (
     CompleteExplicit,
@@ -51,26 +53,22 @@ from easyremote.mission import MissionControl
 from easyremote.schema import PARAMETER_ORDER_KEY, VAR_POSITIONAL_KEY
 
 IDENTITY = LocalIdentity(
-    realm="acme", node_id="dev-a", username="silan", hub_endpoint="hub.example:443"
+    realm="acme",
+    node_id="dev-a",
+    username="Silan",
+    hub_endpoint="hub.example:443",
+    user_id="silan",
 )
 DEVICE_URA = "easynet:///r/acme/device/dev-a"
 USER_URA = "easynet:///r/acme/user/silan"
-ABILITY_MANAGER_URA = (
-    "easynet:///r/acme/agent/device.dev-a.ability-management"
-)
-INTROSPECTION_URA = (
-    "easynet:///r/acme/agent/device.dev-a.runtime-introspection"
-)
-RUNTIME_STATE_SUBJECT = (
-    "easynet:///r/acme/resource/user.silan/runtime-state/read"
-)
+ABILITY_MANAGER_URA = "easynet:///r/acme/agent/device.dev-a.ability-management"
+INTROSPECTION_URA = "easynet:///r/acme/agent/device.dev-a.runtime-introspection"
+RUNTIME_STATE_SUBJECT = "easynet:///r/acme/resource/user.silan/runtime-state/read"
 UUID_AGENT_OWNER_URA = (
-    "easynet:///r/acme/agent/"
-    "019fb758-94a8-7441-acd1-55280797b9a90.claude-code"
+    "easynet:///r/acme/agent/019fb758-94a8-7441-acd1-55280797b9a90.claude-code"
 )
 UUID_AGENT_CHAT_URA = (
-    "easynet:///r/acme/ability/"
-    "019fb758-94a8-7441-acd1-55280797b9a90.claude-code.chat"
+    "easynet:///r/acme/ability/019fb758-94a8-7441-acd1-55280797b9a90.claude-code.chat"
 )
 NONCE = bytes(range(1, 17))
 
@@ -407,7 +405,8 @@ class FakeTransport:
         )
         return self._canonical_response(draft, response)
 
-    def stream(self, draft):
+    def stream(self, draft, *, signer=None):
+        _ = signer
         # execute/call now drain a host_stream; record the wire (same
         # assertions as the old invoke path) and yield the ability result
         # as a single chunk frame followed by terminal. Queued responses
@@ -550,13 +549,33 @@ def test_dotted_names_pass_through_and_device_selector_projects_ability_manager(
     )
 
 
+def test_canonical_device_selector_projects_host_id_once():
+    client, transport = make_client()
+    client.call(
+        Client.target(
+            "team.fetch_sales",
+            node="easynet:///r/acme/device/gpu-1",
+        ),
+        quarter="Q2",
+    )
+
+    wire = transport.invocations[0]
+    assert wire["callee_ura"] == (
+        "easynet:///r/acme/agent/device.gpu-1.ability-management"
+    )
+    assert wire["descriptor_ref"] == expected_descriptor_ref(
+        "easynet:///r/acme/ability/"
+        "system-agent.gpu-1.ability-management.team.fetch_sales"
+    )
+
+
 def test_obsolete_device_owned_ability_ura_is_rejected():
     ability_ura = "easynet:///r/acme/ability/device.gpu-1.team.fetch_sales"
     client, transport = make_client(responses=[ok_response({"rows": 3})])
 
     with pytest.raises(InvalidArgument) as exc_info:
         client.call(ability_ura, quarter="Q2")
-    assert exc_info.value.reason == "device_is_not_ability_owner"
+    assert exc_info.value.reason == "invalid_owner_for_ability"
     assert transport.invocations == []
 
 
@@ -1347,6 +1366,63 @@ def test_remote_descriptor_supports_stream():
     assert transport.invocations[0]["args"] == {"n": 3}
 
 
+def test_remote_decorator_stream_preserves_multimodal_frames():
+    class MediaClient:
+        def stream(self, target, **kwargs):
+            assert target.function == "camera"
+            assert kwargs == {"frames": 1}
+            return Stream(
+                FakeFrameStream(
+                    [
+                        {
+                            "payload_bytes": b"jpeg",
+                            "payload_content_type": "image/jpeg",
+                            "terminal": False,
+                            "error": None,
+                        },
+                        chunk(None, terminal=True),
+                    ]
+                )
+            )
+
+    @remote(client=MediaClient())
+    def camera(frames: int): ...
+
+    assert list(camera.stream(1)) == [StreamFrame(b"jpeg", "image/jpeg")]
+
+
+def test_remote_decorator_uses_dedicated_direct_stream_transport(monkeypatch):
+    unary = FakeTransport()
+    direct = FakeTransport(responses=[{"path": "direct"}])
+    unary_pool = UnaryDispatchPool.from_transport(unary)
+    monkeypatch.setattr(
+        UnaryDispatchPool,
+        "connect",
+        classmethod(lambda cls: unary_pool),
+    )
+    monkeypatch.setattr(
+        Transport,
+        "connect_direct",
+        classmethod(lambda cls, control_path=None: direct),
+    )
+    client = Client(
+        identity=IDENTITY,
+        invocation_policy=FreshRoot(ResolvedTargetSubject()),
+    )
+
+    @remote(client=client)
+    def generate(prompt: str): ...
+
+    try:
+        assert list(generate.stream("hello")) == [{"path": "direct"}]
+    finally:
+        client.close()
+
+    assert unary.carriers == []
+    assert direct.carriers == ["stream"]
+    assert direct.closed
+
+
 # -- owner handles (symmetric to @node.register) -------------------------------
 
 
@@ -1411,10 +1487,7 @@ def test_agent_chat_preserves_benchmark_messages_and_joins_native_trace():
     assert descriptor_request["call"].caller_ura == USER_URA
     assert descriptor_request["call"].callee_ura == INTROSPECTION_URA
     assert descriptor_request["call"].subject_ura == RUNTIME_STATE_SUBJECT
-    assert (
-        descriptor_request["ability_ura"]
-        == UUID_AGENT_CHAT_URA
-    )
+    assert descriptor_request["ability_ura"] == UUID_AGENT_CHAT_URA
     assert descriptor_request["call_mode"] == "rpc"
     assert descriptor_request["descriptor_version"] == ""
     assert descriptor_request["scope"] == ""
@@ -1563,7 +1636,7 @@ def test_agent_chat_does_not_mask_success_when_trace_lookup_is_unavailable():
                     "tool_calls": [],
                     "usage": {"output_tokens": 16},
                 }
-            )
+            ),
         ]
     )
     client = Client(
@@ -1704,7 +1777,9 @@ def test_device_handle_call_matches_node_target():
     assert (
         transport.invocations[0]["descriptor_ref"]
         == other_tx.invocations[0]["descriptor_ref"]
-        == expected_descriptor_ref("easynet:///r/acme/ability/system-agent.gpu-2.ability-management.er.chat")
+        == expected_descriptor_ref(
+            "easynet:///r/acme/ability/system-agent.gpu-2.ability-management.er.chat"
+        )
     )
     assert transport.invocations[0]["callee_ura"] == (
         "easynet:///r/acme/agent/device.gpu-2.ability-management"
@@ -1848,9 +1923,7 @@ def candidate(verb, device_id, schema=None):
     return {
         "ability": verb,
         "qualified_name": f"easynet:///r/acme/ability/system-agent.{device_id}.ability-management.er.{verb}",
-        "owner": (
-            f"easynet:///r/acme/agent/device.{device_id}.ability-management"
-        ),
+        "owner": (f"easynet:///r/acme/agent/device.{device_id}.ability-management"),
         "description": "",
         "input_schema": schema or {"type": "object", "properties": {}},
         "visibility": "device",
@@ -2184,6 +2257,24 @@ def test_stream_decodes_non_json_payload_bytes():
     )
 
     assert list(Stream(fs)) == [b"\x00\x01"]
+
+
+def test_stream_preserves_raw_media_payload_and_content_type():
+    fs = FakeFrameStream(
+        [
+            {
+                "payload_json": None,
+                "payload_base64": "",
+                "payload_bytes": b"\x00\x00\x00\x01h264",
+                "payload_content_type": "video/h264",
+                "terminal": False,
+                "error": None,
+            },
+            chunk(None, terminal=True),
+        ]
+    )
+
+    assert list(Stream(fs)) == [StreamFrame(b"\x00\x00\x00\x01h264", "video/h264")]
 
 
 def test_stream_idle_timeout_closes_and_raises_deadline():

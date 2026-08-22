@@ -85,10 +85,10 @@ def canonical_runtime_receipt(
             "profile": "axon-strict-v2",
         },
         "host_attestation_base64": "",
-        "authority_binding_kind": "self",
+        "authority_binding_kind": "self+identity",
         "authority_binding": {
-            "kind": "self",
-            "principal_ura": "easynet:///r/example/agent/test.callee",
+            "kind": "self+identity",
+            "authority_ura": "easynet:///r/example/agent/test.callee",
         },
         "ability_binding": "easynet:///r/example/ability/test.runtime.execute",
         "subject_ref": {
@@ -102,10 +102,10 @@ def canonical_runtime_receipt(
         "runtime_env": "python-test",
         "authority_proof": {
             "proof_type": "admission",
-            "binding_kind": "self",
+            "binding_kind": "self+identity",
             "binding": {
-                "kind": "self",
-                "principal_ura": "easynet:///r/example/agent/test.callee",
+                "kind": "self+identity",
+                "authority_ura": "easynet:///r/example/agent/test.callee",
             },
             "proof_payload_base64": base64.b64encode(authority_payload).decode("ascii"),
             "proof_hash_hex": hashlib.sha256(authority_payload).hexdigest(),

@@ -34,6 +34,7 @@ from typing import Any, Literal, Union
 
 from ._json import dumps_wire
 from .errors import InvalidArgument, SchemaError
+from .frame import StreamFrame
 
 __all__ = ["PARAMETER_ORDER_KEY", "VAR_POSITIONAL_KEY", "DerivedSignature", "derive"]
 
@@ -167,10 +168,13 @@ def derive(fn: Any, *, context_type: type | None = None) -> DerivedSignature:
         # host can re-expand it into *args when calling the function.
         input_schema[VAR_POSITIONAL_KEY] = var_positional
 
-    is_stream = inspect.isgeneratorfunction(fn) or inspect.isasyncgenfunction(fn)
-    output_schema = _output_schema(
-        hints.get("return", inspect.Parameter.empty), name, is_stream
+    return_annotation = hints.get("return", inspect.Parameter.empty)
+    is_stream = (
+        inspect.isgeneratorfunction(fn)
+        or inspect.isasyncgenfunction(fn)
+        or _stream_chunk_type(return_annotation) is not None
     )
+    output_schema = _output_schema(return_annotation, name, is_stream)
     return DerivedSignature(
         input_schema=input_schema,
         output_schema=output_schema,
@@ -263,6 +267,12 @@ def _to_schema(annotation: Any, fn_name: str, param_name: str) -> dict[str, Any]
         return dict(_SCALARS[annotation])
     if annotation in _BARE_CONTAINERS:
         return dict(_BARE_CONTAINERS[annotation])
+    if annotation is StreamFrame:
+        return {
+            "type": "string",
+            "contentEncoding": "binary",
+            "x-easyremote-dynamic-content-type": True,
+        }
 
     origin = typing.get_origin(annotation)
     args = typing.get_args(annotation)

@@ -1,10 +1,8 @@
 """Configuration and daemon discovery (SPEC §5.10).
 
-The zero-config chain: ``Client()`` → ``control.json`` → ``daemon.sock``;
-identity → ``credentials.json``. This module owns only path resolution
-and raw JSON loading with actionable errors — the *meaning* of those
-files (which fields exist, what they imply) belongs to the consumers
-that the P0 link verification has validated against a live daemon.
+The zero-config chain is ``Client()`` → SDK environment → daemon runtime.
+This module owns product path overrides and public error projection; the SDK
+owns discovery and interpretation of daemon state, including paired identity.
 """
 
 from __future__ import annotations
@@ -138,28 +136,37 @@ def read_control() -> dict[str, Any]:
 
 
 def read_credentials() -> dict[str, Any]:
-    """Load the pairing-issued identity file.
+    """Return the SDK-projected public paired identity metadata.
 
     Raises:
         Unavailable: with reason ``not_paired`` when the file is absent —
             identity only exists after a one-time `easynet pair`.
     """
     projection = runtime_identity_projection()
+    user_id: object = None
+    if projection.principal:
+        principal = easynet_sdk.parse_ura(projection.principal)
+        user_id = principal.components.get("user_id")
     return {
         "realm": projection.realm,
         "node_id": projection.runtime_instance_id,
-        "username": projection.principal,
+        "username": projection.principal_display_name or None,
+        "user_id": str(user_id) if isinstance(user_id, str) else None,
         "hub_endpoint": projection.control_plane_endpoint,
     }
 
 
 def runtime_identity_projection() -> easynet_sdk.RuntimeIdentityProjection:
     current = settings()
-    path = current.credentials_path
     try:
-        return sdk_environment().runtime_identity_projection(path)
+        return sdk_environment().paired_runtime_identity_projection(
+            current.credentials_path
+        )
     except easynet_sdk.SDKError as exc:
-        raise _runtime_identity_projection_error(path, exc) from exc
+        raise _runtime_identity_projection_error(
+            current.credentials_path,
+            exc,
+        ) from exc
 
 
 def _default_runtime_state_root() -> Path:

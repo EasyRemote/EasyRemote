@@ -403,10 +403,14 @@ class AbilityControl:
         scope: AbilityListScope = "realm",
     ) -> builtins.list[AbilityRecord]:
         """List abilities owned by this paired user across catalogue rows."""
-        user = user_id if user_id is not None else self._client._who().username
+        user = (
+            user_id
+            if user_id is not None
+            else self._client._who().paired_user_id
+        )
         if not user or not user.strip():
             raise InvalidArgument(
-                "user_id is required because credentials have no username",
+                "user_id is required because there is no paired User identity",
                 reason="missing_user_id",
             )
         return self.list(user_id=user.strip(), scope=scope)

@@ -210,6 +210,32 @@ def test_async_generator_is_stream():
     assert derive(fn).is_stream
 
 
+def test_ordinary_function_returning_iterator_is_stream():
+    from collections.abc import Iterator
+
+    def fn(n: int) -> Iterator[int]:
+        return iter(range(n))
+
+    signature = derive(fn)
+    assert signature.is_stream
+    assert signature.output_schema == {"type": "integer"}
+
+
+def test_typed_media_generator_declares_dynamic_binary_frames():
+    from collections.abc import Iterator
+
+    from easyremote import StreamFrame
+
+    def fn() -> Iterator[StreamFrame]:
+        yield StreamFrame(b"jpeg", "image/jpeg")
+
+    assert derive(fn).output_schema == {
+        "type": "string",
+        "contentEncoding": "binary",
+        "x-easyremote-dynamic-content-type": True,
+    }
+
+
 # -- context injection ----------------------------------------------------------
 
 

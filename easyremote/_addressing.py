@@ -233,10 +233,11 @@ class AbilityAddressResolver:
 
         verb = function.rsplit(".", 1)[-1]
         if node is not None:
+            execution_host = self._device_execution_host(identity, node)
             owner = self._sdk_call(
                 lambda: self._addressing.device_agent_ura(
-                    identity.realm,
-                    node,
+                    execution_host.realm,
+                    execution_host.display_id,
                     str(SystemAgentId.ABILITY_MANAGEMENT),
                 ),
                 reason="invalid_system_agent_owner",
@@ -255,6 +256,33 @@ class AbilityAddressResolver:
             identity.system_agent_ura(str(SystemAgentId.ABILITY_MANAGEMENT)),
             verb,
         )
+
+    def _device_execution_host(
+        self,
+        identity: LocalIdentity,
+        node: str,
+    ) -> easynet_sdk.AddressingProjection:
+        candidate = node.strip()
+        if not candidate:
+            raise InvalidArgument(
+                "device execution host must not be empty",
+                reason="invalid_device_execution_host",
+            )
+        try:
+            projection = self._addressing.parse_ura(candidate)
+        except easynet_sdk.SDKError:
+            device_ura = self._addressing.device_ura(identity.realm, candidate)
+            projection = self._addressing.parse_ura(device_ura)
+        if (
+            projection.kind != "device"
+            or not projection.realm
+            or not projection.display_id
+        ):
+            raise InvalidArgument(
+                f"execution host {node!r} must be a Device URA or device id",
+                reason="invalid_device_execution_host",
+            )
+        return projection
 
     def _resolved_short_name(
         self,
@@ -318,6 +346,19 @@ class AbilityAddressResolver:
             projection = self._addressing.project_ability_ura(ability_ura)
             projected_owner_ura = projection.owner_ura
         except easynet_sdk.SDKError as exc:
+            try:
+                parsed = self._addressing.parse_ura(ability_ura)
+            except easynet_sdk.SDKError:
+                parsed = None
+            if parsed is not None and parsed.kind == "ability":
+                owner_id = parsed.components.get("owner_id")
+                if isinstance(owner_id, str) and owner_id.startswith("device."):
+                    raise InvalidArgument(
+                        "Device-owned public Ability URAs are obsolete; use a"
+                        " SystemAgent-owned descriptor or a device execution-host"
+                        " handle",
+                        reason="device_is_not_ability_owner",
+                    ) from exc
             raise InvalidArgument(
                 f"invalid Ability URA {ability_ura!r}: {exc}",
                 reason="invalid_ability_ura",
@@ -360,7 +401,10 @@ class AbilityAddressResolver:
         try:
             self._addressing.project_ability_ura(value.strip())
         except easynet_sdk.SDKError:
-            return False
+            try:
+                return str(self._addressing.parse_ura(value.strip()).kind) == "ability"
+            except easynet_sdk.SDKError:
+                return False
         return True
 
     def is_owner_ura(self, value: str) -> bool:

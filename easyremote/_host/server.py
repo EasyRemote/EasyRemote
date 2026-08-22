@@ -1,17 +1,4 @@
-"""The warm host: a Unix-socket server keeping registered functions resident.
-
-Wire protocol (one JSON line in, many JSON lines out, UTF-8):
-
-    -> {"request": {"fn": "<qualified>", "args": {...}, "caller": "..."}}
-    <- {"stream_item": <json>, "seq": 0}
-    <- {"terminal": {"output_hash": "sha256:<hex>", "frames": 1}}
-    <- {"error": {"kind": "...", "reason": "...", "message": "..."}}
-
-``args`` is the host_stream stdin payload verbatim — real JSON types,
-so functions receive their keyword arguments without shell-template
-re-typing. ``bytes`` parameters are the one schema-driven exception:
-they travel as base64 strings (contentEncoding) and are decoded here.
-"""
+"""Warm Unix-socket host for versioned typed binary server streams."""
 
 from __future__ import annotations
 
@@ -30,11 +17,10 @@ import easynet_sdk
 
 from .. import _codec
 from .._context_dispatch import dispatcher_from_parent_receipt
-from .._json import dumps_wire
 from ..context import Context, ContextChildDispatcher
 from ..errors import InternalError, InvalidArgument, RemoteError
 from ..schema import PARAMETER_ORDER_KEY, VAR_POSITIONAL_KEY, DerivedSignature
-from .protocol import HostFrame, HostRequest, HostSession
+from .protocol import HostFrame, HostRequest, HostSession, error_frame
 
 __all__ = ["HostServer", "HostedFunction"]
 
@@ -62,14 +48,23 @@ class HostedFunction:
         object.__setattr__(self, "_inspect_signature", inspect.signature(self.fn))
 
     def call(self, args: dict[str, Any], context: Any = None) -> Any:
+        return _codec.to_jsonable(self.call_frame(args, context))
+
+    def call_frame(self, args: dict[str, Any], context: Any = None) -> Any:
+        """Execute once without erasing typed media frame information."""
+
         pos, kwargs = self._call_args(args, context)
         result = self.fn(*pos, **kwargs)
         if inspect.iscoroutine(result):
             result = asyncio.run(result)
-        return _codec.to_jsonable(result)
+        return result
 
     def stream(self, args: dict[str, Any], context: Any = None) -> Iterator[Any]:
-        """Yield each frame of a generator ability, JSON-encoded.
+        for frame in self.stream_frames(args, context):
+            yield _codec.to_jsonable(frame)
+
+    def stream_frames(self, args: dict[str, Any], context: Any = None) -> Iterator[Any]:
+        """Yield each frame of a generator ability.
 
         Sync and async generators are both supported; an async generator
         is drained on a private event loop so the per-frame contract is
@@ -79,11 +74,12 @@ class HostedFunction:
         """
         pos, kwargs = self._call_args(args, context)
         gen = self.fn(*pos, **kwargs)
-        if inspect.isasyncgen(gen):
+        if inspect.iscoroutine(gen):
+            gen = asyncio.run(gen)
+        if inspect.isasyncgen(gen) or hasattr(gen, "__aiter__"):
             yield from _drain_async_gen(gen)
         else:
-            for frame in gen:
-                yield _codec.to_jsonable(frame)
+            yield from gen
 
     def _call_args(
         self, args: dict[str, Any], context: Any
@@ -115,7 +111,24 @@ class HostedFunction:
         `*args`, everything stays keyword."""
         var_positional = self.signature.input_schema.get(VAR_POSITIONAL_KEY)
         if var_positional is None or var_positional not in kwargs:
-            return (), kwargs
+            rest = dict(kwargs)
+            positional: list[Any] = []
+            for parameter in self._inspect_signature.parameters.values():
+                if parameter.kind is not inspect.Parameter.POSITIONAL_ONLY:
+                    continue
+                if self.signature.takes_context and parameter.name not in rest:
+                    continue
+                if parameter.name in rest:
+                    positional.append(rest.pop(parameter.name))
+                elif parameter.default is not inspect.Parameter.empty:
+                    positional.append(parameter.default)
+                else:
+                    raise InvalidArgument(
+                        f"'{self.name}' missing required positional-only argument"
+                        f" '{parameter.name}'",
+                        reason="argument_mismatch",
+                    )
+            return tuple(positional), rest
         rest = dict(kwargs)
         tail = rest.pop(var_positional)
         if not isinstance(tail, (list, tuple)):
@@ -133,12 +146,12 @@ class HostedFunction:
             if name in rest:
                 pos.append(rest.pop(name))
                 continue
-            parameter = self._inspect_signature.parameters.get(name)
+            leading_parameter = self._inspect_signature.parameters.get(name)
             if (
-                parameter is not None
-                and parameter.default is not inspect.Parameter.empty
+                leading_parameter is not None
+                and leading_parameter.default is not inspect.Parameter.empty
             ):
-                pos.append(parameter.default)
+                pos.append(leading_parameter.default)
                 continue
             raise InvalidArgument(
                 f"'{self.name}' missing required positional argument '{name}'"
@@ -274,12 +287,8 @@ class HostServer:
 
     def _serve_connection(self, connection: socket.socket) -> None:
         with connection:
-            reader = connection.makefile("r", encoding="utf-8")
-            line = reader.readline()
-            if not line:
-                return
             try:
-                session = HostSession.from_envelope(line)
+                session = HostSession.receive(connection)
             except InvalidArgument as exc:
                 self._send_error(
                     connection,
@@ -291,37 +300,27 @@ class HostServer:
             self._serve_stream(connection, session)
 
     def _send_frame(self, connection: socket.socket, frame: HostFrame) -> None:
-        connection.sendall(
-            (dumps_wire(frame.wire, what="host_stream frame") + "\n").encode("utf-8")
-        )
+        connection.sendall(frame.to_bytes())
 
     def _send_error(
         self, connection: socket.socket, kind: str, reason: str, message: str
     ) -> None:
-        self._send_frame(
-            connection,
-            HostFrame({"error": {"kind": kind, "reason": reason, "message": message}}),
-        )
+        self._send_frame(connection, error_frame(kind, reason, message))
 
     def _serve_stream(self, connection: socket.socket, session: HostSession) -> None:
-        """Stream a generator ability's frames per the host_stream wire.
-
-        Emits `{"stream_item", "seq"}` per frame with a rolling hash
-        folded in `seq` order, then a single `{"terminal"}` carrying the
-        final `output_hash` and frame count — or a single `{"error"}` if
-        the ability is missing, mis-typed, or raises. terminal and error
-        are mutually exclusive and each sent at most once.
-        """
+        """Run one function and emit typed frames to exactly one terminal."""
         request = session.request
         name = request.function
         args = request.args
         hosted = self._functions.get(name) if isinstance(name, str) else None
         if hosted is None:
-            self._send_error(
+            self._send_frame(
                 connection,
-                InvalidArgument.KIND,
-                "not_found",
-                f"no function '{name}' on this node",
+                session.fail(
+                    InvalidArgument.KIND,
+                    "not_found",
+                    f"no function '{name}' on this node",
+                ),
             )
             return
         # The host_stream wire serves EVERY ability: generators stream
@@ -331,11 +330,13 @@ class HostServer:
         # carry arbitrary JSON args or the caller identity.
         sig = hosted.signature
         if not isinstance(args, dict):
-            self._send_error(
+            self._send_frame(
                 connection,
-                InvalidArgument.KIND,
-                "bad_request",
-                "args must be a JSON object",
+                session.fail(
+                    InvalidArgument.KIND,
+                    "bad_request",
+                    "args must be a JSON object",
+                ),
             )
             return
 
@@ -346,21 +347,26 @@ class HostServer:
 
         try:
             frames = (
-                hosted.stream(args, context=context)
+                hosted.stream_frames(args, context=context)
                 if sig.is_stream
-                else iter([hosted.call(args, context=context)])
+                else iter([hosted.call_frame(args, context=context)])
             )
             for frame in frames:
                 self._send_frame(connection, session.emit(frame))
         except RemoteError as exc:
-            self._send_error(connection, exc.kind, exc.reason, str(exc))
+            self._send_frame(connection, session.fail(exc.kind, exc.reason, str(exc)))
             return
         except Exception as exc:
-            self._send_error(
+            error = exc
+            if isinstance(exc, InvalidArgument):
+                kind = exc.kind
+                reason = exc.reason
+            else:
+                kind = InternalError.KIND
+                reason = "function_raised"
+            self._send_frame(
                 connection,
-                InternalError.KIND,
-                "function_raised",
-                f"{type(exc).__name__}: {exc}",
+                session.fail(kind, reason, f"{type(error).__name__}: {error}"),
             )
             return
         finally:
@@ -384,8 +390,7 @@ class HostServer:
 
 
 def _drain_async_gen(gen: Any) -> Iterator[Any]:
-    """Drain an async generator on a private event loop, yielding each
-    frame JSON-encoded — identical per-frame contract to the sync path."""
+    """Drain an async generator on a private event loop."""
     loop = asyncio.new_event_loop()
     try:
         iterator = gen.__aiter__()
@@ -394,7 +399,7 @@ def _drain_async_gen(gen: Any) -> Iterator[Any]:
                 frame = loop.run_until_complete(iterator.__anext__())
             except StopAsyncIteration:
                 break
-            yield _codec.to_jsonable(frame)
+            yield frame
     finally:
         loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()

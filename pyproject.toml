@@ -34,7 +34,7 @@ requires-python = ">=3.11"
 # SDK owns Invocation/addressing/transport/error primitives and its lower-layer
 # protocol implementation.
 dependencies = [
-    "easynet-sdk>=0.91.30",
+    "easynet-sdk>=0.91.31,<0.92",
 ]
 
 [project.scripts]

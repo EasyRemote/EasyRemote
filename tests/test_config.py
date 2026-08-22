@@ -2,7 +2,6 @@
 
 import json
 
-import easynet_sdk
 import pytest
 
 import easyremote.config as config
