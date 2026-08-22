@@ -14,7 +14,7 @@ Author: Silan Hu (silan.hu@u.nus.edu)
 
 The core runtime intentionally has one SDK dependency:
 
-- `easynet-sdk>=0.91.30`
+- `easynet-sdk>=0.91.31,<0.92`
 
 The native runtime is provided by EasyNet CLI through `easynet-sdk`. Users
 either install EasyNet CLI so the SDK can discover the daemon/library, or

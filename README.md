@@ -182,6 +182,42 @@ GPUCluster(Client(invocation_policy=policy)).ai_inference("hi")
 Client precedence is `@remote(client=...)` > `self.client` > `self._client`.
 See [`examples/05_remote_on_class.py`](examples/05_remote_on_class.py).
 
+### Multimodal binary streams
+
+Yield `StreamFrame` to preserve the original media bytes and content type. The
+same `@remote` stub consumes the stream: JSON frames remain ordinary Python
+values, while media frames remain `StreamFrame` objects.
+
+```python
+from collections.abc import Iterator
+from easyremote import ComputeNode, StreamFrame, remote
+
+node = ComputeNode()
+
+@node.register
+def camera(frames: int) -> Iterator[StreamFrame]:
+    for jpeg in capture_jpegs(frames):
+        yield StreamFrame(jpeg, "image/jpeg")
+
+@remote
+def camera(frames: int) -> Iterator[StreamFrame]: ...
+
+for frame in camera.stream(30):
+    consume(frame.payload, frame.content_type)
+```
+
+The resident host uses `binary_v1`: a bounded, length-prefixed Unix-socket
+protocol whose rolling hash covers sequence, content type, and exact payload
+bytes. Axon still owns the signed Invocation, ordering, cancellation and
+receipt-backed terminal. Run the provider-boundary benchmark with:
+
+```bash
+uv run python benchmarks/host_stream_binary.py --frames 256 --frame-bytes 1048576
+```
+
+Its result is not an end-to-end network SLO; latency and bandwidth across two
+devices still depend on deployment and must be measured there.
+
 ### Owner handles — the mirror of `@node.register`
 
 The serving side groups functions on a `ComputeNode` and registers them with
@@ -306,7 +342,8 @@ v2 is a clean reimplementation on the EasyNet stack ([EasyNet-Axon](https://gith
 | Async functions / generators (sync + async) | ✅ |
 | Server-side Context (read-only caller identity) | ✅ `ctx.caller` + `ctx.invocation_id` injected from the host_stream envelope |
 | Server-side Context composition (`ctx.call` child invocations) | ⏳ needs the parent-receipt-URA path for causal chaining (RFC-007/008) |
-| Warm-host latency target (`<50ms`) | 🧪 not claimed in this release; requires a live-daemon benchmark |
+| Resident-host binary stream | ✅ raw payload + content type, bounded backpressure, verified terminal |
+| End-to-end latency / bandwidth SLO | 🧪 deployment-specific; benchmark before claiming a number |
 | Cryptographic receipt-chain verification | ⏳ pending the full-receipt fetch path (RFC-007/008) |
 
 ## Attribution

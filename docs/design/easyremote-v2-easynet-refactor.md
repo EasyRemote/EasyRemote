@@ -112,7 +112,7 @@ canonical 文案全文见附录 A（README hero / landing page 母版）。
 
 facade 只允许依赖以下接口；新增依赖需修订本节。完整盘点见附录 B。
 
-### 3.1 libeasynet_cli C ABI v3（`EasyNet-Cli/include/easynet_cli.h`，15 函数）
+### 3.1 历史快照：libeasynet_cli C ABI v3（当前实现使用 ABI v7）
 
 daemon 生命周期 4（start/stop/status/invocation_endpoint）、客户端会话 3
 （init/shutdown/open_client）、一元 1（invocation_invoke）、服务端流 2
@@ -622,7 +622,7 @@ coroutine；`Stream` 同时实现 `__iter__` 与 `__aiter__`；
    暴露，不构造 receipt URA。
 4. **节点负载指标**：resource-aware 选点数据源，Cli PR-3（§9）。
 
-### 6.2 P0 实测结论（2026-06-11，daemon v0.64.8 / ABI v3 重建产物）
+### 6.2 历史 P0 实测结论（2026-06-11，daemon v0.64.8 / ABI v3）
 
 全链路活体验证**通过**：identity（credentials→device URA）→ 七元组
 编码 → C ABI → daemon.sock gRPC → dispatch → 响应解码，`demo.discover`
@@ -814,7 +814,7 @@ coroutine；`Stream` 同时实现 `__iter__` 与 `__aiter__`；
 
 ## 附录 B：底座接口完整清单（reference，2026-06-11 自磁盘盘点）
 
-### B.1 libeasynet_cli C ABI v3（15 函数）
+### B.1 历史接口清单：libeasynet_cli C ABI v3（当前实现使用 ABI v7）
 
 | 函数 | 作用 |
 |---|---|
