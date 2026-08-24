@@ -1,8 +1,8 @@
 """Integration suite against a live easynet-daemon (SPEC §10.2).
 
-Read-only by design: it discovers and invokes query abilities, never
-registers or mutates daemon state — the register→invoke loop is part
-of the (manual, cleaned-up) P0 probe, not CI.
+Read-only by default: the ordinary integration cases discover and invoke query
+abilities. The raw-stream case performs a bounded register→invoke→uninstall
+cycle only when ``EASYREMOTE_LIVE_RAW_STREAM=1`` is explicitly set.
 
 Activation requires all of:
 - EASYNET_CLI_LIB pointing at a compatible EasyNet-Cli SDK native library, and
@@ -13,6 +13,9 @@ Otherwise every test here skips with the reason shown.
 
 import json
 import os
+import shutil
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import easynet_sdk
@@ -84,6 +87,61 @@ def test_sdk_transport_connects_to_live_daemon():
     assert feature_set.abi_version >= 4
     with Transport.connect():
         pass
+
+
+def test_live_v8_raw_stream_preserves_exact_frames():
+    if os.environ.get("EASYREMOTE_LIVE_RAW_STREAM") != "1":
+        pytest.skip(
+            "set EASYREMOTE_LIVE_RAW_STREAM=1 for the mutating raw-stream smoke"
+        )
+
+    from easyremote import (
+        Client,
+        ComputeNode,
+        FreshRoot,
+        ResolvedTargetSubject,
+        StreamFrame,
+    )
+    from easyremote.config import sdk_environment, settings
+
+    environment = sdk_environment()
+    try:
+        features = environment.feature_set()
+    finally:
+        environment.close()
+    assert features.abi_version == 7
+    assert features.axon_pb is True
+    assert features.symbols.get("stream_raw_payload_v8") is True
+
+    payloads = [bytes(range(256)) * 64, b"\x00\xffh264\x00frame", b""]
+    runtime_root = settings().control_path.parent
+    root = Path(tempfile.mkdtemp(prefix="easyremote-v8-", dir=runtime_root))
+    namespace = f"erv8smoke{os.getpid()}"
+    node = ComputeNode(namespace=namespace, abilities_dir=root / "abilities")
+
+    @node.register(name="raw_frames")
+    def raw_frames() -> Iterator[StreamFrame]:
+        for payload in payloads:
+            yield StreamFrame(payload, "application/vnd.easynet.raw-smoke")
+
+    try:
+        node.start()
+        ability_ura = node.abilities[0].ura
+        assert ability_ura is not None
+        with Client(
+            timeout=20.0,
+            invocation_policy=FreshRoot(ResolvedTargetSubject()),
+        ) as live:
+            received = list(live.stream(ability_ura))
+        assert received == [
+            StreamFrame(payload, "application/vnd.easynet.raw-smoke")
+            for payload in payloads
+        ]
+    finally:
+        try:
+            node.stop()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 def test_discover_round_trip_and_receipt_shape(client):
