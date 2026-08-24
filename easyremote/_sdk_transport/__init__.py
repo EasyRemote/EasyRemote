@@ -99,6 +99,24 @@ class Transport:
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
+    def open_runtime_ability_bidi(
+        self,
+        call: easynet_sdk.RuntimeCallContext,
+        ability_name: str,
+        arguments: object,
+        streams: Iterable[easynet_sdk.BidiStreamDescriptor],
+    ) -> easynet_sdk.BidiSession:
+        """Open one daemon system ability through its committed bidi descriptor."""
+        try:
+            return self._runtime_ability.open_bidi(
+                call,
+                ability_name,
+                arguments,
+                tuple(streams),
+            )
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
+
     def list_ability_descriptors(
         self,
         call: easynet_sdk.RuntimeCallContext,

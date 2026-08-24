@@ -102,7 +102,7 @@ def test_live_v8_raw_stream_preserves_exact_frames():
         ResolvedTargetSubject,
         StreamFrame,
     )
-    from easyremote.config import sdk_environment, settings
+    from easyremote.config import sdk_environment
 
     environment = sdk_environment()
     try:
@@ -114,10 +114,18 @@ def test_live_v8_raw_stream_preserves_exact_frames():
     assert features.symbols.get("stream_raw_payload_v8") is True
 
     payloads = [bytes(range(256)) * 64, b"\x00\xffh264\x00frame", b""]
-    runtime_root = settings().control_path.parent
+    # Deliberately place the package under the EasyRemote checkout rather than
+    # the daemon's cwd. Installation must stage bytes through fs.transfer; a
+    # client-authored fs/workspace ResourceRef would resolve against the wrong
+    # process root and make this live smoke fail.
+    runtime_root = Path.cwd() / "target" / "live-smoke"
+    runtime_root.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix="easyremote-v8-", dir=runtime_root))
+    short_root = Path(tempfile.mkdtemp(prefix="er-v8-link-"))
+    linked_root = short_root / "root"
+    linked_root.symlink_to(root, target_is_directory=True)
     namespace = f"erv8smoke{os.getpid()}"
-    node = ComputeNode(namespace=namespace, abilities_dir=root / "abilities")
+    node = ComputeNode(namespace=namespace, abilities_dir=linked_root / "abilities")
 
     @node.register(name="raw_frames")
     def raw_frames() -> Iterator[StreamFrame]:
@@ -141,6 +149,7 @@ def test_live_v8_raw_stream_preserves_exact_frames():
         try:
             node.stop()
         finally:
+            shutil.rmtree(short_root, ignore_errors=True)
             shutil.rmtree(root, ignore_errors=True)
 
 

@@ -29,6 +29,7 @@ RUNTIME_ROOT_CONTEXT_CONSUMERS = {
     "invocation_trace",
     "invoke_runtime_ability",
     "list_ability_descriptors",
+    "open_runtime_ability_bidi",
 }
 
 

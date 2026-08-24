@@ -1,7 +1,10 @@
 """Daemon control facade: ability catalogue/install and agent lifecycle."""
 
 import base64
+import hashlib
+import io
 import json
+import tarfile
 
 import easynet_sdk
 import pytest
@@ -62,6 +65,7 @@ class FakeTransport:
     def __init__(self, responses):
         self.responses = list(responses)
         self.invocations = []
+        self.bidi_invocations = []
         self._addressing = easynet_sdk.AddressingClient(
             easynet_sdk.AxonAddressingTransport()
         )
@@ -121,6 +125,17 @@ class FakeTransport:
 
     def invoke_runtime_ability(self, call, ability_name, arguments):
         return self._runtime_ability.invoke(call, ability_name, arguments)
+
+    def open_runtime_ability_bidi(self, call, ability_name, arguments, streams):
+        invocation = {
+            "call": call,
+            "ability_name": ability_name,
+            "arguments": arguments,
+            "streams": tuple(streams),
+            "session": _FakeBidiSession(),
+        }
+        self.bidi_invocations.append(invocation)
+        return invocation["session"]
 
     def list_ability_descriptors(
         self,
@@ -200,6 +215,49 @@ class _FakeRuntime:
         return json.dumps(response["sdk_runtime_result"]).encode()
 
 
+class _FakeBidiSession:
+    def __init__(self) -> None:
+        self.sent = []
+        self.closed = False
+
+    def send(self, frame):
+        self.sent.append(frame)
+        return frame
+
+    def receive(self, timeout=None):
+        del timeout
+        chunks = [
+            base64.b64decode(frame.payload_base64)
+            for frame in self.sent
+            if frame.kind == "binary_chunk"
+        ]
+        payload = b"".join(chunks)
+        completion = {
+            "type": "complete",
+            "bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+        return easynet_sdk.BidiFrame(
+            sequence=len(self.sent) + 1,
+            kind="receipt",
+            stream_id=1,
+            terminal=True,
+            terminal_receipt={
+                "state": "Completed",
+                "receipt_type": "completed",
+                "cleanup_complete": True,
+                "failure": None,
+                "verification": "verified",
+                "payload_base64": base64.b64encode(
+                    json.dumps(completion).encode()
+                ).decode(),
+            },
+        )
+
+    def close(self):
+        self.closed = True
+
+
 def client_with(*responses):
     transport = FakeTransport(responses)
     return Client(transport=transport, identity=IDENTITY), transport
@@ -226,8 +284,9 @@ def test_install_invokes_ability_deploy_with_resource_ref(tmp_path):
     assert wire["descriptor_ref"] == expected_descriptor_ref(
         system_ability_ura(ABILITY_MANAGER_URA, "ability.deploy")
     )
-    assert wire["subject_ura"].startswith("easynet:///r/acme/resource/device.dev-a/fs/")
-    assert wire["args"]["node_id"] == "local"
+    assert wire["subject_ura"].startswith(
+        "easynet:///r/acme/resource/device.dev-a/fs/tmp/easynet-ability-deploy/"
+    )
     assert wire["caller_ura"] == USER_URA
     assert wire["callee_ura"] == ABILITY_MANAGER_URA
     assert wire["args"]["target_ura"] == DEVICE_URA
@@ -235,8 +294,29 @@ def test_install_invokes_ability_deploy_with_resource_ref(tmp_path):
     assert ref["resource_ura"] == wire["subject_ura"]
     assert ref["owner_ura"] == DEVICE_URA
     assert ref["namespace"] == "fs"
-    assert ref["capability"] == "read"
+    assert ref["capability"] == "write"
     assert ref["revision"] == "fs-local-mapping-v1"
+    assert "node_id" not in wire["args"]
+
+    transfer = transport.bidi_invocations[0]
+    assert transfer["ability_name"] == "fs.transfer"
+    assert transfer["call"].caller_ura == USER_URA
+    assert transfer["call"].callee_ura == (
+        "easynet:///r/acme/agent/device.dev-a.locomotion"
+    )
+    assert transfer["call"].subject_ura == ref["resource_ura"]
+    assert transfer["arguments"] == {"mode": "upload", "resource_ref": ref}
+    assert transfer["streams"][0].content_type == "application/json"
+    assert transfer["session"].sent[-1].kind == "eof"
+    archive = b"".join(
+        base64.b64decode(frame.payload_base64)
+        for frame in transfer["session"].sent
+        if frame.kind == "binary_chunk"
+    )
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as bundle:
+        assert bundle.getnames() == ["ability.json"]
+        assert bundle.extractfile("ability.json").read() == b"{}"
+    assert transfer["session"].closed is True
 
 
 def test_install_forwards_process_binding_lease(tmp_path):
@@ -280,8 +360,13 @@ def test_install_resolves_named_node_to_canonical_target_ura(tmp_path):
     assert wire["callee_ura"] == (
         "easynet:///r/acme/agent/device.gpu-2.ability-management"
     )
-    assert wire["args"]["node_id"] == "gpu-2"
     assert wire["args"]["target_ura"] == "easynet:///r/acme/device/gpu-2"
+    assert wire["args"]["resource_ref"]["owner_ura"] == (
+        "easynet:///r/acme/device/gpu-2"
+    )
+    assert transport.bidi_invocations[0]["call"].callee_ura == (
+        "easynet:///r/acme/agent/device.gpu-2.locomotion"
+    )
 
 
 def test_uninstall_revokes_exact_install_binding():

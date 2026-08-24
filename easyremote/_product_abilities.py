@@ -13,6 +13,7 @@ class SystemAgentId(StrEnum):
     ABILITY_MANAGEMENT = "ability-management"
     AGENT_MANAGEMENT = "agent-management"
     AUTOMATION = "automation"
+    LOCOMOTION = "locomotion"
     RUNTIME_INTROSPECTION = "runtime-introspection"
     RUNTIME_GOVERNANCE = "runtime-governance"
 

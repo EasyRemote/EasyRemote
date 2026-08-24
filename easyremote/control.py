@@ -15,8 +15,6 @@ The important separation is:
 from __future__ import annotations
 
 import builtins
-import tempfile
-import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,9 +22,9 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import easynet_sdk
 
+from ._ability_staging import stage_ability_bundle
 from ._product_abilities import AgentAbility, SystemAgentId
 from .errors import InvalidArgument, RemoteError, Unavailable, error_from_sdk
-from .identity import LocalIdentity
 from .invocation_policy import runtime_root_context
 
 if TYPE_CHECKING:
@@ -217,11 +215,21 @@ class AbilityControl:
                 f"ability package path is not a directory: {package}",
                 reason="ability_package_not_directory",
             )
-        ref = _local_resource_ref(package, self._client._who())
+        identity = self._client._who()
+        ref = stage_ability_bundle(
+            self._client._connected(),
+            package,
+            caller_ura=identity.user_ura,
+            locomotion_callee_ura=self._system_agent_ura(
+                node_id,
+                SystemAgentId.LOCOMOTION,
+            ),
+            target_ura=target_ura,
+            timeout=self._client._timeout,
+        )
         resource_ura = str(ref["resource_ura"])
         args: dict[str, object] = {
             "resource_ref": ref,
-            "node_id": node_id,
             "target_ura": target_ura,
         }
         if binding_lease_ms is not None:
@@ -581,47 +589,6 @@ class AgentControl:
                 reason="invalid_daemon_response",
             )
         return dict(result)
-
-
-def _local_resource_ref(path: Path, identity: LocalIdentity) -> dict[str, object]:
-    absolute = path if path.is_absolute() else Path.cwd() / path
-    resolved = absolute.resolve(strict=True)
-    for label, root in (
-        ("workspace", Path.cwd()),
-        ("tmp", Path(tempfile.gettempdir())),
-        ("home", Path.home()),
-    ):
-        try:
-            relative = resolved.relative_to(root.resolve(strict=True)).as_posix()
-        except (FileNotFoundError, ValueError):
-            continue
-        if relative and all(
-            part not in {"", ".", ".."} for part in relative.split("/")
-        ):
-            owner = identity.device_ura
-            try:
-                resource = easynet_sdk.resource_ura(
-                    owner,
-                    f"fs/{label}/{relative}",
-                )
-            except easynet_sdk.SDKError as exc:
-                raise InvalidArgument(
-                    f"cannot build local resource URA: {exc}",
-                    reason="invalid_resource_path",
-                ) from exc
-            return {
-                "resource_ura": resource,
-                "owner_ura": owner,
-                "namespace": "fs",
-                "capability": "read",
-                "expires_unix_ms": int(time.time() * 1000) + 300_000,
-                "revision": "fs-local-mapping-v1",
-                "display_path": f"{label}/{relative}",
-            }
-    raise InvalidArgument(
-        f"resource path {path} is outside workspace, temp, and home roots",
-        reason="invalid_resource_path",
-    )
 
 
 def _require_ura_kind(value: str, kinds: set[str], field: str) -> None:
