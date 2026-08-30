@@ -21,6 +21,7 @@ import easynet_sdk
 from . import config
 from .control import AbilityControl, AgentControl
 from .errors import RemoteError
+from .library import install_library, list_libraries, remove_library
 from .mission import MissionControl
 
 __all__ = ["main"]
@@ -104,6 +105,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_agent(args)
     if args.command == "mission":
         return _run_mission(args)
+    if args.command == "add":
+        return _install_library(args)
+    if args.command == "library":
+        return _run_library(args)
     parser.print_usage(sys.stderr)
     return 2
 
@@ -238,6 +243,55 @@ def _run_mission(args: argparse.Namespace) -> int:
     return 2
 
 
+def _run_library(args: argparse.Namespace) -> int:
+    if args.library_command == "install":
+        return _install_library(args)
+    if args.library_command == "list":
+        libraries = list_libraries(root=args.root)
+        if args.json:
+            _print_json([_installed_library_row(item) for item in libraries])
+        else:
+            for item in libraries:
+                print(
+                    f"{item.coordinate}\trealm={item.realm}\timport={item.import_name}"
+                )
+        return 0
+    if args.library_command == "remove":
+        removed = remove_library(args.import_name, root=args.root)
+        if args.json:
+            _print_json(_installed_library_row(removed))
+        else:
+            print(f"removed: {removed.import_name}")
+        return 0
+    print("easyremote library: unknown subcommand", file=sys.stderr)
+    return 2
+
+
+def _install_library(args: argparse.Namespace) -> int:
+    installed = install_library(
+        args.manifest,
+        root=args.root,
+        alias=args.alias,
+    )
+    if args.json:
+        _print_json(_installed_library_row(installed))
+    else:
+        print(f"installed: {installed.coordinate}")
+        print(f"realm: {installed.realm}")
+        print(f"import: from {installed.import_name} import <function>")
+    return 0
+
+
+def _installed_library_row(installed: Any) -> dict[str, str]:
+    return {
+        "coordinate": installed.coordinate,
+        "realm": installed.realm,
+        "import_name": installed.import_name,
+        "version": installed.version,
+        "path": str(installed.path),
+    }
+
+
 def _print_json(value: Any) -> None:
     print(json.dumps(value, indent=2, sort_keys=True))
 
@@ -254,6 +308,14 @@ def _parser() -> argparse.ArgumentParser:
     subcommands = parser.add_subparsers(dest="command", required=True)
 
     subcommands.add_parser("doctor", help="diagnose the local EasyNet link")
+
+    add = subcommands.add_parser(
+        "add", help="install an explicit network-native library manifest"
+    )
+    add.add_argument("manifest")
+    add.add_argument("--root")
+    add.add_argument("--as", dest="alias")
+    add.add_argument("--json", action="store_true")
 
     ability = subcommands.add_parser(
         "ability", help="install and inspect daemon-published abilities"
@@ -310,6 +372,29 @@ def _parser() -> argparse.ArgumentParser:
     mission_cancel = mission_sub.add_parser("cancel", help="cancel a mission run")
     mission_cancel.add_argument("run_id")
     mission_cancel.add_argument("--json", action="store_true")
+
+    library = subcommands.add_parser(
+        "library", help="install local interfaces for network-native libraries"
+    )
+    library_sub = library.add_subparsers(dest="library_command", required=True)
+    library_install = library_sub.add_parser(
+        "install", help="materialize one explicit library manifest"
+    )
+    library_install.add_argument("manifest")
+    library_install.add_argument("--root")
+    library_install.add_argument("--as", dest="alias")
+    library_install.add_argument("--json", action="store_true")
+    library_list = library_sub.add_parser(
+        "list", help="list installed library interfaces"
+    )
+    library_list.add_argument("--root")
+    library_list.add_argument("--json", action="store_true")
+    library_remove = library_sub.add_parser(
+        "remove", help="remove one installed interface by import name"
+    )
+    library_remove.add_argument("import_name")
+    library_remove.add_argument("--root")
+    library_remove.add_argument("--json", action="store_true")
     return parser
 
 

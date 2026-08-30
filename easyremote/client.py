@@ -184,6 +184,7 @@ class CallTarget:
     metadata: Mapping[str, str] | None = None
     owner_ura: str | None = None
     invocation_policy: InvocationDerivationPolicy | None = None
+    descriptor_ref: str | None = None
 
     def __post_init__(self) -> None:
         if not self.function.strip():
@@ -219,6 +220,20 @@ class CallTarget:
             )
         if self.metadata is not None:
             object.__setattr__(self, "metadata", dict(self.metadata))
+        if self.descriptor_ref is not None and not self.descriptor_ref.strip():
+            raise InvalidArgument(
+                "target descriptor_ref must not be empty",
+                reason="empty_descriptor_ref",
+            )
+        if self.descriptor_ref is not None:
+            try:
+                projection = easynet_sdk.project_descriptor_ref(self.descriptor_ref)
+            except easynet_sdk.SDKError as exc:
+                raise InvalidArgument(
+                    f"target descriptor_ref is invalid: {exc}",
+                    reason="invalid_descriptor_ref",
+                ) from exc
+            object.__setattr__(self, "descriptor_ref", projection.descriptor_ref)
         if self.invocation_policy is not None:
             require_invocation_policy(
                 self.invocation_policy,
@@ -380,6 +395,7 @@ class Client:
             target.node,
             target.pick,
             target.owner_ura,
+            target.descriptor_ref,
         )
         prepared = self._prepare_resolved(
             target,
@@ -551,6 +567,7 @@ class Client:
         sign: bool | None = None,
         metadata: Mapping[str, str] | None = None,
         owner_ura: str | None = None,
+        descriptor_ref: str | None = None,
         invocation_policy: InvocationDerivationPolicy | None = None,
     ) -> CallTarget:
         """Build a collision-free target for one client call.
@@ -566,6 +583,7 @@ class Client:
             sign=sign,
             metadata=metadata,
             owner_ura=owner_ura,
+            descriptor_ref=descriptor_ref,
             invocation_policy=invocation_policy,
         )
 
@@ -817,6 +835,7 @@ class Client:
         node: str | None,
         pick: str | None = None,
         owner_ura: str | None = None,
+        descriptor_ref: str | None = None,
     ) -> ResolvedAbility:
         """Resolve product target selection into one SDK-owned Ability URA."""
         return self._addressing.resolve(
@@ -825,6 +844,7 @@ class Client:
             node=node,
             pick=pick,
             owner_ura=owner_ura,
+            descriptor_ref=descriptor_ref,
         )
 
     def _named_arguments(
@@ -1129,6 +1149,7 @@ class RemoteFunction:
         timeout: float | None = None,
         client: Client | None = None,
         owner_ura: str | None = None,
+        descriptor_ref: str | None = None,
         invocation_policy: InvocationDerivationPolicy | None = None,
     ) -> None:
         functools.update_wrapper(self, fn)
@@ -1142,6 +1163,7 @@ class RemoteFunction:
             node=node,
             timeout=timeout,
             owner_ura=owner_ura,
+            descriptor_ref=descriptor_ref,
             invocation_policy=invocation_policy,
         )
         self._client = client
@@ -1303,6 +1325,7 @@ def remote(
     timeout: float | None = None,
     client: Client | None = None,
     owner_ura: str | None = None,
+    descriptor_ref: str | None = None,
     invocation_policy: InvocationDerivationPolicy | None = None,
 ) -> Any:
     """Declare a typed stub for a remote capability (both decorator forms).
@@ -1324,6 +1347,7 @@ def remote(
             timeout=timeout,
             client=client,
             owner_ura=owner_ura,
+            descriptor_ref=descriptor_ref,
             invocation_policy=invocation_policy,
         )
     return RemoteFunction(
@@ -1333,6 +1357,7 @@ def remote(
         timeout=timeout,
         client=client,
         owner_ura=owner_ura,
+        descriptor_ref=descriptor_ref,
         invocation_policy=invocation_policy,
     )
 

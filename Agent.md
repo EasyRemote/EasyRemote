@@ -29,6 +29,7 @@ current behavior with a focused test before changing documentation.
 |---|---|
 | `easyremote/node.py` | `ComputeNode`, registration, package deployment, lease lifecycle |
 | `easyremote/client.py` | `Client`, `@remote`, targeting, stream and bidi facades |
+| `easyremote/library.py` | Validated network-native library manifests and local typed interface projections |
 | `easyremote/schema.py` | Python signature and JSON-schema derivation |
 | `easyremote/_host/` | Warm resident host and `binary_v1` framed execution |
 | `easyremote/_sdk_transport/` | Thin error/value adapter over public `easynet_sdk` APIs |
@@ -233,6 +234,9 @@ The user-facing surface is intentionally small:
   control facades.
 - `@remote` declares a typed client stub whose Python signature maps local
   arguments into an ability call.
+- `easyremote add <manifest>` installs a versioned, local-only Python interface
+  projection for a network-native library; imports never perform discovery or
+  copy provider implementation.
 - `StreamFrame` carries exact bytes plus a media type for multimodal
   server-stream output.
 
@@ -407,6 +411,9 @@ These are intentional until a spec and tests say otherwise:
   Use `Client.session(...)` for bidi sessions.
 - `StreamFrame` is for server-stream output. Request-side multimodal upload
   needs a separate client-stream/bidi contract.
+- Network-native library manifest v1 accepts explicit files and unary/RPC
+  exports only. Realm package resolution and stream/bidi import contracts
+  require separately owned specifications.
 - The binary host protocol is process-local Unix socket transport, not a
   network tunneling protocol.
 - The installed SDK keeps the base `runtime_abi_version()` contract at 7 and

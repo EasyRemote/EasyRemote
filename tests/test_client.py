@@ -561,7 +561,7 @@ def test_obsolete_device_owned_ability_ura_is_rejected():
 
     with pytest.raises(InvalidArgument) as exc_info:
         client.call(ability_ura, quarter="Q2")
-    assert exc_info.value.reason == "device_is_not_ability_owner"
+    assert exc_info.value.reason == "ability_owner_not_publisher"
     assert transport.invocations == []
 
 
@@ -1998,6 +1998,31 @@ def test_discovered_descriptor_ref_is_used_for_canonical_ura_call():
     assert transport._descriptor_resolver.requests == [], (
         "discovered descriptor_ref must bypass local diagnostics resolution"
     )
+
+
+def test_explicit_target_descriptor_ref_pins_the_remote_contract():
+    ability_ura = (
+        "easynet:///r/acme/ability/"
+        "system-agent.dev-a.ability-management.er.fn"
+    )
+    descriptor_ref = expected_descriptor_ref(ability_ura, version="2.4.0")
+    client, transport = make_client(responses=[ok_response({"source": "pinned"})])
+
+    result = client.call(
+        Client.target("fn", descriptor_ref=descriptor_ref),
+        x=1,
+    )
+
+    assert result == {"source": "pinned"}
+    assert transport.invocations[0]["descriptor_ref"] == descriptor_ref
+    assert transport._descriptor_resolver.requests == []
+
+
+def test_explicit_target_descriptor_ref_rejects_noncanonical_contract():
+    with pytest.raises(InvalidArgument) as exc_info:
+        Client.target("fn", descriptor_ref="descriptor:fn-v1")
+
+    assert exc_info.value.reason == "invalid_descriptor_ref"
 
 
 def test_round_robin_alternates_device_candidates():

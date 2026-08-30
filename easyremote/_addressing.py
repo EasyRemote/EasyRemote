@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 
 import easynet_sdk
@@ -211,9 +211,15 @@ class AbilityAddressResolver:
         node: str | None,
         pick: str | None,
         owner_ura: str | None = None,
+        descriptor_ref: str | None = None,
     ) -> ResolvedAbility:
         if owner_ura is not None:
-            return self._resolve_owner(function, owner_ura)
+            resolved = self._resolve_owner(function, owner_ura)
+            return (
+                replace(resolved, descriptor_ref=descriptor_ref)
+                if descriptor_ref is not None
+                else resolved
+            )
         function = self.namespaced(function)
         if self.is_ability_ura(function):
             if node is not None or pick is not None:
@@ -225,7 +231,8 @@ class AbilityAddressResolver:
             return self.from_ability_ura(
                 function,
                 input_schema=self.cache.schema_for_ura(function),
-                descriptor_ref=self.cache.descriptor_ref_for_ura(function),
+                descriptor_ref=descriptor_ref
+                or self.cache.descriptor_ref_for_ura(function),
                 argument_label=function,
                 callee_ura=self.cache.owner_for_ura(function),
                 call_carrier=self.cache.carrier_for_ura(function),
@@ -242,19 +249,33 @@ class AbilityAddressResolver:
                 ),
                 reason="invalid_system_agent_owner",
             )
-            return self._resolved_short_name(
+            resolved = self._resolved_short_name(
                 function,
                 owner,
                 verb,
             )
+            return (
+                replace(resolved, descriptor_ref=descriptor_ref)
+                if descriptor_ref is not None
+                else resolved
+            )
         if pick is not None:
             selected = self._pick(verb, pick)
             if selected is not None:
-                return selected
-        return self._resolved_short_name(
+                return (
+                    replace(selected, descriptor_ref=descriptor_ref)
+                    if descriptor_ref is not None
+                    else selected
+                )
+        resolved = self._resolved_short_name(
             function,
             identity.system_agent_ura(str(SystemAgentId.ABILITY_MANAGEMENT)),
             verb,
+        )
+        return (
+            replace(resolved, descriptor_ref=descriptor_ref)
+            if descriptor_ref is not None
+            else resolved
         )
 
     def _device_execution_host(
@@ -348,13 +369,12 @@ class AbilityAddressResolver:
         except easynet_sdk.SDKError as exc:
             if (
                 easynet_sdk.addressing_error_reason(exc)
-                is easynet_sdk.AddressingErrorReason.DEVICE_OWNED_ABILITY_MIGRATION
+                is easynet_sdk.AddressingErrorReason.ABILITY_OWNER_NOT_PUBLISHER
             ):
                 raise InvalidArgument(
-                    "Device-owned public Ability URAs are obsolete; use a"
-                    " SystemAgent-owned descriptor or a device execution-host"
-                    " handle",
-                    reason="device_is_not_ability_owner",
+                    "The Ability owner cannot publish public abilities; use an"
+                    " Agent, device-sponsored SystemAgent, or Authority owner",
+                    reason="ability_owner_not_publisher",
                 ) from exc
             raise InvalidArgument(
                 f"invalid Ability URA {ability_ura!r}: {exc}",
@@ -400,7 +420,7 @@ class AbilityAddressResolver:
         except easynet_sdk.SDKError as exc:
             return (
                 easynet_sdk.addressing_error_reason(exc)
-                is easynet_sdk.AddressingErrorReason.DEVICE_OWNED_ABILITY_MIGRATION
+                is easynet_sdk.AddressingErrorReason.ABILITY_OWNER_NOT_PUBLISHER
             )
         return True
 

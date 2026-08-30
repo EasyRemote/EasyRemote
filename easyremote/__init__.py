@@ -56,9 +56,21 @@ from .invocation_policy import (
     InvocationSubjectPolicy,
     ResolvedTargetSubject,
 )
+from .library import (
+    InstalledLibrary,
+    LibraryExport,
+    LibraryManifest,
+    activate_library_root,
+    install_library,
+    library_root,
+    list_libraries,
+    remove_library,
+)
 from .mission import MissionControl
 from .node import ComputeNode
 from .pipeline import MissionRun, Pipeline
+
+activate_library_root()
 
 __all__ = [
     "AbilityControl",
@@ -83,11 +95,14 @@ __all__ = [
     "FreshCausal",
     "FreshContextChild",
     "FreshRoot",
+    "InstalledLibrary",
     "InternalError",
     "InvalidArgument",
     "Invocation",
     "InvocationDerivationPolicy",
     "InvocationSubjectPolicy",
+    "LibraryExport",
+    "LibraryManifest",
     "MissionControl",
     "MissionRun",
     "PermissionDenied",
@@ -106,7 +121,12 @@ __all__ = [
     "StreamFrame",
     "Unavailable",
     "__version__",
+    "activate_library_root",
     "agent",
     "configure",
+    "install_library",
+    "library_root",
+    "list_libraries",
     "remote",
+    "remove_library",
 ]

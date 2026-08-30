@@ -78,15 +78,17 @@ pip install --pre --upgrade easyremote
 # 一次性身份配置（为签名调用与回执链建立身份）。
 # 使用 EasyNet-Cli 运维入口启动 device 或 Hub runtime。
 # `node.serve()` 只连接该 operator-managed runtime。
-easynet pair
+easynet login
+easynet device join <pairing-token>
+easynet runtime start
 easyremote doctor                            # 可选：逐项体检运行时
 ```
 
-之后就是上面的 12 行。首次运行若未配对，`node.serve()` 不会伪造身份；它会清楚
-打印唯一需要的操作 `easynet pair` 后退出。配对完成后，EasyNet operator 管理的
-runtime 必须已经运行。同一脚本会连接 runtime、启动 Python warm host，并发布
-全部已注册函数。配对提供 caller identity 与签名；选择 device 只决定函数在哪里
-执行，不会向调用者开放整台机器。
+之后就是上面的 12 行。首次运行若未配对，`node.serve()` 不会伪造身份。先执行
+`easynet login` 和 `easynet device join <pairing-token>`，再通过
+`easynet runtime start` 启动或连接由 EasyNet operator 管理的 Runtime。Provider
+会连接该 Runtime、启动 Python warm host，并发布全部已注册函数。配对提供 caller
+identity 与签名；选择 device 只决定函数在哪里执行，不会向调用者开放整台机器。
 
 `examples/` 提供可直接运行的 node/client 配对：
 
@@ -112,6 +114,7 @@ feature snippet，而是彼此独立的 uv 应用：
 | [数据驻留 AI](gallery/projects/05_local_data_residency_ai/) | 原始记录留在本地，只释放有界投影 |
 | [设备摄像头](gallery/projects/06_runtime_device_capability_injection/) | 不开放设备，流式读取有限媒体帧 |
 | [机器人动作](gallery/projects/07_claude_code_robot_commander_mcp/) | 给 Agent 一项受约束、可归因的动作，而非机器控制权 |
+| [网络原生库](gallery/projects/08_network_native_python_library/) | 安装本地类型接口，同时让 Provider 实现继续留在远端 |
 
 每个项目都有自己的 `pyproject.toml`、`uv.lock`、provider、caller 和精炼的 case
 paper；入口见 [Gallery index](gallery/projects/README.md)。

@@ -1,5 +1,7 @@
 """`easyremote doctor`: check ladder and actionable failures."""
 
+import json
+
 import pytest
 
 import easyremote.config as config
@@ -256,3 +258,53 @@ def test_mission_run_accepts_stdin(monkeypatch, capsys):
     assert main(["mission", "run", "-", "--label", "stdin"]) == 0
     assert calls == [("eal", "stdin")]
     assert "run_id: run-stdin" in capsys.readouterr().out
+
+
+def test_library_install_list_and_remove_commands(tmp_path, capsys):
+    manifest = tmp_path / "library.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "format": "easyremote.library/v1",
+                "realm": "easynet.run",
+                "publisher": "silan",
+                "package": "lotus",
+                "version": "1.0.0",
+                "exports": [
+                    {
+                        "python_name": "semantic_filter",
+                        "ability": "lotus.semantic_filter",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {"text": {"type": "string"}},
+                            "required": ["text"],
+                        },
+                        "output_schema": {"type": "boolean"},
+                    }
+                ],
+            }
+        )
+    )
+    root = tmp_path / "libraries"
+
+    assert main(["add", str(manifest), "--root", str(root)]) == 0
+    output = capsys.readouterr().out
+    assert "installed: @silan/lotus@1.0.0" in output
+    assert "from easyremote.silan.lotus import <function>" in output
+
+    assert main(["library", "list", "--root", str(root)]) == 0
+    assert "import=easyremote.silan.lotus" in capsys.readouterr().out
+
+    assert (
+        main(
+            [
+                "library",
+                "remove",
+                "easyremote.silan.lotus",
+                "--root",
+                str(root),
+            ]
+        )
+        == 0
+    )
+    assert "removed: easyremote.silan.lotus" in capsys.readouterr().out

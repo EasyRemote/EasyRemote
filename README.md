@@ -78,18 +78,20 @@ pip install --pre --upgrade easyremote
 # One-time identity setup (signs invocations and receipt chains).
 # Start the device or Hub runtime with EasyNet-Cli operator tooling.
 # `node.serve()` connects to that operator-managed runtime.
-easynet pair
+easynet login
+easynet device join <pairing-token>
+easynet runtime start
 easyremote doctor                            # optional runtime diagnosis
 ```
 
 Then it's the twelve lines above. `examples/` has runnable node/client pairs.
 
-If this is the first run, `node.serve()` does not invent an identity. It prints
-the one required action — `easynet pair` — and exits. Once paired, an
-operator-managed EasyNet runtime must be running. The script connects to it,
-starts the warm Python host, and publishes every registered function. Pairing
-supplies caller identity and signing; selecting a device chooses where the
-function runs without granting machine access.
+If this is the first run, `node.serve()` does not invent an identity. Complete
+`easynet login` and `easynet device join <pairing-token>`, then start or attach
+to the operator-managed Runtime with `easynet runtime start`. The provider
+connects to that Runtime, starts the warm Python host, and publishes every
+registered function. Pairing supplies caller identity and signing; selecting a
+device chooses where the function runs without granting machine access.
 
 | Example | Shows |
 |---|---|
@@ -113,6 +115,7 @@ independent uv applications rather than feature snippets:
 | [Data-resident AI](gallery/projects/05_local_data_residency_ai/) | Release a bounded projection while source records remain local |
 | [Device camera](gallery/projects/06_runtime_device_capability_injection/) | Stream finite media from a paired device without opening the device |
 | [Robot action](gallery/projects/07_claude_code_robot_commander_mcp/) | Give an Agent one constrained, attributable action instead of machine control |
+| [Network-native library](gallery/projects/08_network_native_python_library/) | Install a typed local Python interface while provider code remains remote |
 
 Each project owns its `pyproject.toml`, `uv.lock`, provider, caller, and concise
 case paper. Start with the [Gallery index](gallery/projects/README.md).

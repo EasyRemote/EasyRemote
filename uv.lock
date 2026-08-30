@@ -13,7 +13,7 @@ wheels = [
 
 [[package]]
 name = "axon-runtime-sdk"
-version = "0.183.3"
+version = "0.192.3"
 source = { editable = "../EasyNet-Axon/sdk/python" }
 dependencies = [
     { name = "cryptography" },
