@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib
 import runpy
+import sys
 import tomllib
 from pathlib import Path
 
@@ -21,6 +23,7 @@ PROJECTS = (
     "05_local_data_residency_ai",
     "06_runtime_device_capability_injection",
     "07_claude_code_robot_commander_mcp",
+    "08_network_native_python_library",
 )
 REQUIRED_FILES = ("README.md", "pyproject.toml", "uv.lock", "node.py", "client.py")
 REQUIRED_SECTIONS = (
@@ -75,7 +78,10 @@ def test_gallery_code_uses_only_the_public_decorator_boundary() -> None:
         compile(node_source, str(project / "node.py"), "exec")
         compile(client_source, str(project / "client.py"), "exec")
         assert "@node.register" in node_source, project_name
-        assert "@remote(" in client_source, project_name
+        if project_name == "08_network_native_python_library":
+            assert "from easyremote.silan.lotus import" in client_source
+        else:
+            assert "@remote(" in client_source, project_name
         assert "subprocess" not in node_source, project_name
         assert "os.system" not in node_source, project_name
 
@@ -89,6 +95,19 @@ def test_gallery_modules_initialize_without_external_services(
     for project_name in PROJECTS:
         project = PROJECT_ROOT / project_name
         provider = runpy.run_path(str(project / "node.py"))
+        if project_name == "08_network_native_python_library":
+            from easyremote import install_library
+
+            monkeypatch.setenv("EASYREMOTE_LIBRARY_ROOT", str(tmp_path / "libraries"))
+            install_library(project / "library.json", root=tmp_path / "libraries")
+            importlib.invalidate_caches()
+            sys.modules.pop("easyremote.silan.lotus", None)
+            sys.modules.pop("easyremote.silan", None)
+            caller = runpy.run_path(str(project / "client.py"))
+            assert callable(caller["semantic_filter"])
+            assert callable(caller["semantic_map"])
+            assert provider["node"].abilities
+            continue
         caller = runpy.run_path(str(project / "client.py"))
 
         assert provider["node"].abilities, project_name
@@ -184,3 +203,19 @@ def test_gallery_provider_behaviors_are_bounded(monkeypatch, tmp_path: Path) -> 
     assert [sample["sequence"] for sample in robot["robot_telemetry"](2)] == [1, 2]
     with pytest.raises(ValueError, match="excluding 0"):
         robot["move_robot"](Context(invocation_id="inv-robot-2", caller=caller), 0)
+
+    library = runpy.run_path(str(PROJECT_ROOT / PROJECTS[8] / "node.py"))
+    records = ["Invoice refund pending", "API latency normal"]
+    assert library["semantic_filter"](records, "invoice billing") == [records[0]]
+    assert library["semantic_map"](records, "lowercase") == [
+        "invoice refund pending",
+        "api latency normal",
+    ]
+    with pytest.raises(ValueError, match="instruction must be"):
+        library["semantic_map"](records, "write a poem")
+    with pytest.raises(ValueError, match="between 1 and 1,000 items"):
+        library["semantic_filter"]([], "invoice")
+    with pytest.raises(ValueError, match="between 1 and 500 characters"):
+        library["semantic_filter"](records, "x" * 501)
+    with pytest.raises(ValueError, match="searchable letters or numbers"):
+        library["semantic_filter"](records, "---")

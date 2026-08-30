@@ -1,0 +1,65 @@
+{
+  "format": "easyremote.library/v1",
+  "realm": "easynet.run",
+  "publisher": "silan",
+  "package": "lotus",
+  "version": "1.0.0",
+  "exports": [
+    {
+      "python_name": "semantic_filter",
+      "ability": "lotus.semantic_filter",
+      "description": "Keep records that semantically match a condition.",
+      "call_mode": "rpc",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "records": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1000,
+            "items": {"type": "string", "minLength": 1, "maxLength": 2000}
+          },
+          "condition": {"type": "string", "minLength": 1, "maxLength": 500}
+        },
+        "required": ["records", "condition"],
+        "x-easyremote-parameter-order": ["records", "condition"],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "array",
+        "maxItems": 1000,
+        "items": {"type": "string"}
+      }
+    },
+    {
+      "python_name": "semantic_map",
+      "ability": "lotus.semantic_map",
+      "description": "Apply one bounded semantic instruction to records.",
+      "call_mode": "rpc",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "records": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1000,
+            "items": {"type": "string", "minLength": 1, "maxLength": 2000}
+          },
+          "instruction": {
+            "type": "string",
+            "enum": ["normalize whitespace", "lowercase"]
+          }
+        },
+        "required": ["records", "instruction"],
+        "x-easyremote-parameter-order": ["records", "instruction"],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 1000,
+        "items": {"type": "string"}
+      }
+    }
+  ]
+}

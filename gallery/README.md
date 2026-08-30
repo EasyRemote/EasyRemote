@@ -23,6 +23,7 @@ are not reimplemented in gallery code.
 | [Data-resident analysis](projects/05_local_data_residency_ai/README.md) | Regulated data owners | Return a sanitized projection without releasing source data | Unary |
 | [Edge camera stream](projects/06_runtime_device_capability_injection/README.md) | Edge application teams | Read finite binary frames from a device behind its runtime | Raw server stream |
 | [Bounded robot action](projects/07_claude_code_robot_commander_mcp/README.md) | Robotics agent teams | Execute one constrained action and read telemetry | Unary + stream |
+| [Network-native Python library](projects/08_network_native_python_library/README.md) | Data application teams | Import remote semantic operators without cloning their implementation | Unary |
 
 ## Independent execution
 
@@ -41,7 +42,8 @@ uv run python client.py
 ```
 
 Both machines need a paired, running EasyNet runtime. `@node.register` does not
-start or pair the daemon. Run `easynet pair`, `easynet start`, and
+start or pair the daemon. Run `easynet login`,
+`easynet device join <pairing-token>`, `easynet runtime start`, and
 `easyremote doctor` before the first case.
 
 ## Scope
