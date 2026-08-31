@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python Version](https://img.shields.io/pypi/pyversions/easyremote)]()
 
-> **EasyRemote turns a local function into a globally callable capability.**
+> **EasyRemote turns a local function into a governed Ability callable by admitted EasyNet users, agents, and devices.**
 
 **EasyNet-native · Signed invocations · Verifiable execution**
 
@@ -54,26 +54,50 @@ fetch = pipe.step("teamA.fetch_sales", quarter="Q2")
 pipe.step("er.summarize", rows=fetch.output)
 ```
 
-Those are not three use cases — **that is the entire semantics of the capability abstraction.** Your code and your model never leave your machine; the world gets the right to call, not a copy.
+Those are not three separate products — they are three views of the same governed Ability. Your code and your model never leave your machine; authorized callers get the right to invoke the interface, not a copy of its implementation.
 
 Git lowered the unit of sharing code from a project to a commit. Docker lowered the unit of shipping software from a machine to an image. **EasyRemote lowers the unit of sharing services from a deployment to a function.**
 
-**The first direct corollary: a team GPU pool.** When functions execute where they live, compute sharing falls out for free — GPUs in the office, at home, in a dorm form one inference cluster. Nodes only dial out, so NAT is not an obstacle; models stay resident, so there is no cold start; the gateway is a $5 VPS.
+**The first direct corollary: a team GPU pool.** Functions execute where they live, so GPUs in the office, at home, or in a dorm can provide one governed inference surface. Devices connect outward to their Hub and models can remain warm; actual reachability, startup time, latency, and cost depend on the deployment.
 
-**You'll ask: isn't opening my machine to the world dangerous?** That's exactly why nobody dared to do this before. EasyRemote is built on the EasyNet stack: every call is a signed invocation object — who called, whom they called, what was acted on, which causal chain it follows — and every execution terminates in a verifiable receipt. **There is no switch for this layer, no configuration; you will barely notice it exists.** It is also the entire reason you can dare to share your machine.
+**You'll ask: isn't opening my machine dangerous?** That's exactly why nobody dared to do this before. EasyRemote is built on the EasyNet stack: signed invocations carry who called, whom they called, what was acted on, and which causal chain the call follows; signed paths close with verifiable receipt facts. Application code does not construct that machinery, but operators still configure identity, pairing, policy, and lifecycle. EasyRemote does not bypass those decisions.
 
 **And the moment nothing else can replace it: the day agents operate real-world resources.** Agent capability jumps a tier every quarter, but agent accountability hasn't changed since day one — a tool call goes out, and everything after that is self-reported. Letting an agent check the weather is fine; letting it touch your database, place orders, or drive hardware means "what did it actually do" can no longer be an autobiography. Signed invocations plus receipt chains express authorization the way it was always meant to be said: **this agent, under my authority, within this task chain, may call this capability and act on this object.**
 
 Ray, Modal, and RunPod make remote execution *easy*. Tool protocols make agents *connectable*. Nobody makes local capabilities *composable and accountable* service units. We build the layer missing between them.
 
-**Cloud computing moved code to the compute. EasyRemote keeps the compute where it is — and makes it globally callable.**
+**Cloud computing moved code to the compute. EasyRemote keeps the compute where it is — and makes its governed interface callable through EasyNet.**
+
+EasyRemote owns Python ergonomics: schema derivation, `@node.register`,
+`@remote`, Ability packaging, and the warm resident Python host. EasyNet-Cli
+owns `easynet-daemon`, pairing, keys, routing, provider lifecycle, and SDK
+transport. Axon owns canonical Invocation, admission, Receipt, and stream
+terminal semantics. `node.serve()` starts the Python provider only; it does not
+install, pair, or start the daemon.
 
 ---
 
 ## Getting started
 
+The current source preview requires `easynet-sdk>=0.142.22,<0.143`, which is not
+yet available from the public package registry. Until the dependency-first
+release completes, keep these repositories as sibling checkouts:
+
+```text
+workspace/
+  EasyNet-Axon/
+  EasyNet-Cli/
+  EasyRemote/
+```
+
 ```bash
-pip install --pre --upgrade easyremote
+cd EasyRemote
+uv sync
+
+cd ../EasyNet-Cli
+packaging/release/dev-install-local.sh --debug
+
+cd ../EasyRemote
 
 # One-time identity setup (signs invocations and receipt chains).
 # Start the device or Hub runtime with EasyNet-Cli operator tooling.
@@ -174,24 +198,39 @@ for frame in camera.stream(30):
     consume(frame.payload, frame.content_type)
 ```
 
-Binary frames preserve their exact bytes and media type without JSON or base64
-conversion. Calls retain the same signed invocation and receipt-backed
-completion semantics as ordinary function results. JSON generators use the same
-`.stream(...)` interface.
+On the local provider-host → `easynet-daemon` Unix-socket boundary,
+`binary_v1` preserves `StreamFrame` bytes and media type without JSON or base64
+conversion. The network path is still owned by the Runtime and SDK; this is not
+an end-to-end zero-copy, latency, or bandwidth claim. JSON generators use the
+same `.stream(...)` interface.
+
+### Provider lifecycle
+
+`ComputeNode` treats readiness as an explicit sequence:
+
+```text
+declared → schema → package → ability.deploy → Local active
+         → realm advertisement pending/confirmed → lease renewal → stop/expiry
+```
+
+`Local active` means the paired local daemon can invoke the provider. It does
+not prove realm visibility. EasyRemote reports advertisement as pending until
+the owning Runtime/product confirms publication.
 
 ---
 
 ## Project status
 
 EasyRemote v2 is currently in alpha and is not compatible with v1. It supports
-typed sync and async functions, finite server streams, exact binary/media
-frames, device targeting, warm providers, caller context, and signed invocation
-receipts.
+typed sync and async functions, finite server streams, exact local binary/media
+host frames, device targeting, warm providers, caller context, signed invocation
+receipts, and receipt-anchored `Context.call` / `Context.invoke` /
+`Context.stream` child dispatch.
 
 Using it requires a paired, running EasyNet runtime. Cross-device latency and
 bandwidth depend on the deployment, and this alpha does not claim a universal
-network SLO. Request-side media streaming, composed `ctx.call` receipt chains,
-and full receipt-chain fetch verification remain future work.
+network SLO. Request-side media streaming and full remote receipt-chain fetch
+and independent verification remain future work.
 
 Detailed architecture notes live in the
 [`v2 design`](docs/design/easyremote-v2-easynet-refactor.md).
