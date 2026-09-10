@@ -59,14 +59,18 @@ acceptance. Upstream media-type projection also needs descriptor-based routing.
 
 ## Latest verified result
 
-Runtime `28a7d9e3` + Axon `0a65a1f0` passed the complete matrix on 2026-09-10
-in the paired Linux ARM64 Docker topology. Both sync and async providers echoed
+Runtime `865e27e8` + Axon `f7c2120e` + EasyRemote `1556fde` passed the complete
+matrix on 2026-09-10 in the paired Linux ARM64 Docker topology. Sync and async
+generators delivered three ordered items and completed empty streams with the
+SDK's mandatory terminal transcript verification. Both duplex providers echoed
 exact audio before input half-close, returned the JSON summary on declared
 stream 2, and produced `Completed` terminal receipts with cleanup complete.
 Custom classes, dataclasses, Pydantic and NumPy assertions also passed.
 
-This supersedes the earlier custom-Bidi route and FFI failures above. It does
-not certify ordinary server-stream transcript forwarding, official-Hub
-installation, presentation timestamp fidelity or throughput. Output routing
+Evidence: `/Volumes/Element/Github2/EasyNet-matrix-evidence-865e27e8/function-matrix-result.json`.
+This supersedes the earlier custom-Bidi and ordinary server-stream forwarding
+failures. It does not certify official-Hub installation, cold descriptor
+discovery, presentation timestamp fidelity or throughput. Output routing
 requires unambiguous declared media types; duplicate-media output streams are
-not supported by this candidate's resident-host API.
+not supported by this candidate's resident-host API. The paired fixture uses
+distinct devices under one principal, not cross-owner authorization.
