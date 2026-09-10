@@ -41,14 +41,14 @@ uses a new causal invocation policy and declares its media lane explicitly:
 
 ```python
 import base64
-from easynet_sdk import StreamSpec
+from easynet_sdk import BidiStreamDescriptor as StreamSpec
 from easyremote import Client, CallTarget, FreshRoot, ResolvedTargetSubject, StreamFrame
 
 client = Client(invocation_policy=FreshRoot(ResolvedTargetSubject()))
 provider_device_ura = "<provider device URA>"
 target = CallTarget("media_echo", node=provider_device_ura)
 
-with client.session(target, streams=[StreamSpec(stream_id=1, content_type="audio/pcm")]) as session:
+with client.session(target, streams=[StreamSpec(stream_id=1, content_type="audio/pcm", ordering="STRICT")]) as session:
     session.send_frame(StreamFrame(b"\x00\x01\xff", "audio/pcm"), sequence=1)
     # Receive now, before close_send: this must not wait for all input.
     reply = session.recv(timeout=5)
