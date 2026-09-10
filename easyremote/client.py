@@ -300,6 +300,25 @@ class BidiSession:
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
+    def close_send(self) -> dict[str, object]:
+        try:
+            return dict(self._session.close_send())
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
+
+    def send_frame(
+        self, frame: StreamFrame, *, sequence: int, stream_id: int = 1
+    ) -> None:
+        try:
+            self._session.send_payload(
+                frame.payload,
+                frame.content_type,
+                sequence=sequence,
+                stream_id=stream_id,
+            )
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
+
     def recv(self, timeout: float | None = None) -> dict[str, Any] | None:
         try:
             return cast("dict[str, Any] | None", self._session.recv(timeout=timeout))
@@ -1202,10 +1221,12 @@ class RemoteFunction:
         # Client.call follows the committed descriptor's public call mode.
         return self._call(args, kwargs)
 
-    def _call(self, args: tuple[Any, ...], kwargs: dict[str, Any],
-              instance: Any = _NO_VALUE) -> Any:
+    def _call(
+        self, args: tuple[Any, ...], kwargs: dict[str, Any], instance: Any = _NO_VALUE
+    ) -> Any:
         result = self._bound_client(instance).call(
-            self._target, **self._bind(args, kwargs, instance=instance),
+            self._target,
+            **self._bind(args, kwargs, instance=instance),
         )
         return _codec.rehydrate(result, self._return_annotation)
 

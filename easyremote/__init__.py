@@ -32,6 +32,7 @@ from .control import (
     AgentStartResult,
     AgentStopResult,
 )
+from .duplex import Duplex
 from .errors import (
     Cancelled,
     DeadlineExceeded,
@@ -92,6 +93,7 @@ __all__ = [
     "Context",
     "ContextTarget",
     "DeadlineExceeded",
+    "Duplex",
     "ExplicitSubject",
     "FreshCausal",
     "FreshContextChild",

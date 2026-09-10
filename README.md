@@ -229,7 +229,7 @@ receipts, and receipt-anchored `Context.call` / `Context.invoke` /
 
 Using it requires a paired, running EasyNet runtime. Cross-device latency and
 bandwidth depend on the deployment, and this alpha does not claim a universal
-network SLO. Request-side media streaming and full remote receipt-chain fetch
+network SLO. The source candidate adds [request-side media and duplex providers](docs/guides/duplex-media.md). Full remote receipt-chain fetch
 and independent verification remain future work.
 
 Detailed architecture notes live in the

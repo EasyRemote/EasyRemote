@@ -211,6 +211,7 @@ class ComputeNode:
             signature.input_schema,
             signature.output_schema,
             signature.is_stream,
+            is_bidi=signature.duplex_parameter is not None,
         )
         hosted = HostedFunction(name=qualified, fn=fn, signature=signature)
         self._host.add(hosted)
@@ -396,6 +397,8 @@ class ComputeNode:
         input_schema: dict[str, Any],
         output_schema: dict[str, Any] | None,
         is_stream: bool,
+        *,
+        is_bidi: bool = False,
     ) -> Path:
         # Canonical manifest for the daemon's `ability.deploy` install
         # transaction. The SDK builder owns the deploy-bundle DTO shape so this
@@ -417,14 +420,14 @@ class ComputeNode:
             name=local_name,
             namespace=self._namespace,
             description=description,
-            admission_action="stream" if is_stream else "invoke",
+            admission_action="stream" if (is_stream or is_bidi) else "invoke",
             exposure="task",
             input_schema=input_schema,
             output_schema=output_schema,
             exec=easynet_sdk.HostStreamExec(
                 host_socket=str(self._host.socket_path),
                 function=qualified,
-                protocol="binary_v1",
+                protocol="binary_duplex_v1" if is_bidi else "binary_v1",
             ),
         ).to_mapping()
 
