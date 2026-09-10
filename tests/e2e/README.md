@@ -47,3 +47,9 @@ Runtime `bc8b742d`, EasyRemote `4bb8b4a`: `--case objects` passed between
 separately enrolled Docker provider and caller through a real Hub. The
 `--case duplex` check remains unpassed. This is a source-candidate result, not
 an installed public-release or official-Hub certification.
+
+Runtime `b36af7e9` removes the custom Bidi publication gate, but the complete
+paired matrix fails with `PROTOCOL_MISMATCH` when the direct FFI receives an
+internal callback carrier frame. Object assertions complete before this failure.
+Do not treat the route fix or the local carrier unit tests as full duplex
+acceptance. Upstream media-type projection also needs descriptor-based routing.
