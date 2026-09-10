@@ -139,7 +139,10 @@ def consume(node_id: str, case: str = "all") -> None:
         with client.session(
             CallTarget("acceptance." + function, node=node_id),
             streams=[
-                StreamSpec(stream_id=1, content_type="audio/pcm", ordering="STRICT")
+                StreamSpec(stream_id=1, content_type="audio/pcm", ordering="STRICT"),
+                StreamSpec(
+                    stream_id=2, content_type="application/json", ordering="STRICT"
+                ),
             ],
         ) as session:
             session.send_frame(StreamFrame(payload, "audio/pcm"), sequence=1)
@@ -150,24 +153,34 @@ def consume(node_id: str, case: str = "all") -> None:
                     "ended before incremental echo"
                 )
                 if frame.get("kind") == "data":
+                    assert frame["stream_id"] == 1
                     assert base64.b64decode(frame["payload_base64"]) == payload
                     echoed = True
                     break
             assert echoed, "no echo before input half-close"
             session.close_send()
             terminal = None
+            summary_received = False
             for _ in range(16):
                 frame = session.recv(timeout=max(0.001, deadline - time.monotonic()))
                 assert frame, "missing terminal outcome"
+                if frame.get("kind") == "data":
+                    assert frame["stream_id"] == 2
+                    assert json.loads(base64.b64decode(frame["payload_base64"])) == {
+                        "received": 1
+                    }
+                    summary_received = True
                 if frame.get("terminal"):
                     terminal = frame
                     break
+            assert summary_received, "missing JSON result on the declared second stream"
             assert terminal and terminal.get("terminal_receipt"), (
                 "missing terminal receipt"
             )
             results["duplex"][function] = {
                 "incremental_echo": True,
                 "terminal_receipt": True,
+                "json_stream": True,
             }
     print(json.dumps(results, indent=2))
 
