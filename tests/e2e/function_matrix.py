@@ -76,6 +76,16 @@ def provide(ready: Path) -> None:
         return Report(name=report.name, count=report.count + 1)
 
     @node.register
+    def countdown(n: int):
+        for tick in range(n, 0, -1):
+            yield {"tick": tick}
+
+    @node.register
+    async def async_countdown(n: int):
+        for tick in range(n, 0, -1):
+            yield {"tick": tick}
+
+    @node.register
     def media_echo(channel: Duplex) -> None:
         count = 0
         for frame in channel:
@@ -130,7 +140,26 @@ def consume(node_id: str, case: str = "all") -> None:
         report = summarize(Report(name="model", count=2))
         assert isinstance(report, Report) and report.count == 3
         results["typed_objects"] = True
-    if case == "objects":
+    if case in ("all", "streams"):
+        results["server_streams"] = {}
+        for function in ("countdown", "async_countdown"):
+            for n in (0, 3):
+                # Exhaustion includes the SDK's mandatory terminal transcript
+                # verification; seeing progress alone is not a successful call.
+                chunks = list(
+                    client.stream(
+                        CallTarget("acceptance." + function, node=node_id), n=n
+                    )
+                )
+                assert [chunk for chunk in chunks if chunk is not None] == [
+                    {"tick": tick} for tick in range(n, 0, -1)
+                ], chunks
+            results["server_streams"][function] = {
+                "ordered_items": True,
+                "empty_stream": True,
+                "verified_completion": True,
+            }
+    if case in ("objects", "streams"):
         print(json.dumps(results, indent=2))
         return
     for function in ("media_echo", "async_media_echo"):
@@ -196,7 +225,9 @@ if __name__ == "__main__":
     parser.add_argument("role", choices=["provider", "caller"])
     parser.add_argument("--ready-file", type=Path)
     parser.add_argument("--node")
-    parser.add_argument("--case", choices=["all", "objects", "duplex"], default="all")
+    parser.add_argument(
+        "--case", choices=["all", "objects", "duplex", "streams"], default="all"
+    )
     args = parser.parse_args()
     if args.role == "provider":
         if args.ready_file is None:

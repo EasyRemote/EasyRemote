@@ -23,12 +23,15 @@ python tests/e2e/function_matrix.py caller --node "$PROVIDER_DEVICE_ID"
 
 A passing command prints JSON and exits zero. It asserts custom classes nested
 in a dataclass, non-contiguous NumPy data with an explicit non-native byte order,
-and a Pydantic model retain their declared types and values. It also requires
+and a Pydantic model retain their declared types and values. The server-stream
+case checks ordered values and empty completion for sync and async generators;
+exhausting the SDK iterator must pass mandatory terminal transcript verification.
+It also requires
 sync and async duplex providers to echo exact audio bytes before the caller
 half-closes its input, and then produce a terminal receipt. The receipt assertion
 uses the SDK projection; it is not an independent offline proof verifier.
 
-Use `--case objects` or `--case duplex` to isolate a failure. Passing one case is
+Use `--case objects`, `--case duplex`, or `--case streams` to isolate a failure. Passing one case is
 not full acceptance. The caller explicitly discovers B's catalog first: cold
 remote descriptor resolution remains a separate first-use acceptance item.
 Stop the provider with Ctrl-C; its resident host is closed and the ready file
