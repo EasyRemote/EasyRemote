@@ -21,6 +21,8 @@ import typing
 from collections.abc import Mapping, Sequence
 from typing import Any, Union
 
+from .value_codec import codec_for
+
 __all__ = ["rehydrate", "to_jsonable"]
 
 _EMPTY = object()
@@ -30,6 +32,10 @@ def rehydrate(value: Any, annotation: Any = _EMPTY) -> Any:
     """Lift a JSON value to its annotated Python type."""
     if annotation is _EMPTY or annotation is Any or value is None:
         return value
+
+    codec = codec_for(annotation)
+    if codec is not None:
+        return codec.decode(value)
 
     if annotation is bytes:
         return base64.b64decode(value) if isinstance(value, str) else value
@@ -83,6 +89,9 @@ def rehydrate(value: Any, annotation: Any = _EMPTY) -> Any:
 
 def to_jsonable(value: Any) -> Any:
     """Lower a Python value to JSON-able data without using pickle."""
+    codec = codec_for(type(value))
+    if codec is not None:
+        return codec.encode(value)
     if isinstance(value, bytes):
         return base64.b64encode(value).decode("ascii")
     if isinstance(value, enum.Enum):

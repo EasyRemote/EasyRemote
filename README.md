@@ -247,3 +247,5 @@ EasyRemote is MIT-licensed. Its EasyNet runtime dependencies are Apache-2.0 proj
 ## License
 
 [MIT](LICENSE) © Silan Hu
+
+Typed Python values in the source candidate: see [custom classes, dataclasses, Pydantic and NumPy](docs/guides/python-values.md) for registration, return-type restoration and exact limits.

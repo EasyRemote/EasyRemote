@@ -69,6 +69,7 @@ from .library import (
 from .mission import MissionControl
 from .node import ComputeNode
 from .pipeline import MissionRun, Pipeline
+from .value_codec import ValueCodec, register_value_codec
 
 activate_library_root()
 
@@ -120,6 +121,7 @@ __all__ = [
     "Stream",
     "StreamFrame",
     "Unavailable",
+    "ValueCodec",
     "__version__",
     "activate_library_root",
     "agent",
@@ -127,6 +129,7 @@ __all__ = [
     "install_library",
     "library_root",
     "list_libraries",
+    "register_value_codec",
     "remote",
     "remove_library",
 ]

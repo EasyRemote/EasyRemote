@@ -29,12 +29,14 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal, Union
 
 from ._json import dumps_wire
 from .errors import InvalidArgument, SchemaError
 from .frame import StreamFrame
+from .value_codec import codec_for
 
 __all__ = ["PARAMETER_ORDER_KEY", "VAR_POSITIONAL_KEY", "DerivedSignature", "derive"]
 
@@ -261,6 +263,9 @@ def _stream_chunk_type(annotation: Any) -> Any | None:
 
 
 def _to_schema(annotation: Any, fn_name: str, param_name: str) -> dict[str, Any]:
+    codec = codec_for(annotation)
+    if codec is not None:
+        return deepcopy(codec.schema)
     if annotation is Any:
         return {}
     if annotation in _SCALARS:

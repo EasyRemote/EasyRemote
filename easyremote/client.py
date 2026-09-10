@@ -25,6 +25,7 @@ import functools
 import inspect
 import math
 import threading
+import typing
 import weakref
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
@@ -1154,6 +1155,7 @@ class RemoteFunction:
     ) -> None:
         functools.update_wrapper(self, fn)
         self._signature = inspect.signature(fn)
+        self._return_annotation = typing.get_type_hints(fn).get("return", Any)
         self._explicit_name = name
         self._name = name or fn.__name__
         self._node = node
@@ -1198,10 +1200,14 @@ class RemoteFunction:
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         # Client.call follows the committed descriptor's public call mode.
-        return self._bound_client().call(
-            self._target,
-            **self._bind(args, kwargs),
+        return self._call(args, kwargs)
+
+    def _call(self, args: tuple[Any, ...], kwargs: dict[str, Any],
+              instance: Any = _NO_VALUE) -> Any:
+        result = self._bound_client(instance).call(
+            self._target, **self._bind(args, kwargs, instance=instance),
         )
+        return _codec.rehydrate(result, self._return_annotation)
 
     def invoke(self, *args: Any, **kwargs: Any) -> Invocation:
         return self._bound_client().invoke(
@@ -1297,10 +1303,7 @@ class _BoundRemote:
         self._instance = instance
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        return self._fn._bound_client(self._instance).call(
-            self._fn._target,
-            **self._fn._bind(args, kwargs, instance=self._instance),
-        )
+        return self._fn._call(args, kwargs, self._instance)
 
     def stream(self, *args: Any, **kwargs: Any) -> Stream:
         return self._fn._bound_client(self._instance).stream(
