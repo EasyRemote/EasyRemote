@@ -40,3 +40,10 @@ paired provider/caller containers created by EasyNet-Cli's
 and the matching SDK checkouts as that runner specifies. Use the Element-only
 environment wrapper on the build Mac. Keep the runner's evidence and source
 revision manifest with the matrix output.
+
+## Recorded candidate result (2026-09-10)
+
+Runtime `bc8b742d`, EasyRemote `4bb8b4a`: `--case objects` passed between
+separately enrolled Docker provider and caller through a real Hub. The
+`--case duplex` check remains unpassed. This is a source-candidate result, not
+an installed public-release or official-Hub certification.
