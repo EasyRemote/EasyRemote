@@ -165,7 +165,10 @@ def consume(node_id: str, case: str = "all") -> None:
                 frame = session.recv(timeout=max(0.001, deadline - time.monotonic()))
                 assert frame, "missing terminal outcome"
                 if frame.get("kind") == "data":
-                    assert frame["stream_id"] == 2
+                    assert frame["stream_id"] == 2, (
+                        frame["stream_id"],
+                        base64.b64decode(frame["payload_base64"]),
+                    )
                     assert json.loads(base64.b64decode(frame["payload_base64"])) == {
                         "received": 1
                     }
@@ -177,6 +180,9 @@ def consume(node_id: str, case: str = "all") -> None:
             assert terminal and terminal.get("terminal_receipt"), (
                 "missing terminal receipt"
             )
+            receipt = terminal["terminal_receipt"]
+            assert receipt["state"] == "Completed", receipt["state"]
+            assert receipt["cleanup_complete"] is True
             results["duplex"][function] = {
                 "incremental_echo": True,
                 "terminal_receipt": True,

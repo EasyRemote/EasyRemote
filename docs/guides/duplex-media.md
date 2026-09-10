@@ -46,28 +46,38 @@ from easyremote import Client, CallTarget, FreshRoot, ResolvedTargetSubject, Str
 
 client = Client(invocation_policy=FreshRoot(ResolvedTargetSubject()))
 provider_device_ura = "<provider device URA>"
+client.abilities.list_device(provider_device_ura)
 target = CallTarget("media_echo", node=provider_device_ura)
 
-with client.session(target, streams=[StreamSpec(stream_id=1, content_type="audio/pcm", ordering="STRICT")]) as session:
+streams = [
+    StreamSpec(stream_id=1, content_type="audio/pcm", ordering="STRICT"),
+    StreamSpec(stream_id=2, content_type="application/json", ordering="STRICT"),
+]
+with client.session(target, streams=streams) as session:
     session.send_frame(StreamFrame(b"\x00\x01\xff", "audio/pcm"), sequence=1)
     # Receive now, before close_send: this must not wait for all input.
-    reply = session.recv(timeout=5)
     # Canonical receive frames may include admission/control events.
-    while reply is not None and reply.get("kind") != "data":
-        if reply.get("terminal"):
-            raise RuntimeError("session ended before echo")
+    for _ in range(16):
         reply = session.recv(timeout=5)
-    assert reply is not None
+        if reply is None or reply.get("terminal"):
+            raise RuntimeError("session ended before echo")
+        if reply.get("kind") == "data":
+            break
+    else:
+        raise RuntimeError("no echo within the bounded receive window")
+    assert reply["stream_id"] == 1
     assert base64.b64decode(reply["payload_base64"]) == b"\x00\x01\xff"
     session.close_send()
     # Input is closed; continue receiving the final output and terminal receipt.
-    while True:
+    for _ in range(16):
         frame = session.recv(timeout=5)
         if frame is None:
             raise RuntimeError("missing explicit terminal frame")
         print(frame)
         if frame.get("terminal"):
             break
+    else:
+        raise RuntimeError("no terminal within the bounded receive window")
 ```
 
 `sequence` follows the SDK's canonical send sequence, starting at 1; increment
@@ -79,8 +89,13 @@ unbounded batch before reading responses can exhaust either endpoint's buffers.
 Do not retry a side-effecting invocation solely because the local wait timed out.
 
 The example's final JSON progress message and canonical terminal receipt are
-separate events. The receipt output includes the verified host frame count and
-rolling output hash; the Runtime owns signing, admission and verification.
+separate events. The resident-host frame hash is checked before completion;
+the Runtime owns signing, admission and terminal-receipt verification. A terminal
+receipt alone is not an independent proof of every media frame. Declare each
+output media type in the session; undeclared or ambiguous output mappings fail.
+This candidate maps provider output by media type and does not support multiple
+output streams with identical media types. Presentation timestamp fidelity and
+end-to-end performance remain separate acceptance items.
 
 ## Verification commands
 
@@ -133,3 +148,9 @@ media/socket roundtrips, array fidelity, connection limits and host stop.
 An initial Linux run exposed a blocking accept shutdown; after fixing listener
 shutdown, the suite completed in 0.30 seconds. These scopes do not establish
 an official-Hub cross-device result.
+
+The later candidate Runtime `28a7d9e3` + Axon `0a65a1f0` passed the real paired
+Docker function matrix for sync/async incremental audio, declared JSON output,
+input half-close and a Completed cleanup-complete terminal receipt. See
+`tests/e2e/README.md` and the Runtime Docker manual for the exact topology and
+commands. Ordinary server-stream proofs and performance remain unverified.

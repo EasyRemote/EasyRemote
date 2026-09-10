@@ -53,3 +53,17 @@ paired matrix fails with `PROTOCOL_MISMATCH` when the direct FFI receives an
 internal callback carrier frame. Object assertions complete before this failure.
 Do not treat the route fix or the local carrier unit tests as full duplex
 acceptance. Upstream media-type projection also needs descriptor-based routing.
+
+## Latest verified result
+
+Runtime `28a7d9e3` + Axon `0a65a1f0` passed the complete matrix on 2026-09-10
+in the paired Linux ARM64 Docker topology. Both sync and async providers echoed
+exact audio before input half-close, returned the JSON summary on declared
+stream 2, and produced `Completed` terminal receipts with cleanup complete.
+Custom classes, dataclasses, Pydantic and NumPy assertions also passed.
+
+This supersedes the earlier custom-Bidi route and FFI failures above. It does
+not certify ordinary server-stream transcript forwarding, official-Hub
+installation, presentation timestamp fidelity or throughput. Output routing
+requires unambiguous declared media types; duplicate-media output streams are
+not supported by this candidate's resident-host API.
