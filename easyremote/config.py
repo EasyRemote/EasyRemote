@@ -17,7 +17,14 @@ import easynet_sdk
 
 from .errors import Unavailable, is_runtime_offline_error
 
-__all__ = ["Settings", "agents_root", "configure", "sdk_environment", "settings"]
+__all__ = [
+    "Settings",
+    "agents_root",
+    "configure",
+    "rediscover",
+    "sdk_environment",
+    "settings",
+]
 
 _DESKTOP_EASYNET_DIR = Path.home() / ".easynet"
 
@@ -62,6 +69,9 @@ def _from_environment() -> Settings:
 
 _lock = threading.Lock()
 _settings: Settings | None = None
+# Fields set by an explicit `configure()` call. Discovery may re-resolve the
+# rest, but never operator intent.
+_configured: set[str] = set()
 
 
 def configure(
@@ -81,10 +91,13 @@ def configure(
         current = _settings or _from_environment()
         if credentials is not None:
             current = replace(current, credentials_path=Path(credentials))
+            _configured.add("credentials_path")
         if control is not None:
             current = replace(current, control_path=Path(control))
+            _configured.add("control_path")
         if library_path is not None:
             current = replace(current, library_path=Path(library_path))
+            _configured.add("library_path")
         _settings = current
 
 
@@ -95,6 +108,26 @@ def settings() -> Settings:
         if _settings is None:
             _settings = _from_environment()
         return _settings
+
+
+def rediscover() -> None:
+    """Drop discovery-derived paths so the next access re-resolves them.
+
+    The runtime state root is chosen by looking at which roots exist, so a
+    process that resolved it before the runtime was initialized cached a root
+    that has since become the wrong one. Explicit `configure()` overrides are
+    operator intent and are preserved.
+    """
+    global _settings
+    with _lock:
+        if _settings is None:
+            return
+        resolved = _from_environment()
+        for field_name in _configured:
+            resolved = replace(
+                resolved, **{field_name: getattr(_settings, field_name)}
+            )
+        _settings = resolved
 
 
 def sdk_environment(

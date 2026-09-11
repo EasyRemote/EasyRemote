@@ -13,7 +13,7 @@ from typing import Protocol
 
 import easynet_sdk
 
-from .config import sdk_environment
+from .config import rediscover, sdk_environment
 from .errors import Unavailable, error_from_sdk
 from .identity import LocalIdentity
 
@@ -87,6 +87,11 @@ class LocalRuntimeProvider:
             self._bootstrap()
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
+
+        # The runtime state root is picked by looking at which roots exist, so
+        # a root resolved before the bootstrap is now the wrong one. Re-resolve
+        # before reading the identity the bootstrap just wrote.
+        rediscover()
 
         try:
             self._identity_loader()
