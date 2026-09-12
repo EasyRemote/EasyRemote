@@ -537,3 +537,19 @@ def test_end_to_end_through_real_socket(short_tmp):
     items = [frame["stream_item"] for frame in frames if "stream_item" in frame]
     assert items == [{"hello": "world", "excited": False}]
     assert frames[-1]["terminal"]["frames"] == 1
+
+
+def test_duplex_registration_selects_explicit_host_protocol(node):
+    from easyremote import Duplex
+
+    def echo(channel: Duplex) -> None:
+        for item in channel:
+            channel.send(item)
+
+    node.register(echo)
+    manifest = json.loads(
+        (node._abilities_dir / "er.echo" / "ability.json").read_text()
+    )
+    assert manifest["admission_action"] == "stream"
+    assert manifest["exec"]["protocol"] == "binary_duplex_v1"
+    assert manifest["input_schema"]["properties"] == {}

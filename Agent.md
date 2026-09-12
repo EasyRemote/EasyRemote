@@ -283,6 +283,8 @@ All EasyRemote-hosted abilities are packaged with daemon `host_stream` exec.
 The public descriptor geometry still follows the Python callable:
 
 - Plain functions are public RPC/unary abilities.
+- Functions with an injected `Duplex` parameter are Bidi abilities over
+  `binary_duplex_v1`; they receive request frames and emit output concurrently.
 - Generator, async generator, and return-annotated `Iterator`/`Iterable`
   functions are public server-stream abilities.
 - Context-taking functions inject `easyremote.Context` as the first parameter
@@ -409,8 +411,9 @@ These are intentional until a spec and tests say otherwise:
   `@node.register` for server registration.
 - `@remote` does not create client-stream or bidirectional function decorators.
   Use `Client.session(...)` for bidi sessions.
-- `StreamFrame` is for server-stream output. Request-side multimodal upload
-  needs a separate client-stream/bidi contract.
+- `StreamFrame` also carries request media through `BidiSession.send_frame`.
+  A provider with an injected `Duplex` parameter uses `binary_duplex_v1`;
+  see `docs/guides/duplex-media.md` for the source-candidate contract.
 - Network-native library manifest v1 accepts explicit files and unary/RPC
   exports only. Realm package resolution and stream/bidi import contracts
   require separately owned specifications.
@@ -627,7 +630,8 @@ Python generator
 ```
 
 This path is appropriate for server-produced text, audio, image, video, and
-binary chunks. It is not the final answer for request-side media upload,
+binary chunks. The source candidate adds request-side media and duplex host support; see
+`docs/guides/duplex-media.md`. It is not a claim of
 remote-desktop-class interactive sessions, GPU tensor zero-copy transport, or
 cross-device SLO guarantees. Those require separate specs and end-to-end
 benchmarks.

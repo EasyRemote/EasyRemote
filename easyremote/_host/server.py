@@ -9,6 +9,7 @@ import socket
 import threading
 import typing
 from collections.abc import Callable, Iterator
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -50,10 +51,12 @@ class HostedFunction:
     def call(self, args: dict[str, Any], context: Any = None) -> Any:
         return _codec.to_jsonable(self.call_frame(args, context))
 
-    def call_frame(self, args: dict[str, Any], context: Any = None) -> Any:
+    def call_frame(
+        self, args: dict[str, Any], context: Any = None, duplex: Any = None
+    ) -> Any:
         """Execute once without erasing typed media frame information."""
 
-        pos, kwargs = self._call_args(args, context)
+        pos, kwargs = self._call_args(args, context, duplex)
         result = self.fn(*pos, **kwargs)
         if inspect.iscoroutine(result):
             result = asyncio.run(result)
@@ -82,10 +85,12 @@ class HostedFunction:
             yield from gen
 
     def _call_args(
-        self, args: dict[str, Any], context: Any
+        self, args: dict[str, Any], context: Any, duplex: Any = None
     ) -> tuple[tuple[Any, ...], dict[str, Any]]:
         kwargs = self._bind_kwargs(args)
         pos, kwargs = self._split_call_args(kwargs)
+        if self.signature.duplex_parameter:
+            pos = (duplex, *pos)
         if self.signature.takes_context:
             pos = (context, *pos)  # Context is the injected first parameter
         try:
@@ -115,6 +120,8 @@ class HostedFunction:
             positional: list[Any] = []
             for parameter in self._inspect_signature.parameters.values():
                 if parameter.kind is not inspect.Parameter.POSITIONAL_ONLY:
+                    continue
+                if parameter.name == self.signature.duplex_parameter:
                     continue
                 if self.signature.takes_context and parameter.name not in rest:
                     continue
@@ -210,6 +217,9 @@ class HostServer:
         self._listener: socket.socket | None = None
         self._accept_thread: threading.Thread | None = None
         self._stopping = threading.Event()
+        self._connection_slots = threading.BoundedSemaphore(32)
+        self._connections: set[socket.socket] = set()
+        self._connections_lock = threading.Lock()
         self._context_dispatcher_factory = (
             context_dispatcher_factory or dispatcher_from_parent_receipt
         )
@@ -255,9 +265,15 @@ class HostServer:
         self._accept_thread.start()
 
     def stop(self) -> None:
+        self._stopping.set()
+        with self._connections_lock:
+            for connection in self._connections:
+                with suppress(OSError):  # Peer may already be disconnected.
+                    connection.shutdown(socket.SHUT_RDWR)
         if self._listener is None:
             return
-        self._stopping.set()
+        with suppress(OSError):
+            self._listener.shutdown(socket.SHUT_RDWR)
         self._listener.close()
         if self._accept_thread is not None:
             self._accept_thread.join(timeout=5)
@@ -281,9 +297,36 @@ class HostServer:
                 connection, _ = self._listener.accept()
             except OSError:
                 return  # listener closed by stop()
+            if not self._connection_slots.acquire(blocking=False):
+                with connection:
+                    connection.settimeout(0.25)
+                    with suppress(OSError):  # Refusal races peer disconnect.
+                        self._send_error(
+                            connection,
+                            "RESOURCE_EXHAUSTED",
+                            "host_busy",
+                            "provider has 32 active invocations",
+                        )
+                continue
+            with self._connections_lock:
+                if self._stopping.is_set():
+                    connection.close()
+                    self._connection_slots.release()
+                    continue
+                self._connections.add(connection)
             threading.Thread(
-                target=self._serve_connection, args=(connection,), daemon=True
+                target=self._serve_owned_connection, args=(connection,), daemon=True
             ).start()
+
+    def _serve_owned_connection(self, connection: socket.socket) -> None:
+        try:
+            self._serve_connection(connection)
+        except OSError:
+            pass  # A cancelled invocation closes its socket; no terminal can be sent.
+        finally:
+            with self._connections_lock:
+                self._connections.discard(connection)
+            self._connection_slots.release()
 
     def _serve_connection(self, connection: socket.socket) -> None:
         with connection:
@@ -346,11 +389,19 @@ class HostServer:
             context = self._context_for_request(request)
 
         try:
-            frames = (
-                hosted.stream_frames(args, context=context)
-                if sig.is_stream
-                else iter([hosted.call_frame(args, context=context)])
-            )
+            if sig.duplex_parameter:
+                from ..duplex import Duplex
+
+                hosted.call_frame(
+                    args, context=context, duplex=Duplex(connection, session)
+                )
+                frames: Iterator[Any] = iter(())
+            else:
+                frames = (
+                    hosted.stream_frames(args, context=context)
+                    if sig.is_stream
+                    else iter([hosted.call_frame(args, context=context)])
+                )
             for frame in frames:
                 self._send_frame(connection, session.emit(frame))
         except RemoteError as exc:

@@ -52,6 +52,56 @@ def test_defaults_fall_back_to_sdk_root_when_desktop_root_is_empty(
     assert s.credentials_path == sdk_root / "credentials.json"
 
 
+def test_rediscover_picks_up_a_root_created_after_first_resolution(
+    monkeypatch, tmp_path
+):
+    """A process that resolved the root before the runtime was initialized
+    cached a root that has since become the wrong one."""
+    sdk_root = tmp_path / ".runtime-host"
+    desktop_root = tmp_path / ".easynet"
+    monkeypatch.setattr(config, "_DESKTOP_EASYNET_DIR", desktop_root)
+    monkeypatch.setattr(config.easynet_sdk, "runtime_state_root", lambda: sdk_root)
+    monkeypatch.setattr(config, "_configured", set())
+
+    assert config.settings().control_path == sdk_root / "control.json"
+
+    # The bootstrap now initializes the desktop root.
+    desktop_root.mkdir()
+    (desktop_root / "credentials.json").write_text("{}")
+
+    config.rediscover()
+
+    assert config.settings().control_path == desktop_root / "control.json"
+    assert config.settings().credentials_path == desktop_root / "credentials.json"
+
+
+def test_rediscover_keeps_explicit_configure_overrides(monkeypatch, tmp_path):
+    """Re-resolving discovery must not discard operator intent."""
+    sdk_root = tmp_path / ".runtime-host"
+    desktop_root = tmp_path / ".easynet"
+    monkeypatch.setattr(config, "_DESKTOP_EASYNET_DIR", desktop_root)
+    monkeypatch.setattr(config.easynet_sdk, "runtime_state_root", lambda: sdk_root)
+    monkeypatch.setattr(config, "_configured", set())
+
+    chosen = tmp_path / "explicit-credentials.json"
+    config.configure(credentials=chosen)
+
+    desktop_root.mkdir()
+    (desktop_root / "credentials.json").write_text("{}")
+    config.rediscover()
+
+    assert config.settings().credentials_path == chosen
+    assert config.settings().control_path == desktop_root / "control.json"
+
+
+def test_rediscover_before_first_resolution_is_a_no_op(monkeypatch):
+    monkeypatch.setattr(config, "_settings", None)
+
+    config.rediscover()
+
+    assert config._settings is None
+
+
 def test_environment_overrides(monkeypatch, tmp_path):
     monkeypatch.setenv("EASYNET_CONTROL_JSON", str(tmp_path / "c.json"))
     monkeypatch.setenv("EASYNET_CLI_LIB", str(tmp_path / "lib.dylib"))

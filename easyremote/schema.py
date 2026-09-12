@@ -29,12 +29,15 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal, Union
 
 from ._json import dumps_wire
+from .duplex import Duplex
 from .errors import InvalidArgument, SchemaError
 from .frame import StreamFrame
+from .value_codec import codec_for
 
 __all__ = ["PARAMETER_ORDER_KEY", "VAR_POSITIONAL_KEY", "DerivedSignature", "derive"]
 
@@ -84,6 +87,7 @@ class DerivedSignature:
     output_schema: dict[str, Any] | None
     is_stream: bool
     takes_context: bool
+    duplex_parameter: str | None = None
 
 
 def derive(fn: Any, *, context_type: type | None = None) -> DerivedSignature:
@@ -107,6 +111,25 @@ def derive(fn: Any, *, context_type: type | None = None) -> DerivedSignature:
     takes_context = _takes_context(parameters, hints, context_type, name)
     if takes_context:
         parameters = parameters[1:]
+
+    duplex_parameter = None
+    duplex_positions = [
+        i for i, p in enumerate(parameters) if hints.get(p.name, p.annotation) is Duplex
+    ]
+    if duplex_positions:
+        if duplex_positions != [0] or parameters[0].kind not in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            raise SchemaError(
+                "Duplex must be the first argument after optional Context"
+            )
+        duplex_parameter = parameters[0].name
+        parameters = parameters[1:]
+        if hints.get("return", signature.return_annotation) not in (None, type(None)):
+            raise SchemaError(
+                "Duplex functions must return None; emit values with channel.send"
+            )
 
     properties: dict[str, dict[str, Any]] = {}
     required: list[str] = []
@@ -180,6 +203,7 @@ def derive(fn: Any, *, context_type: type | None = None) -> DerivedSignature:
         output_schema=output_schema,
         is_stream=is_stream,
         takes_context=takes_context,
+        duplex_parameter=duplex_parameter,
     )
 
 
@@ -261,6 +285,9 @@ def _stream_chunk_type(annotation: Any) -> Any | None:
 
 
 def _to_schema(annotation: Any, fn_name: str, param_name: str) -> dict[str, Any]:
+    codec = codec_for(annotation)
+    if codec is not None:
+        return deepcopy(codec.schema)
     if annotation is Any:
         return {}
     if annotation in _SCALARS:

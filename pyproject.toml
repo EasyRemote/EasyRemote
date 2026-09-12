@@ -51,6 +51,7 @@ Changelog = "https://github.com/EasyRemote/EasyRemote/releases"
 
 [project.optional-dependencies]
 pydantic = ["pydantic>=2.0"]
+numpy = ["numpy>=1.26"]
 
 [dependency-groups]
 dev = [

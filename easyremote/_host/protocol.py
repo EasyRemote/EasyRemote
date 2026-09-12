@@ -28,6 +28,7 @@ class FrameKind(IntEnum):
     ITEM = 2
     TERMINAL = 3
     ERROR = 4
+    HALF_CLOSE = 5
 
 
 @dataclass(frozen=True, slots=True)
