@@ -400,7 +400,7 @@ class HostServer:
                 frames = (
                     hosted.stream_frames(args, context=context)
                     if sig.is_stream
-                    else iter([hosted.call_frame(args, context=context)])
+                    else iter([hosted.call(args, context=context)])
                 )
             for frame in frames:
                 self._send_frame(connection, session.emit(frame))

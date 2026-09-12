@@ -455,3 +455,22 @@ def test_mission_run_exposes_response_fields():
     )
     assert run.run_dir == "/d"
     assert run.outputs == {"x": 1}
+
+
+def test_pipeline_agent_binding_preserves_dataflow_and_descriptor():
+    owner = "easynet:///r/acme/agent/device.dev-a.ability-management"
+    descriptor = expected_descriptor_ref(
+        "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn"
+    )
+    pipe = Pipeline("agent-dataflow")
+    first = pipe.step("er.fn", on=owner, descriptor_ref=descriptor, text="hello")
+    second = pipe.step("er.fn", on=owner, descriptor_ref=descriptor, text=first.output)
+    assert f'"{owner}"."er.fn"(text: "hello")' in first.render()
+    assert f'descriptor_ref "{descriptor}"' in first.render()
+    assert '(text: fn.output)' in second.render()
+
+
+def test_pipeline_descriptor_requires_explicit_agent_owner():
+    pipe = Pipeline("invalid-target")
+    with pytest.raises(InvalidArgument, match="explicit Agent"):
+        pipe.step("er.fn", on="dev-a", descriptor_ref="invalid")

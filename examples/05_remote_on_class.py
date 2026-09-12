@@ -1,5 +1,8 @@
 """`@remote` as a class attribute — the descriptor (property) form.
 
+Start 05_gpu_cluster_node.py first. Its default model bodies are deterministic
+fixtures; this run verifies remote contracts, not GPU inference.
+
 A `@remote` stub is a descriptor, so it can live on a class body just
 like a method. Declared there it follows the `property` playbook:
 
@@ -39,9 +42,15 @@ class GPUCluster:
 if __name__ == "__main__":
     cluster = GPUCluster(Client(invocation_policy=FreshRoot(ResolvedTargetSubject())))
 
-    print("ai_inference ->", cluster.ai_inference("hello easynet"))
-    print("embed        ->", cluster.embed("vectorise me"))
-    print("summarize    ->", cluster.summarise("one two three " * 8))
+    prediction = cluster.ai_inference("hello easynet")
+    embedding = cluster.embed("vectorise me")
+    summary = cluster.summarise("one two three " * 8)
+    assert isinstance(prediction, str) and prediction
+    assert len(embedding) == 8 and abs(sum(x * x for x in embedding) - 1) < 1e-9
+    assert summary == "one two three one two three one two three one two three…"
+    print("ai_inference ->", prediction)
+    print("embed        ->", embedding)
+    print("summarize    ->", summary)
 
     # Class access yields the descriptor itself (like `property`).
     print("descriptor   ->", type(GPUCluster.ai_inference).__name__)

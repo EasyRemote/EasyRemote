@@ -27,6 +27,7 @@ class MissionAbility(StrEnum):
 
 class AgentAbility(StrEnum):
     START = "agent.start"
+    PUT_ABILITIES = "agent.ability.put"
     LIST = "agent.list"
     STOP = "agent.stop"
     REFRESH = "agent.refresh"

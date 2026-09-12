@@ -543,3 +543,13 @@ def test_rolling_hash_matches_daemon_golden_vector():
         writer.output_hash
         == "sha256:4b454f7a5008aa83decbe76c9da3f3b3ea891371448dccde2de908fbf48e9f93"
     )
+
+
+def test_unary_bytes_return_uses_json_base64_contract(host):
+    def thumbnail(image: bytes, size: int) -> bytes:
+        return image[:size]
+
+    host.add(hosted(thumbnail))
+    frames = stream_request(host, "er.thumbnail", {"image": "AAEC", "size": 2})
+    assert stream_items(frames) == ["AAE="]
+    assert frames[0]["content_type"] == "application/json"

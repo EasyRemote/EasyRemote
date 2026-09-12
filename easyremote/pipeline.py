@@ -9,6 +9,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+import easynet_sdk
+
 from ._version import __version__
 from .errors import InternalError, InvalidArgument
 from .mission import MissionChildInvocation, MissionControl, MissionRun, MissionStatus
@@ -50,20 +52,36 @@ class Step:
     retries: int | None = None
     on_failure: str | None = None
     optional: bool = False
+    descriptor_ref: str | None = None
 
     @property
     def output(self) -> StepOutput:
         return StepOutput(self.alias)
 
     def render(self) -> str:
-        parts = [f"let {self.alias} = call {_eal_string(self.ref)}"]
-        if self.on:
-            parts.append(f"on {_eal_string(self.on)}")
-        if self.args:
+        if self.descriptor_ref is not None:
+            if self.on is None:
+                raise InvalidArgument(
+                    "descriptor_ref requires an Agent target",
+                    reason="invalid_pipeline_target",
+                )
             fields = ", ".join(
-                f"{name} = {_eal_value(value)}" for name, value in self.args.items()
+                f"{name}: {_eal_value(value)}" for name, value in self.args.items()
             )
-            parts.append(f"with {{ {fields} }}")
+            parts = [
+                f"let {self.alias} = {_eal_string(self.on)}."
+                f"{_eal_string(self.ref)}({fields})",
+                f"descriptor_ref {_eal_string(self.descriptor_ref)}",
+            ]
+        else:
+            parts = [f"let {self.alias} = call {_eal_string(self.ref)}"]
+            if self.on:
+                parts.append(f"on {_eal_string(self.on)}")
+            if self.args:
+                fields = ", ".join(
+                    f"{name} = {_eal_value(value)}" for name, value in self.args.items()
+                )
+                parts.append(f"with {{ {fields} }}")
         if self.timeout is not None:
             parts.append(f"timeout {self.timeout}")
         if self.retries is not None:
@@ -139,9 +157,28 @@ class Pipeline:
         retries: int | None = None,
         on_failure: str | None = None,
         optional: bool = False,
+        descriptor_ref: str | None = None,
         **args: Any,
     ) -> Step:
         ref = self._target_ref(target)
+        if descriptor_ref is not None:
+            try:
+                if (
+                    not on
+                    or not on.startswith("easynet:")
+                    or easynet_sdk.parse_ura(on).kind != "agent"
+                ):
+                    raise InvalidArgument(
+                        "descriptor_ref requires an explicit Agent URA in on",
+                        reason="invalid_pipeline_target",
+                    )
+                descriptor_ref = easynet_sdk.project_descriptor_ref(
+                    descriptor_ref
+                ).descriptor_ref
+            except easynet_sdk.SDKError as exc:
+                raise InvalidArgument(
+                    str(exc), reason="invalid_pipeline_target"
+                ) from exc
         if on_failure is not None and on_failure not in _FAILURE_POLICIES:
             raise InvalidArgument(
                 f"on_failure must be one of {sorted(_FAILURE_POLICIES)},"
@@ -159,6 +196,7 @@ class Pipeline:
             retries=_retries(retries),
             on_failure=on_failure,
             optional=optional,
+            descriptor_ref=descriptor_ref,
         )
         self._steps.append(step)
         self._aliases.add(step.alias)

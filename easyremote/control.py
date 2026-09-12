@@ -564,6 +564,37 @@ class AgentControl:
             runtime=runtime,
         )
 
+    def put_abilities(
+        self, name: str, manifests_toml: Sequence[str], *, overwrite: bool = False
+    ) -> Mapping[str, Any]:
+        """Publish executable manifests on an existing native hosted Agent.
+
+        Runtime validates reserved names, ownership, manifests and atomic
+        publication. Existing bindings are protected unless overwrite is explicit.
+        """
+        if not name.strip():
+            raise InvalidArgument(
+                "agent name must not be empty", reason="empty_agent_name"
+            )
+        if (
+            isinstance(manifests_toml, (str, bytes))
+            or not manifests_toml
+            or any(
+                not isinstance(item, str) or not item.strip() for item in manifests_toml
+            )
+        ):
+            raise InvalidArgument(
+                "provide non-empty TOML manifests", reason="invalid_agent_manifests"
+            )
+        return self._invoke(
+            AgentAbility.PUT_ABILITIES,
+            {
+                "name": name.strip(),
+                "manifests_toml": list(manifests_toml),
+                "overwrite": overwrite,
+            },
+        )
+
     def list(self) -> builtins.list[AgentRecord]:
         result = self._invoke(AgentAbility.LIST, {})
         rows = result.get("agents")

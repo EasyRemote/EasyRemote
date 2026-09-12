@@ -1497,7 +1497,7 @@ def test_agent_chat_preserves_benchmark_messages_and_joins_native_trace():
     assert descriptor_request["ability_ura"] == UUID_AGENT_CHAT_URA
     assert descriptor_request["call_mode"] == "rpc"
     assert descriptor_request["descriptor_version"] == ""
-    assert descriptor_request["scope"] == ""
+    assert descriptor_request["scope"] == "realm"
     assert transport._descriptor_resolver.requests == []
     assert wire["args"] == {
         "messages": messages,
@@ -1872,6 +1872,7 @@ def test_remote_ability_is_exported_from_top_level_package():
 def test_hub_handle_projects_product_policy_onto_realm_authority():
     client, transport = make_client()
     client.hub().call("route", x=1)
+    assert transport.descriptor_requests[-1]["scope"] == "realm"
     wire = transport.invocations[0]
     assert wire["callee_ura"] == "easynet:///r/acme/authority"
     assert wire["descriptor_ref"] == expected_descriptor_ref(
@@ -2362,3 +2363,25 @@ def test_stream_raises_on_envelope_error():
         for v in Stream(fs):
             out.append(v)
     assert out == ["a"]
+
+
+def test_module_remote_without_explicit_client_reuses_one_client(monkeypatch):
+    client, transport = make_client()
+    created = []
+
+    def create_client():
+        created.append(client)
+        return client
+
+    monkeypatch.setattr("easyremote.client.Client", create_client)
+
+    @remote
+    def add(a: int, b: int) -> int: ...
+
+    add(1, 2)
+    add(3, 4)
+    assert created == [client]
+    assert [call["args"] for call in transport.invocations] == [
+        {"a": 1, "b": 2},
+        {"a": 3, "b": 4},
+    ]

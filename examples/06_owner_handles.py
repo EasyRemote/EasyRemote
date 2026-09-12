@@ -1,45 +1,60 @@
-"""Owner handles — the client-side mirror of ``@node.register``.
+"""Device, Agent and Hub handles. Start 06_owner_handles_node.py first.
 
-The serving side groups local functions on a ``ComputeNode`` and publishes
-them with ``@node.register``. The calling side is symmetric: a handle to an
-ability owner (``client.device`` / ``client.agent`` / ``client.hub``) carries
-the target identity, and ``@handle.remote`` declares a typed stub bound to
-that owner. The owner lives on the handle, never in the call site.
-
-    # serving side                      # calling side (symmetric)
-    node = ComputeNode()                gpu   = client.device("gpu-2")
-    @node.register                      @gpu.remote
-    def chat(...): ...                  def chat(...): ...
-
-daemon support (verified against EasyNet-Cli): device, agent, and hub
-callees are first-class routes. A full cross-realm owner URA is accepted and
-encoded, but only routes where the daemon's federation peers are configured.
+The provider creates a native Agent and custom greeting ability. The Python
+chat stub binds to greet because the built-in chat name is reserved for the
+Runtime's structured model interface. No model driver is executed in this case.
 """
 
-from easyremote import Client, FreshRoot, ResolvedTargetSubject
+import argparse
 
-client = Client(invocation_policy=FreshRoot(ResolvedTargetSubject()))
+from easynet_sdk import owner_ability_ura
 
-# A handle per owner. The id / token is all the call site needs.
-gpu = client.device("gpu-2")  # a device in this realm
-alice = client.agent("u-alice.chatbot")  # an agent: <user-id>.<agent-id>
-hub = client.hub()  # the realm hub
+from easyremote import Client, ExplicitSubject, FreshRoot, ResolvedTargetSubject
+from easyremote.identity import LocalIdentity, device_ura
 
 
-@gpu.remote
-def ai_inference(prompt: str, max_tokens: int = 64) -> str:
-    # Bound to gpu-2; the body never runs (the signature is the asset).
-    ...
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--device", help="Device ID; defaults to current Runtime")
+    parser.add_argument("--agent", default="owner-handles-demo")
+    args = parser.parse_args()
+    identity = LocalIdentity.load()
+    client = Client(invocation_policy=FreshRoot(ResolvedTargetSubject()))
+    device_id = args.device or identity.node_id
+    gpu = client.device(device_id)
+    alice = client.agent(args.agent)
+    hub = client.hub()
 
+    @gpu.remote
+    def ai_inference(prompt: str, max_tokens: int = 64) -> str: ...
 
-@alice.remote
-def chat(prompt: str) -> str: ...
+    greeting = owner_ability_ura(alice.owner_ura, "greet")
+
+    @alice.remote(name=greeting)
+    def chat(prompt: str) -> str: ...
+
+    # Query routing for this Device; it is the subject of the Hub read.
+    @hub.remote(
+        name="federation.resolve",
+        invocation_policy=FreshRoot(ExplicitSubject(gpu.device_ura)),
+    )
+    def route() -> dict: ...
+
+    prediction = ai_inference("hello from gpu-2")
+    reply = chat("hi alice")
+    again = alice.call(greeting, prompt="hi again")
+    assert prediction == "demo: hello from gpu-2"
+    assert reply == "Alice received: hi alice"
+    assert again == "Alice received: hi again"
+    print("gpu.ai_inference ->", prediction)
+    print("alice.chat ->", reply)
+    print("alice (ad-hoc) ->", again)
+    directory = route()
+    target = device_ura(identity.realm, device_id)
+    routes = [row for row in directory["agents"] if row["ura"] == target]
+    assert len(routes) == 1 and routes[0]["status"] == "active", routes
+    print("hub.route ->", routes[0])
 
 
 if __name__ == "__main__":
-    print("gpu.ai_inference ->", ai_inference("hello from gpu-2"))
-    print("alice.chat       ->", chat("hi alice"))
-
-    # Ad-hoc dispatch without declaring a stub — same handle, .call / .stream.
-    print("hub.route        ->", hub.call("route", target="gpu-2"))
-    print("alice (ad-hoc)   ->", alice.call("chat", prompt="hi again"))
+    main()

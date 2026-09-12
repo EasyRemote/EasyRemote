@@ -99,7 +99,7 @@ def _optional_codec_for(annotation: type) -> ValueCodec | None:
             return None
     from importlib import import_module
 
-    factory = getattr(
+    factory: Callable[[], ValueCodec] = getattr(
         import_module(f".{module_name}", __package__), _OPTIONAL_FACTORIES[key]
     )
     return factory()

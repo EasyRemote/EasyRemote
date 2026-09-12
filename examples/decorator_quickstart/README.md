@@ -1,11 +1,14 @@
 # Decorator quickstart
 
+The thumbnail function slices bytes to demonstrate transport; it does not
+decode, crop, or resize an image.
+
 Recreated from the v1 `examples/decorator_route/` demos on the v2
 (EasyNet-native) API.
 
 | File | Shows |
 |---|---|
-| `compute_node.py` | `@node.register` — sync math, async summarizer, multimodal bytes (image → thumbnail) |
+| `compute_node.py` | `@node.register` — sync math, async summarizer, unary bytes round trip (byte-slicing thumbnail stand-in) |
 | `client.py` | transparent `@remote` stubs, `asyncio.gather` fan-out via `.aio`, multimodal round trip, warm-latency report |
 
 ## Execution path
@@ -21,7 +24,7 @@ for the dedicated streaming proof.
 ## Running
 
 ```bash
-easynet pair          # once per machine
+easynet runtime start # attach to/start the configured Runtime
 easyremote doctor     # sanity-check the link
 
 python examples/decorator_quickstart/compute_node.py   # terminal 1

@@ -703,3 +703,20 @@ def test_agent_refresh_accepts_optional_name():
     client, transport = client_with(ok_response({"agents_scanned": 1}))
     assert AgentControl(client).refresh("caesura") == {"agents_scanned": 1}
     assert transport.invocations[0]["args"] == {"name": "caesura"}
+
+
+def test_agent_put_abilities_uses_native_atomic_publication():
+    client, transport = client_with(ok_response({"state": "committed"}))
+    result = AgentControl(client).put_abilities("alice", ['name = "greet"'])
+    assert result["state"] == "committed"
+    assert transport.invocations[0]["args"] == {
+        "name": "alice", "manifests_toml": ['name = "greet"'], "overwrite": False
+    }
+    assert "agent.ability.put" in transport.invocations[0]["descriptor_ref"]
+
+
+def test_agent_put_abilities_rejects_a_string_instead_of_a_manifest_list():
+    client, transport = client_with()
+    with pytest.raises(InvalidArgument):
+        AgentControl(client).put_abilities("alice", 'name = "greet"')
+    assert not transport.invocations

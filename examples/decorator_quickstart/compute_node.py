@@ -37,8 +37,12 @@ class MathComputeNode:
 
         # Multimodal: bytes travel as base64 (schema contentEncoding),
         # both directions — send an image, get a "thumbnail" back.
-        @self._node.register(description="Center-crop bytes as a fake thumbnail.")
+        @self._node.register(
+            description="Slice bytes as a transport-only thumbnail stand-in."
+        )
         def make_thumbnail(image: bytes, size: int = 64) -> bytes:
+            if not 1 <= size <= 1024:
+                raise ValueError("size must be between 1 and 1024 bytes")
             return image[:size]
 
     def serve(self) -> None:

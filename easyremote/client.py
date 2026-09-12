@@ -996,7 +996,7 @@ class Client:
         *,
         call_mode: str,
     ) -> str:
-        """Resolve one catalog descriptor_ref for an uncached ability."""
+        """Resolve an exact descriptor from local and Authority-published rows."""
 
         identity = self._who()
         try:
@@ -1010,6 +1010,7 @@ class Client:
                 ),
                 ability_ura=resolved.ability_ura,
                 call_mode=call_mode,
+                scope="realm",
             )
         except RemoteError:
             return ""
@@ -1288,12 +1289,12 @@ class RemoteFunction:
                 out[name] = value
         return out
 
-    def _bound_client(self, instance: Any = None) -> Client:
+    def _bound_client(self, instance: Any = _NO_VALUE) -> Client:
         # Precedence: explicit client= > instance.client > instance._client
         # > a fresh Client(). The descriptor passes the host instance.
         if self._client is not None:
             return self._client
-        if instance is not None:
+        if instance is not _NO_VALUE:
             host = getattr(instance, "client", None) or getattr(
                 instance, "_client", None
             )

@@ -24,7 +24,7 @@ client = Client(
 
 @remote(client=client)
 def add_numbers(a: int, b: int) -> int:
-    # Local fallback body for static analysis; @remote executes remotely.
+    # The signature describes the remote call; this body never executes.
     pass
 
 
@@ -52,6 +52,7 @@ class DecoratorDemo:
 
         thumb = make_thumbnail(image=b"\x89PNG" + bytes(512), size=16)
         decoded = base64.b64decode(thumb) if isinstance(thumb, str) else thumb
+        assert decoded == (b"\x89PNG" + bytes(512))[:16]
         print(f"make_thumbnail(512B)     -> {len(decoded)} bytes")
 
         asyncio.run(self.fan_out())
@@ -63,6 +64,7 @@ class DecoratorDemo:
         results = await asyncio.gather(
             *(client.aio.execute("add_numbers", a=i, b=i) for i in range(8))
         )
+        assert results == [2 * i for i in range(8)]
         elapsed = (time.perf_counter() - started) * 1000
         print(f"async fan-out x8         -> {results}  ({elapsed:.0f}ms total)")
 
