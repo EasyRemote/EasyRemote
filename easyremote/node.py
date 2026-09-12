@@ -23,6 +23,7 @@ import hashlib
 import inspect
 import re
 import threading
+import time
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ from typing import Any, Protocol
 
 import easynet_sdk
 
+from ._binding_lease import MAX_BINDINGS, BindingLeaseWorker
 from ._host import HostServer
 from ._host.server import HostedFunction
 from ._json import dumps_wire
@@ -47,6 +49,8 @@ __all__ = ["AbilityInfo", "ComputeNode", "PublicationState", "RegisteredFunction
 _NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _BINDING_LEASE_MS = 9_000
 _BINDING_RENEW_INTERVAL_SECONDS = 3.0
+_BINDING_CONTROL_TIMEOUT_SECONDS = 2.0
+_BINDING_CLEANUP_TIMEOUT_SECONDS = 3.0
 
 
 class _AbilityInstaller(Protocol):
@@ -63,7 +67,17 @@ class _AbilityInstaller(Protocol):
         ability_ura: str,
         *,
         install_id: str | None = None,
+        activation_id: str | None = None,
         node: str = "local",
+        timeout: float | None = None,
+    ) -> object: ...
+
+    def renew_bindings(
+        self,
+        bindings: tuple[easynet_sdk.BindingLeaseRef, ...],
+        *,
+        node: str = "local",
+        timeout: float,
     ) -> object: ...
 
 
@@ -74,6 +88,15 @@ class PublicationState(StrEnum):
     LOCAL_ACTIVE = "LOCAL_ACTIVE"
     ADVERTISE_PENDING = "ADVERTISE_PENDING"
     REALM_VISIBLE = "REALM_VISIBLE"
+    LEASE_FAILED = "LEASE_FAILED"
+
+
+class _ProviderState(StrEnum):
+    STOPPED = "STOPPED"
+    STARTING = "STARTING"
+    ACTIVE = "ACTIVE"
+    STOPPING = "STOPPING"
+    FAILED = "FAILED"
 
 
 @dataclass(frozen=True)
@@ -90,6 +113,7 @@ class AbilityInfo:
     package_dir: Path
     ura: str | None
     install_id: str | None = None
+    activation_id: str | None = None
 
 
 class RegisteredFunction:
@@ -151,9 +175,12 @@ class ComputeNode:
         self._started = False
         self._publication_state = PublicationState.STOPPED
         self._gateway_checked = False
-        self._lease_stop = threading.Event()
-        self._lease_thread: threading.Thread | None = None
+        self._lease_worker: BindingLeaseWorker | None = None
         self._lease_failure: BaseException | None = None
+        self._serve_exit = threading.Event()
+        self._lifecycle_lock = threading.RLock()
+        self._provider_state = _ProviderState.STOPPED
+        self._generation = 0
 
     # -- registration ------------------------------------------------------
 
@@ -191,6 +218,21 @@ class ComputeNode:
                 f"'{ability_name}' is already registered on this node",
                 reason="duplicate_function",
             )
+        if len(self._abilities) >= MAX_BINDINGS:
+            raise InvalidArgument(
+                "A provider supports at most 256 functions",
+                reason="binding_limit_exceeded",
+            )
+        with self._lifecycle_lock:
+            self._check_lease_health()
+            if self._provider_state not in (
+                _ProviderState.STOPPED,
+                _ProviderState.ACTIVE,
+            ):
+                raise Unavailable(
+                    "Provider lifecycle is changing", reason="provider_busy"
+                )
+            generation = self._generation
 
         if schema is not None:
             input_schema = dict(schema)
@@ -224,12 +266,23 @@ class ComputeNode:
             self._abilities[ability_name] = info
             if self._started:
                 info = self._deploy(info)
-                self._abilities[ability_name] = info
-                self._publication_state = PublicationState.ADVERTISE_PENDING
-                self._start_binding_lease_renewal()
-        except BaseException:
-            self._abilities.pop(ability_name, None)
-            self._host.remove(qualified)
+                with self._lifecycle_lock:
+                    self._require_generation(generation)
+                    self._abilities[ability_name] = info
+                    self._track_binding(info)
+                    self._check_lease_health()
+                    self._publication_state = PublicationState.ADVERTISE_PENDING
+        except BaseException as error:
+            with self._lifecycle_lock:
+                if self._generation != generation:
+                    raise
+                deployed = self._abilities.pop(ability_name, None)
+                self._host.remove(qualified)
+            if deployed is not None and deployed.install_id is not None:
+                try:
+                    self._revoke_binding(deployed, _BINDING_CONTROL_TIMEOUT_SECONDS)
+                except BaseException as cleanup_error:
+                    error.add_note(f"registration rollback failed: {cleanup_error}")
             raise
         return RegisteredFunction(hosted, info)
 
@@ -246,51 +299,104 @@ class ComputeNode:
             return
         self._print_ready()
         try:
-            threading.Event().wait()
+            self._serve_exit.wait()
+            self._check_lease_health()
         except KeyboardInterrupt:
             pass
         finally:
             self.stop()
 
     def start(self) -> None:
-        if self._started:
-            return
-        self._check_gateway()
-        connection = self._runtime_provider.connect()
+        with self._lifecycle_lock:
+            if self._provider_state is _ProviderState.ACTIVE:
+                self._check_lease_health()
+                return
+            if self._provider_state is not _ProviderState.STOPPED:
+                self._check_lease_health()
+                raise Unavailable(
+                    "Provider lifecycle is changing", reason="provider_busy"
+                )
+            self._provider_state = _ProviderState.STARTING
+            self._generation += 1
+            generation = self._generation
+            self._lease_failure = None
+            self._serve_exit.clear()
         try:
-            self._host.start()
-            self._publication_state = PublicationState.LOCAL_ACTIVE
+            self._check_gateway()
+            connection = self._runtime_provider.connect()
+            with self._lifecycle_lock:
+                stale_connection = self._generation != generation
+                if not stale_connection:
+                    self._runtime_connection = connection
+                    self._host.start()
+                    self._publication_state = PublicationState.LOCAL_ACTIVE
+            if stale_connection:
+                _close_runtime_connection(connection)
+                self._require_generation(generation)
             for ability_name, info in list(self._abilities.items()):
-                self._abilities[ability_name] = self._deploy(info)
-            self._publication_state = PublicationState.ADVERTISE_PENDING
+                self._check_lease_health()
+                deployed = self._deploy(info)
+                with self._lifecycle_lock:
+                    self._require_generation(generation)
+                    self._abilities[ability_name] = deployed
+                    self._track_binding(deployed)
+                    self._check_lease_health()
+            with self._lifecycle_lock:
+                self._require_generation(generation)
+                self._check_lease_health()
+                self._publication_state = PublicationState.ADVERTISE_PENDING
+                self._started = True
+                self._provider_state = _ProviderState.ACTIVE
         except BaseException as error:
             try:
-                self._revoke_deployments()
-            except BaseException as revoke_error:
-                error.add_note(f"rollback ability.uninstall failed: {revoke_error}")
-            self._host.stop()
-            _close_runtime_connection(connection)
-            self._started = False
-            self._publication_state = PublicationState.STOPPED
+                self._shutdown(expected_generation=generation)
+            except BaseException as cleanup_error:
+                error.add_note(f"provider rollback failed: {cleanup_error}")
             raise
-        self._runtime_connection = connection
-        self._started = True
-        self._start_binding_lease_renewal()
 
     def stop(self) -> None:
-        if not self._started:
-            return
-        self._stop_binding_lease_renewal()
-        self._revoke_deployments()
+        self._shutdown()
+
+    def _shutdown(self, *, expected_generation: int | None = None) -> None:
+        with self._lifecycle_lock:
+            if (
+                expected_generation is not None
+                and expected_generation != self._generation
+            ):
+                return
+            if self._provider_state is _ProviderState.STOPPED:
+                return
+            if self._provider_state is _ProviderState.STOPPING:
+                raise Unavailable(
+                    "Provider is already stopping", reason="provider_busy"
+                )
+            self._provider_state = _ProviderState.STOPPING
+            self._generation += 1
+            self._serve_exit.set()
+        failure: BaseException | None = None
         try:
-            self._host.stop()
+            if self._lease_worker is not None:
+                self._lease_worker.stop()
+            self._revoke_deployments()
+        except BaseException as error:
+            failure = error
         finally:
-            connection = self._runtime_connection
-            self._runtime_connection = None
-            self._started = False
-            self._publication_state = PublicationState.STOPPED
-            if connection is not None:
-                _close_runtime_connection(connection)
+            try:
+                self._host.stop()
+            finally:
+                connection = self._runtime_connection
+                self._runtime_connection = None
+                self._started = False
+                self._publication_state = PublicationState.STOPPED
+                self._lease_worker = None
+                try:
+                    if connection is not None:
+                        _close_runtime_connection(connection)
+                finally:
+                    with self._lifecycle_lock:
+                        self._provider_state = _ProviderState.STOPPED
+        if failure is not None:
+            raise failure
 
     def __enter__(self) -> ComputeNode:
         self.start()
@@ -315,10 +421,14 @@ class ComputeNode:
 
     @property
     def publication_state(self) -> PublicationState:
+        if self._lease_worker is not None and self._lease_worker.failure is not None:
+            return PublicationState.LEASE_FAILED
         return self._publication_state
 
     @property
     def lease_failure(self) -> BaseException | None:
+        if self._lease_worker is not None and self._lease_worker.failure is not None:
+            return self._lease_worker.failure
         return self._lease_failure
 
     # -- internals ---------------------------------------------------------------
@@ -332,50 +442,99 @@ class ComputeNode:
         )
         ability_ura = getattr(result, "ability_ura", None) or info.ura
         install_id = getattr(result, "install_id", None)
-        return dataclasses.replace(info, ura=ability_ura, install_id=install_id)
-
-    def _start_binding_lease_renewal(self) -> None:
-        if not self._abilities or self._lease_thread is not None:
-            return
-        self._lease_stop.clear()
-        self._lease_failure = None
-        self._lease_thread = threading.Thread(
-            target=self._renew_binding_leases,
-            name="easyremote-binding-lease",
-            daemon=True,
+        activation_id = getattr(result, "activation_id", None)
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (ability_ura, install_id, activation_id)
+        ):
+            raise Unavailable(
+                "Runtime did not acknowledge a complete process binding; "
+                "use a Runtime supporting activation-guarded binding renewal",
+                reason="binding_activation_missing",
+            )
+        return dataclasses.replace(
+            info, ura=ability_ura, install_id=install_id, activation_id=activation_id
         )
-        self._lease_thread.start()
 
-    def _stop_binding_lease_renewal(self) -> None:
-        self._lease_stop.set()
-        thread = self._lease_thread
-        if thread is not None:
-            thread.join()
-        self._lease_thread = None
+    def _track_binding(self, info: AbilityInfo) -> None:
+        if self._lease_worker is None:
+            generation = self._generation
+            self._lease_worker = BindingLeaseWorker(
+                lambda refs, timeout: self._ability_control.renew_bindings(
+                    refs, node="local", timeout=timeout
+                ),
+                lambda error: self._binding_lease_failed(generation, error),
+                interval=_BINDING_RENEW_INTERVAL_SECONDS,
+                timeout=_BINDING_CONTROL_TIMEOUT_SECONDS,
+            )
+        assert info.ura and info.install_id and info.activation_id
+        self._lease_worker.add(
+            easynet_sdk.BindingLeaseRef(
+                ability_ura=info.ura,
+                install_id=info.install_id,
+                activation_id=info.activation_id,
+            )
+        )
 
-    def _renew_binding_leases(self) -> None:
-        while not self._lease_stop.wait(_BINDING_RENEW_INTERVAL_SECONDS):
-            try:
-                for ability_name, info in list(self._abilities.items()):
-                    if self._lease_stop.is_set():
-                        return
-                    self._abilities[ability_name] = self._deploy(info)
-                self._lease_failure = None
-                self._publication_state = PublicationState.ADVERTISE_PENDING
-            except BaseException as error:
-                self._lease_failure = error
-                self._publication_state = PublicationState.LOCAL_ACTIVE
+    def _binding_lease_failed(self, generation: int, error: BaseException) -> None:
+        with self._lifecycle_lock:
+            if generation != self._generation:
+                return
+            self._lease_failure = error
+            self._publication_state = PublicationState.LEASE_FAILED
+            self._provider_state = _ProviderState.FAILED
+            self._serve_exit.set()
+        self._host.stop()
+
+    def _require_generation(self, generation: int) -> None:
+        if generation != self._generation:
+            raise Unavailable(
+                "Provider startup was stopped; late deployment cannot be renewed",
+                reason="provider_start_cancelled",
+            )
+
+    def _check_lease_health(self) -> None:
+        failure = self.lease_failure
+        if failure is not None:
+            raise Unavailable(
+                "Provider binding renewal failed; stop the provider, inspect the "
+                "Runtime error, then explicitly restart",
+                reason="binding_lease_failed",
+            ) from failure
+
+    def _revoke_binding(self, info: AbilityInfo, timeout: float) -> None:
+        if info.install_id is None or info.ura is None or info.activation_id is None:
+            return
+        self._ability_control.uninstall(
+            info.ura,
+            install_id=info.install_id,
+            activation_id=info.activation_id,
+            node="local",
+            timeout=timeout,
+        )
 
     def _revoke_deployments(self) -> None:
+        deadline = time.monotonic() + _BINDING_CLEANUP_TIMEOUT_SECONDS
+        failure: BaseException | None = None
         for ability_name, info in reversed(list(self._abilities.items())):
-            if info.install_id is None or info.ura is None:
-                continue
-            self._ability_control.uninstall(
-                info.ura,
-                install_id=info.install_id,
-                node="local",
-            )
-            self._abilities[ability_name] = dataclasses.replace(info, install_id=None)
+            try:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise Unavailable(
+                        "Binding cleanup deadline elapsed; "
+                        "remaining leases will expire",
+                        reason="binding_cleanup_timeout",
+                    )
+                self._revoke_binding(info, remaining)
+            except BaseException as error:
+                if failure is None:
+                    failure = error
+            finally:
+                self._abilities[ability_name] = dataclasses.replace(
+                    info, install_id=None, activation_id=None
+                )
+        if failure is not None:
+            raise failure
 
     def _print_ready(self) -> None:
         """Show the user what became callable through the connected runtime."""

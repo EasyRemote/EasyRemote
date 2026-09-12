@@ -366,6 +366,7 @@ class Client:
         self._identity_override = identity
         self._signer = signer
         self._lock = threading.Lock()
+        self._closed = False
         self._unary_pool = (
             UnaryDispatchPool.from_transport(transport)
             if transport is not None
@@ -784,14 +785,18 @@ class Client:
         return MissionControl(self)
 
     def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            stream_transport = self._stream_transport
+            self._stream_transport = None
         first_error: BaseException | None = None
         try:
             self._unary_pool.close()
         except BaseException as exc:
             first_error = exc
-        if self._owns_stream_transport and self._stream_transport is not None:
+        if self._owns_stream_transport and stream_transport is not None:
             try:
-                self._stream_transport.close()
+                stream_transport.close()
             except BaseException as exc:
                 if first_error is None:
                     first_error = exc
@@ -942,9 +947,9 @@ class Client:
         return self._unary_pool.connected_transport()
 
     def _streaming(self) -> Transport:
-        if self._stream_transport is not None:
-            return self._stream_transport
         with self._lock:
+            if self._closed:
+                raise Unavailable("Client is closed", reason="client_closed")
             if self._stream_transport is None:
                 # Keep a dedicated handle so unary pool replacement cannot close
                 # an active stream. The SDK selects the negotiated C ABI stream

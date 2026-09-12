@@ -128,6 +128,16 @@ def test_gallery_provider_behaviors_are_bounded(monkeypatch, tmp_path: Path) -> 
     embedding = model["embed_text"]("bounded model call")
     assert embedding == model["embed_text"]("bounded model call")
     assert len(embedding) == 8
+    assert model["embed_text"]("Capability sharing keeps model custody local.") == [
+        0.362116,
+        0.664379,
+        0.475839,
+        0.092774,
+        0.242409,
+        0.194525,
+        0.152628,
+        0.269343,
+    ]
     with pytest.raises(ValueError, match="must not be empty"):
         model["embed_text"]("   ")
 

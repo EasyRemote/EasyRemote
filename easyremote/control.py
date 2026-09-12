@@ -15,6 +15,7 @@ The important separation is:
 from __future__ import annotations
 
 import builtins
+import functools
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -88,6 +89,7 @@ class AbilityInstallResult:
     state: str
     node_id: str
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    activation_id: str | None = None
 
     @classmethod
     def from_wire(
@@ -99,6 +101,7 @@ class AbilityInstallResult:
             state=str(value.get("state") or ""),
             node_id=node_id,
             raw=dict(value),
+            activation_id=_optional_str(value.get("activation_id")),
         )
 
 
@@ -217,7 +220,7 @@ class AbilityControl:
             )
         identity = self._client._who()
         ref = stage_ability_bundle(
-            self._client._connected(),
+            self._client._streaming(),
             package,
             caller_ura=identity.user_ura,
             locomotion_callee_ura=self._system_agent_ura(
@@ -262,7 +265,9 @@ class AbilityControl:
         ability_ura: str,
         *,
         install_id: str | None = None,
+        activation_id: str | None = None,
         node: str = "local",
+        timeout: float | None = None,
     ) -> Mapping[str, Any]:
         """Remove one daemon-owned implementation binding before its host exits."""
         _require_ura_kind(ability_ura, {"ability"}, "ability_ura")
@@ -281,6 +286,13 @@ class AbilityControl:
                     "install_id must not be blank", reason="empty_install_id"
                 )
             args["install_id"] = normalized_install_id
+        if activation_id is not None:
+            normalized_activation_id = activation_id.strip()
+            if not normalized_activation_id:
+                raise InvalidArgument(
+                    "activation_id must not be blank", reason="empty_activation_id"
+                )
+            args["activation_id"] = normalized_activation_id
         return self._invoke(
             "ability.uninstall",
             callee_ura=self._system_agent_ura(
@@ -289,7 +301,37 @@ class AbilityControl:
             ),
             subject_ura=ability_ura,
             args=args,
+            timeout=timeout,
         )
+
+    def renew_bindings(
+        self,
+        bindings: tuple[easynet_sdk.BindingLeaseRef, ...],
+        *,
+        node: str = "local",
+        timeout: float = 2.0,
+    ) -> easynet_sdk.BindingLeaseRenewalResult:
+        """Renew exact live activations, atomically and without restaging packages."""
+        node_id = node.strip()
+        if not node_id:
+            raise InvalidArgument("node must not be empty", reason="empty_node")
+        target_ura = self._deploy_target_ura(node_id)
+        try:
+            request = easynet_sdk.BindingLeaseRenewalRequest(target_ura, bindings)
+            result = self._invoke(
+                "ability.renew_bindings",
+                callee_ura=self._system_agent_ura(
+                    node_id, SystemAgentId.ABILITY_MANAGEMENT
+                ),
+                subject_ura=easynet_sdk.resource_ura(
+                    target_ura, "ability-binding-leases/active"
+                ),
+                args=request.arguments(),
+                timeout=timeout,
+            )
+            return request.result(result)
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
 
     def _deploy_target_ura(self, node_id: str) -> str:
         if node_id == "local":
@@ -349,9 +391,7 @@ class AbilityControl:
         if scope == "realm":
             args["scope"] = scope
         if owner_ura:
-            _require_ura_kind(
-                owner_ura, {"agent", "authority"}, "owner_ura"
-            )
+            _require_ura_kind(owner_ura, {"agent", "authority"}, "owner_ura")
         if subject_ura:
             _require_ura_kind(subject_ura, {"ability"}, "subject_ura")
             args["ability_ura"] = subject_ura
@@ -411,11 +451,7 @@ class AbilityControl:
         scope: AbilityListScope = "realm",
     ) -> builtins.list[AbilityRecord]:
         """List abilities owned by this paired user across catalogue rows."""
-        user = (
-            user_id
-            if user_id is not None
-            else self._client._who().paired_user_id
-        )
+        user = user_id if user_id is not None else self._client._who().paired_user_id
         if not user or not user.strip():
             raise InvalidArgument(
                 "user_id is required because there is no paired User identity",
@@ -447,9 +483,17 @@ class AbilityControl:
         callee_ura: str,
         subject_ura: str,
         args: Mapping[str, object],
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         try:
-            result = self._client._connected().invoke_runtime_ability(
+            invoke_runtime_ability = (
+                self._client._connected().invoke_runtime_ability
+                if timeout is None
+                else functools.partial(
+                    self._client._unary_pool.invoke_runtime_ability, timeout=timeout
+                )
+            )
+            result = invoke_runtime_ability(
                 runtime_root_context(
                     caller_ura=self._client._who().user_ura,
                     callee_ura=callee_ura,

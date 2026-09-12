@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import tarfile
+import threading
 
 import easynet_sdk
 import pytest
@@ -18,7 +19,7 @@ from easynet_sdk import InvocationLifecycleState as InvocationState
 
 from easyremote.client import Client
 from easyremote.control import AbilityControl, AgentControl
-from easyremote.errors import InvalidArgument, Unavailable
+from easyremote.errors import DeadlineExceeded, InvalidArgument, Unavailable
 from easyremote.identity import LocalIdentity
 
 IDENTITY = LocalIdentity(
@@ -30,16 +31,10 @@ IDENTITY = LocalIdentity(
 )
 DEVICE_URA = "easynet:///r/acme/device/dev-a"
 USER_URA = "easynet:///r/acme/user/u-alice"
-ABILITY_MANAGER_URA = (
-    "easynet:///r/acme/agent/device.dev-a.ability-management"
-)
+ABILITY_MANAGER_URA = "easynet:///r/acme/agent/device.dev-a.ability-management"
 AGENT_MANAGER_URA = "easynet:///r/acme/agent/device.dev-a.agent-management"
-INTROSPECTION_URA = (
-    "easynet:///r/acme/agent/device.dev-a.runtime-introspection"
-)
-RUNTIME_STATE_SUBJECT = (
-    "easynet:///r/acme/resource/user.u-alice/runtime-state/read"
-)
+INTROSPECTION_URA = "easynet:///r/acme/agent/device.dev-a.runtime-introspection"
+RUNTIME_STATE_SUBJECT = "easynet:///r/acme/resource/user.u-alice/runtime-state/read"
 
 
 def system_ability_ura(owner_ura: str, ability_name: str) -> str:
@@ -370,7 +365,9 @@ def test_install_resolves_named_node_to_canonical_target_ura(tmp_path):
 
 
 def test_uninstall_revokes_exact_install_binding():
-    ability_ura = "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn"
+    ability_ura = (
+        "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn"
+    )
     client, transport = client_with(
         ok_response(
             {
@@ -396,6 +393,80 @@ def test_uninstall_revokes_exact_install_binding():
         "install_id": "inst-1",
         "target_ura": DEVICE_URA,
     }
+
+
+def test_uninstall_forwards_activation_guard_with_bounded_wait():
+    ability = "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn"
+    client, transport = client_with(ok_response({"state": "REMOVED"}))
+    AbilityControl(client).uninstall(
+        ability, install_id="install-1", activation_id="activation-1", timeout=0.5
+    )
+    assert transport.invocations[0]["args"]["activation_id"] == "activation-1"
+    client.close()
+
+
+def binding_response(binding, *, activation=None):
+    entry = binding.to_json_dict() | {"binding_lease_ms": 9000}
+    if activation is not None:
+        entry["activation_id"] = activation
+    return {"state": "RENEWED", "target_ura": DEVICE_URA, "bindings": [entry]}
+
+
+def test_renewal_forwards_exact_identity_and_resource_subject():
+    binding = easynet_sdk.BindingLeaseRef(
+        "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn",
+        "install-1",
+        "activation-1",
+    )
+    client, transport = client_with(ok_response(binding_response(binding)))
+    result = AbilityControl(client).renew_bindings((binding,), timeout=0.5)
+    assert result.bindings[0].binding == binding
+    assert result.bindings[0].binding_lease_ms == 9000
+    wire = transport.invocations[0]
+    assert wire["caller_ura"] == USER_URA
+    assert wire["callee_ura"] == ABILITY_MANAGER_URA
+    assert wire["subject_ura"] == (
+        "easynet:///r/acme/resource/device.dev-a/ability-binding-leases/active"
+    )
+    assert wire["args"] == {
+        "target_ura": DEVICE_URA,
+        "bindings": [binding.to_json_dict()],
+    }
+    client.close()
+
+
+def test_renewal_rejects_acknowledgement_of_different_activation():
+    binding = easynet_sdk.BindingLeaseRef("ability", "install", "activation")
+    client, _ = client_with(ok_response(binding_response(binding, activation="other")))
+    with pytest.raises(InvalidArgument, match="requested activation"):
+        AbilityControl(client).renew_bindings((binding,), timeout=0.5)
+    client.close()
+
+
+def test_renewal_timeout_bounds_observation_without_claiming_cancellation():
+    binding = easynet_sdk.BindingLeaseRef("ability", "install", "activation")
+    client, transport = client_with(ok_response(binding_response(binding)))
+    entered, release, done = threading.Event(), threading.Event(), threading.Event()
+    original = transport.invoke_runtime_ability
+
+    def blocked(call, ability, arguments):
+        entered.set()
+        try:
+            assert release.wait(1)
+            return original(call, ability, arguments)
+        finally:
+            done.set()
+
+    transport.invoke_runtime_ability = blocked
+    try:
+        with pytest.raises(DeadlineExceeded):
+            AbilityControl(client).renew_bindings((binding,), timeout=0.01)
+        assert entered.is_set()
+        assert not done.is_set(), "timeout must not be described as cancellation"
+    finally:
+        release.set()
+        assert done.wait(1)
+        client.close()
 
 
 def test_install_rejects_missing_package(tmp_path):
@@ -448,7 +519,9 @@ def test_list_abilities_exposes_realm_scope():
 
 
 def test_show_returns_matching_ability_or_not_found():
-    ability_ura = "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn"
+    ability_ura = (
+        "easynet:///r/acme/ability/system-agent.dev-a.ability-management.er.fn"
+    )
     client, _ = client_with(
         ok_response(
             {

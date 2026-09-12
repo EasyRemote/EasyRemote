@@ -195,9 +195,7 @@ class Transport:
     ) -> dict[str, Any]:
         try:
             resolved_signer = self._resolve_signer(invocation, signer)
-            return dict(
-                self._adapter.invoke_signed(invocation, signer=resolved_signer)
-            )
+            return dict(self._adapter.invoke_signed(invocation, signer=resolved_signer))
         except easynet_sdk.SDKError as exc:
             raise error_from_sdk(exc) from exc
 
@@ -317,6 +315,24 @@ class UnaryDispatchPool:
                     invocation,
                     signer=signer,
                     timeout=timeout,
+                )
+            )
+        except easynet_sdk.SDKError as exc:
+            raise error_from_sdk(exc) from exc
+
+    def invoke_runtime_ability(
+        self,
+        call: easynet_sdk.RuntimeCallContext,
+        ability_name: str,
+        arguments: object,
+        *,
+        timeout: float,
+    ) -> dict[str, Any]:
+        """Bound the SDK wait, without claiming cancellation after a timeout."""
+        try:
+            return dict(
+                self._pool.invoke_runtime_ability(
+                    call, ability_name, arguments, timeout=timeout
                 )
             )
         except easynet_sdk.SDKError as exc:

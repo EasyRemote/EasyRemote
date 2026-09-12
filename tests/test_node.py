@@ -5,6 +5,7 @@ import socket
 import threading
 from collections.abc import Iterator
 from functools import partial
+from types import SimpleNamespace
 
 import easynet_sdk
 import pytest
@@ -36,20 +37,34 @@ class FakeAbilityControl:
         self.fail = None
         self.uninstall_fail = None
         self.next_result = None
+        self.renewals = []
 
     def install(self, path, *, node, binding_lease_ms=None):
         self.installs.append((path, node))
         self.install_leases.append(binding_lease_ms)
-        if len(self.installs) >= 2:
-            self.renewed.set()
         if self.fail is not None:
             raise self.fail
-        return self.next_result
+        if self.next_result is not None:
+            self.next_result.activation_id = "activation-1"
+            return self.next_result
+        return SimpleNamespace(
+            ability_ura=f"easynet:///r/acme/ability/system-agent.dev-a.manager.{path.name}",
+            install_id=path.name,
+            activation_id=f"activation-{len(self.installs)}",
+        )
 
-    def uninstall(self, ability_ura, *, install_id=None, node):
+    def uninstall(
+        self, ability_ura, *, install_id=None, activation_id=None, node, timeout=None
+    ):
         self.uninstalls.append((ability_ura, install_id, node))
+        assert activation_id
+        assert timeout is not None and timeout > 0
         if self.uninstall_fail is not None:
             raise self.uninstall_fail
+
+    def renew_bindings(self, bindings, *, node, timeout):
+        self.renewals.append(bindings)
+        self.renewed.set()
 
 
 class ReadyRuntime:
@@ -332,6 +347,7 @@ def test_live_host_renews_process_binding_lease(short_tmp, monkeypatch):
     import easyremote.node as node_module
 
     monkeypatch.setattr(node_module, "_BINDING_RENEW_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(node_module, "_BINDING_CONTROL_TIMEOUT_SECONDS", 0.005)
     installer = FakeAbilityControl()
     installer.next_result = type(
         "InstallResult",
@@ -355,11 +371,13 @@ def test_live_host_renews_process_binding_lease(short_tmp, monkeypatch):
     assert installer.renewed.wait(timeout=1)
     node.stop()
 
-    assert len(installer.installs) >= 2
+    assert len(installer.installs) == 1
+    assert installer.renewals
+    assert installer.renewals[0][0].activation_id == "activation-1"
     assert set(installer.install_leases) == {9_000}
 
 
-def test_stop_keeps_host_alive_when_binding_revocation_fails(short_tmp):
+def test_stop_closes_host_when_binding_revocation_fails(short_tmp):
     installer = FakeAbilityControl()
     installer.next_result = type(
         "InstallResult",
@@ -385,8 +403,8 @@ def test_stop_keeps_host_alive_when_binding_revocation_fails(short_tmp):
     with pytest.raises(RuntimeError, match="daemon unavailable"):
         node.stop()
 
-    assert node.publication_state.value == "ADVERTISE_PENDING"
-    assert node.host_socket.exists()
+    assert node.publication_state.value == "STOPPED"
+    assert not node.host_socket.exists()
 
 
 def test_post_start_registration_rolls_back_when_deploy_fails(short_tmp):
