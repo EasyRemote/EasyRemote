@@ -79,7 +79,7 @@ install, pair, or start the daemon.
 
 ## Getting started
 
-The current source preview requires `easynet-sdk>=0.142.22,<0.143`, which is not
+The current source preview requires `easynet-sdk>=0.162.9,<0.163`, which is not
 yet available from the public package registry. Until the dependency-first
 release completes, keep these repositories as sibling checkouts:
 

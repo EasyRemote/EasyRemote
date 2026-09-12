@@ -162,7 +162,7 @@ checks below:
   bump unless a new release is being prepared.
 - PyPI has EasyRemote `2.0.2`, so `2.190.5` is forward-moving.
 - Public-registry resolution is still blocked until
-  `easynet-sdk>=0.142.22,<0.143` is published.
+  `easynet-sdk>=0.162.9,<0.163` is published.
 
 Refresh every fact before release:
 

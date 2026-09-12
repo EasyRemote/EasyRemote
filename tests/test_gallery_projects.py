@@ -51,7 +51,7 @@ def test_gallery_projects_are_independent_uv_applications() -> None:
         dependencies = set(manifest["project"]["dependencies"])
         sources = manifest["tool"]["uv"]["sources"]
         assert "easyremote" in dependencies
-        assert "easynet-sdk>=0.142.22,<0.143" in dependencies
+        assert "easynet-sdk>=0.162.9,<0.163" in dependencies
         assert sources["easyremote"] == {"path": "../../..", "editable": True}
         assert sources["easynet-sdk"] == {
             "path": "../../../../EasyNet-Cli/sdk/python",

@@ -76,7 +76,7 @@ def main() -> int:
     pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
     context_source = (root / "easyremote/context.py").read_text(encoding="utf-8")
     if args.self_test:
-        mutated = english.replace("easynet-sdk>=0.142.22,<0.143", "SDK line")
+        mutated = english.replace("easynet-sdk>=0.162.9,<0.163", "SDK line")
         if not any(
             "English README omits SDK requirement" in item
             for item in errors(mutated, chinese, pyproject, context_source)

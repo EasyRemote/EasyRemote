@@ -78,7 +78,7 @@ Provider，不负责安装、配对或启动 daemon。
 
 ## 上手
 
-当前源码预览依赖 `easynet-sdk>=0.142.22,<0.143`，该版本尚未出现在公共 package
+当前源码预览依赖 `easynet-sdk>=0.162.9,<0.163`，该版本尚未出现在公共 package
 registry。dependency-first 发布完成前，请把三个仓库保持为 sibling checkouts：
 
 ```text

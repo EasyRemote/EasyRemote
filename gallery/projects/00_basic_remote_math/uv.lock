@@ -4,7 +4,7 @@ requires-python = ">=3.11"
 
 [[package]]
 name = "axon-runtime-sdk"
-version = "0.192.3"
+version = "0.205.34"
 source = { editable = "../../../../EasyNet-Axon/sdk/python" }
 dependencies = [
     { name = "cryptography" },
@@ -177,7 +177,7 @@ wheels = [
 
 [[package]]
 name = "easynet-sdk"
-version = "0.142.22"
+version = "0.162.9"
 source = { editable = "../../../../EasyNet-Cli/sdk/python" }
 dependencies = [
     { name = "axon-runtime-sdk" },
@@ -208,9 +208,10 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "easynet-sdk", editable = "../../../../EasyNet-Cli/sdk/python" },
+    { name = "numpy", marker = "extra == 'numpy'", specifier = ">=1.26" },
     { name = "pydantic", marker = "extra == 'pydantic'", specifier = ">=2.0" },
 ]
-provides-extras = ["pydantic"]
+provides-extras = ["pydantic", "numpy"]
 
 [package.metadata.requires-dev]
 dev = [
